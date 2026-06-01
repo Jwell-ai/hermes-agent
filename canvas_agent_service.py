@@ -7,6 +7,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Header, HTTPException
+from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from run_agent import AIAgent
@@ -157,6 +158,44 @@ def _public_messages(messages: List[Any]) -> List[Any]:
     return out
 
 
+def _usage_value(usage: Any, name: str) -> int:
+    if usage is None:
+        return 0
+    if isinstance(usage, dict):
+        return int(usage.get(name) or 0)
+    return int(getattr(usage, name, 0) or 0)
+
+
+def _generate_title_direct(endpoint: str, api_key: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    timeout = int(config.get("timeout") or config.get("timeout_seconds") or 60)
+    client = OpenAI(api_key=api_key, base_url=endpoint, timeout=timeout)
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Create a short chat session title. Return only the title, no quotes, "
+                    "no markdown, no punctuation-only text. Max 8 words."
+                ),
+            },
+            {"role": "user", "content": source},
+        ],
+        max_tokens=32,
+        temperature=0.2,
+    )
+    content = ""
+    if response.choices:
+        content = response.choices[0].message.content or ""
+    usage = getattr(response, "usage", None)
+    return {
+        "title": content,
+        "prompt_tokens": _usage_value(usage, "prompt_tokens"),
+        "completion_tokens": _usage_value(usage, "completion_tokens"),
+        "total_tokens": _usage_value(usage, "total_tokens"),
+    }
+
+
 @app.get("/health")
 @app.get("/api/v1/health")
 def health() -> Dict[str, Any]:
@@ -276,27 +315,8 @@ def title(req: CanvasTitleRequest, authorization: Optional[str] = Header(default
     if not source:
         raise HTTPException(status_code=400, detail="title source is required")
 
-    agent = AIAgent(
-        base_url=endpoint,
-        api_key=api_key,
-        provider=provider,
-        api_mode=_string(config.get("api_mode")) or "chat_completions",
-        model=model,
-        enabled_toolsets=[],
-        max_iterations=1,
-        quiet_mode=True,
-        skip_memory=True,
-        skip_context_files=True,
-    )
-    result = agent.run_conversation(
-        source,
-        system_message=(
-            "Create a short chat session title. Return only the title, no quotes, "
-            "no markdown, no punctuation-only text. Max 8 words."
-        ),
-        conversation_history=[],
-    )
-    raw_title = _string(result.get("final_response"))
+    result = _generate_title_direct(endpoint, api_key, model, source, config)
+    raw_title = _string(result.get("title"))
     cleaned = raw_title.strip().strip("\"'`").splitlines()[0].strip() if raw_title else ""
     if len(cleaned) > 80:
         cleaned = cleaned[:80].rstrip()
