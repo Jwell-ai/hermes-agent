@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1.7
+
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HERMES_AGENT_HOST=0.0.0.0 \
+    HERMES_AGENT_PORT=58088
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates gcc git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml setup.py README.md ./
+COPY agent ./agent
+COPY acp_adapter ./acp_adapter
+COPY acp_registry ./acp_registry
+COPY hermes_cli ./hermes_cli
+COPY locales ./locales
+COPY optional-skills ./optional-skills
+COPY plugins ./plugins
+COPY providers ./providers
+COPY skills ./skills
+COPY tools ./tools
+COPY hermes_bootstrap.py utils.py hermes_constants.py hermes_logging.py hermes_state.py hermes_time.py model_tools.py run_agent.py toolsets.py ./
+COPY canvas_agent_service.py run-canvas-agent.sh ./
+
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install -e .
+
+EXPOSE 58088
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:58088/health', timeout=5).read()" || exit 1
+
+CMD ["python", "canvas_agent_service.py"]

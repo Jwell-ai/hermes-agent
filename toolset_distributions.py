@@ -27,6 +27,13 @@ from toolsets import validate_toolset
 # Distribution definitions
 # Each key is a distribution name, and the value is a dict of toolset_name: probability_percentage
 DISTRIBUTIONS = {
+    "alphart_canvas": {
+        "description": "Alphart Canvas agent service tools only",
+        "toolsets": {
+            "alphart-canvas": 100
+        }
+    },
+
     # Default: All tools available 100% of the time
     "default": {
         "description": "All available tools, all the time",
@@ -361,4 +368,3 @@ if __name__ == "__main__":
     print("-" * 40)
     print_distribution_info("image_gen")
     print_distribution_info("research")
-
