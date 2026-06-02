@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Header, HTTPException
 from openai import OpenAI
 from pydantic import BaseModel, Field
+import requests
 
 from run_agent import AIAgent
 from tools.canvas_tools import (
@@ -624,6 +625,55 @@ def _has_visible_agent_output(messages: List[Any], final_response: str) -> bool:
     return False
 
 
+def _callback_backend_url(req: CanvasChatRequest) -> str:
+    return _string(req.backend_url or os.getenv("CANVAS_BACKEND_URL")).rstrip("/")
+
+
+def _callback_service_token() -> str:
+    return _string(os.getenv("CANVAS_AGENT_TOKEN") or os.getenv("HERMES_AGENT_TOKEN"))
+
+
+def _post_chat_result_callback(req: CanvasChatRequest, response: Dict[str, Any]) -> None:
+    backend_url = _callback_backend_url(req)
+    if not backend_url:
+        print(
+            f"[canvas-agent] chat result callback skipped session_id={req.session_id} reason=missing_backend_url",
+            flush=True,
+        )
+        return
+    token = _callback_service_token()
+    payload = dict(response)
+    payload.update(
+        {
+            "session_id": req.session_id,
+            "canvas_id": req.canvas_id,
+            "user_id": req.user_id,
+            "request_messages": req.messages,
+        }
+    )
+    try:
+        resp = requests.post(
+            f"{backend_url}/api/v1/agent/chat-results",
+            json=payload,
+            headers={
+                **({"Authorization": f"Bearer {token}"} if token else {}),
+                **({"X-Hermes-Agent-Token": token} if token else {}),
+            },
+            timeout=int(os.getenv("CANVAS_BACKEND_CALLBACK_TIMEOUT_SECONDS", "30")),
+        )
+    except requests.RequestException as exc:
+        print(
+            f"[canvas-agent] chat result callback failed session_id={req.session_id} error={exc}",
+            flush=True,
+        )
+        return
+    preview = (resp.text or "").replace("\n", " ")[:500]
+    print(
+        f"[canvas-agent] chat result callback response session_id={req.session_id} status={resp.status_code} bytes={len(resp.text)} body={preview}",
+        flush=True,
+    )
+
+
 def _usage_value(usage: Any, name: str) -> int:
     if usage is None:
         return 0
@@ -827,7 +877,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         f"error={empty_result_error}",
         flush=True,
     )
-    return {
+    response = {
         "status": "ok",
         "final_response": final_response,
         "messages": response_messages,
@@ -843,6 +893,8 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         "failed": bool(result.get("failed") or empty_result_error),
         "error": empty_result_error or _string(result.get("error")),
     }
+    _post_chat_result_callback(req, response)
+    return response
 
 
 @app.post("/api/v1/agent/titles")
