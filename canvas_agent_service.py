@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Header, HTTPException
@@ -13,7 +14,12 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from run_agent import AIAgent
-from tools.canvas_tools import canvas_context
+from tools.canvas_tools import (
+    _handle_canvas_generate_image,
+    _handle_canvas_generate_video,
+    _selected_tools,
+    canvas_context,
+)
 
 
 class CanvasChatRequest(BaseModel):
@@ -230,6 +236,9 @@ def _media_intent(text: str) -> str:
         "design",
         "render",
         "produce",
+        "paint",
+        "sketch",
+        "illustrate",
         "edit",
         "transform",
         "turn",
@@ -267,6 +276,8 @@ def _media_intent(text: str) -> str:
     if any(word in value for word in video_words):
         return "video"
     if any(word in value for word in image_words):
+        return "image"
+    if any(word in value for word in ("draw", "render", "paint", "sketch", "illustrate")):
         return "image"
     return ""
 
@@ -325,6 +336,94 @@ def _tool_result_success(result: str) -> bool:
     if isinstance(decoded, dict) and decoded.get("success") is False:
         return False
     return True
+
+
+def _extract_generated_assets(result: Any, media_type: str) -> List[Dict[str, Any]]:
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(result, dict):
+        return []
+    if result.get("success") is False:
+        return []
+    payload = result.get("result", result)
+    candidates: List[Any]
+    if isinstance(payload, list):
+        candidates = payload
+    elif isinstance(payload, dict):
+        candidates = [payload]
+        for key in ("assets", "images", "videos", "outputs"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                candidates.extend(value)
+    else:
+        candidates = []
+
+    assets: List[Dict[str, Any]] = []
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        url = _string(item.get("url") or item.get("image_url") or item.get("video_url"))
+        mime_type = _string(item.get("mime_type") or item.get("mimeType"))
+        if not url:
+            continue
+        if media_type == "image" and mime_type and not mime_type.startswith("image/"):
+            continue
+        if media_type == "video" and mime_type and not mime_type.startswith("video/"):
+            continue
+        assets.append(item)
+    return assets
+
+
+def _message_has_media_url(messages: List[Any], url: str) -> bool:
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and url in content:
+            return True
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            image_url = item.get("image_url")
+            if isinstance(image_url, dict) and image_url.get("url") == url:
+                return True
+            if _string(item.get("video_url")) == url:
+                return True
+    return False
+
+
+def _append_visible_generated_media(messages: List[Any]) -> List[Any]:
+    out = list(messages or [])
+    for msg in messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        name = _string(msg.get("name")).lower()
+        if "image" in name:
+            for asset in _extract_generated_assets(msg.get("content"), "image"):
+                url = _string(asset.get("url") or asset.get("image_url"))
+                if not url or _message_has_media_url(out, url):
+                    continue
+                out.append(
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": url}},
+                            {"type": "text", "text": "Generated image."},
+                        ],
+                    }
+                )
+        elif "video" in name:
+            for asset in _extract_generated_assets(msg.get("content"), "video"):
+                url = _string(asset.get("url") or asset.get("video_url"))
+                if not url or _message_has_media_url(out, url):
+                    continue
+                out.append({"role": "assistant", "content": f"Generated video: {url}"})
+    return out
 
 
 def _forced_media_tool_messages(user_message: str, response_messages: List[Any]) -> List[Dict[str, Any]]:
@@ -645,6 +744,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
     response_messages = _public_messages(result.get("messages") or [])
     with canvas_context(context):
         response_messages.extend(_forced_media_tool_messages(user_message, response_messages))
+    response_messages = _append_visible_generated_media(response_messages)
     events = [*_events_from_messages(response_messages), *events]
     return {
         "status": "ok",
