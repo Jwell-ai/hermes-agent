@@ -103,8 +103,6 @@ def _call_backend_tool(tool_name: str, args: Dict[str, Any], confirm: bool = Fal
         return _tool_error("CANVAS_BACKEND_URL is not configured")
     token = _auth_token()
     service_token = _service_token()
-    if not token and not service_token:
-        return _tool_error("Canvas auth token is missing")
 
     merged_args = dict(args or {})
     merged_args.setdefault("session_id", _ctx().get("session_id"))
@@ -128,8 +126,8 @@ def _call_backend_tool(tool_name: str, args: Dict[str, Any], confirm: bool = Fal
             f"{backend_url}/api/v1/tools/execute",
             json=payload,
             headers={
-                "Authorization": f"Bearer {token}" if token else "",
-                "X-Hermes-Agent-Token": service_token,
+                **({"Authorization": f"Bearer {token}"} if token else {}),
+                **({"X-Hermes-Agent-Token": service_token} if service_token else {}),
             },
             timeout=int(os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")),
         )
@@ -139,8 +137,9 @@ def _call_backend_tool(tool_name: str, args: Dict[str, Any], confirm: bool = Fal
         decoded = resp.json()
     except ValueError:
         decoded = {"raw": resp.text}
+    response_preview = (resp.text or "").replace("\n", " ")[:500]
     print(
-        f"[canvas-agent] backend tool response name={tool_name} status={resp.status_code} bytes={len(resp.text)}",
+        f"[canvas-agent] backend tool response name={tool_name} status={resp.status_code} bytes={len(resp.text)} body={response_preview}",
         flush=True,
     )
     if resp.status_code < 200 or resp.status_code >= 300:
