@@ -93,12 +93,17 @@ def _auth_token() -> str:
     return str(_ctx().get("auth_token") or os.getenv("CANVAS_AUTH_TOKEN") or "").strip()
 
 
+def _service_token() -> str:
+    return str(os.getenv("CANVAS_AGENT_TOKEN") or os.getenv("HERMES_AGENT_TOKEN") or "").strip()
+
+
 def _call_backend_tool(tool_name: str, args: Dict[str, Any], confirm: bool = False) -> str:
     backend_url = _backend_url()
     if not backend_url:
         return _tool_error("CANVAS_BACKEND_URL is not configured")
     token = _auth_token()
-    if not token:
+    service_token = _service_token()
+    if not token and not service_token:
         return _tool_error("Canvas auth token is missing")
 
     merged_args = dict(args or {})
@@ -122,7 +127,10 @@ def _call_backend_tool(tool_name: str, args: Dict[str, Any], confirm: bool = Fal
         resp = requests.post(
             f"{backend_url}/api/v1/tools/execute",
             json=payload,
-            headers={"Authorization": f"Bearer {token}"},
+            headers={
+                "Authorization": f"Bearer {token}" if token else "",
+                "X-Hermes-Agent-Token": service_token,
+            },
             timeout=int(os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")),
         )
     except requests.RequestException as exc:
