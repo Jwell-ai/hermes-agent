@@ -114,6 +114,10 @@ def _call_backend_tool(tool_name: str, args: Dict[str, Any], confirm: bool = Fal
         "arguments": merged_args,
         "confirm": bool(confirm),
     }
+    print(
+        f"[canvas-agent] calling backend tool name={tool_name} session_id={payload['session_id']} backend_url={backend_url}",
+        flush=True,
+    )
     try:
         resp = requests.post(
             f"{backend_url}/api/v1/tools/execute",
@@ -127,6 +131,10 @@ def _call_backend_tool(tool_name: str, args: Dict[str, Any], confirm: bool = Fal
         decoded = resp.json()
     except ValueError:
         decoded = {"raw": resp.text}
+    print(
+        f"[canvas-agent] backend tool response name={tool_name} status={resp.status_code} bytes={len(resp.text)}",
+        flush=True,
+    )
     if resp.status_code < 200 or resp.status_code >= 300:
         return json.dumps(
             {"success": False, "status_code": resp.status_code, "error": decoded},

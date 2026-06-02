@@ -323,6 +323,19 @@ def _generation_tool_called(messages: List[Any], media_type: str) -> bool:
     return False
 
 
+def _generation_tool_completed(messages: List[Any], media_type: str) -> bool:
+    expected = "image" if media_type == "image" else "video"
+    for msg in messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        name = _string(msg.get("name")).lower()
+        if expected not in name:
+            continue
+        if _tool_result_success(msg.get("content")):
+            return True
+    return False
+
+
 def _xml_tag_text(text: str, tag: str) -> str:
     match = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", text or "", flags=re.IGNORECASE | re.DOTALL)
     return _string(match.group(1)) if match else ""
@@ -446,9 +459,9 @@ def _append_visible_generated_media(messages: List[Any]) -> List[Any]:
 
 def _forced_media_tool_messages(user_message: str, response_messages: List[Any]) -> List[Dict[str, Any]]:
     intent = _media_intent(user_message)
-    if not intent or _generation_tool_called(response_messages, intent):
+    if not intent:
         return []
-    if not _selected_media_tools(intent):
+    if _generation_tool_completed(response_messages, intent):
         return []
 
     call_id = str(uuid.uuid4())
@@ -461,6 +474,10 @@ def _forced_media_tool_messages(user_message: str, response_messages: List[Any])
         aspect_ratio = _aspect_ratio_from_text(user_message)
         if aspect_ratio:
             args["aspect_ratio"] = aspect_ratio
+        print(
+            f"[canvas-agent] forcing image generation session_intent={intent} tool_count={len(_selected_media_tools(intent))}",
+            flush=True,
+        )
         result = _handle_canvas_generate_image(args)
         tool_name = "canvas_generate_image"
         final_text = (
@@ -476,6 +493,10 @@ def _forced_media_tool_messages(user_message: str, response_messages: List[Any])
         aspect_ratio = _aspect_ratio_from_text(user_message)
         if aspect_ratio:
             args["aspect_ratio"] = aspect_ratio
+        print(
+            f"[canvas-agent] forcing video generation session_intent={intent} tool_count={len(_selected_media_tools(intent))}",
+            flush=True,
+        )
         result = _handle_canvas_generate_video(args)
         tool_name = "canvas_generate_video"
         final_text = (
