@@ -280,6 +280,8 @@ def _public_messages(messages: List[Any]) -> List[Any]:
         if msg.get("role") == "system":
             continue
         cleaned = {k: v for k, v in msg.items() if not str(k).startswith("_")}
+        if "content" in cleaned:
+            cleaned["content"] = _message_text(cleaned)
         out.append(cleaned)
     return out
 
