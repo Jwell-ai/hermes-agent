@@ -244,6 +244,14 @@ def _media_intent(text: str) -> str:
         "turn",
         "replace",
         "inpaint",
+        "生成",
+        "创建",
+        "制作",
+        "画",
+        "绘制",
+        "设计",
+        "渲染",
+        "描述",
     )
     image_words = (
         "image",
@@ -259,6 +267,13 @@ def _media_intent(text: str) -> str:
         "thumbnail",
         "sticker",
         "icon",
+        "图片",
+        "图像",
+        "照片",
+        "海报",
+        "头像",
+        "插画",
+        "图",
     )
     video_words = (
         "video",
@@ -269,6 +284,9 @@ def _media_intent(text: str) -> str:
         "trailer",
         "seedance",
         "veo",
+        "视频",
+        "动画",
+        "短片",
     )
     has_creation = any(word in value for word in creation_words)
     if not has_creation and not re.search(r"<(?:image_quantity|aspect_ratio|input_images)\b", value):
@@ -277,7 +295,7 @@ def _media_intent(text: str) -> str:
         return "video"
     if any(word in value for word in image_words):
         return "image"
-    if any(word in value for word in ("draw", "render", "paint", "sketch", "illustrate")):
+    if any(word in value for word in ("draw", "render", "paint", "sketch", "illustrate", "画", "绘制")):
         return "image"
     return ""
 
