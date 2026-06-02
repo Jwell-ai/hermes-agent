@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Header, HTTPException
@@ -77,7 +78,7 @@ def _message_text(message: Any) -> str:
     return _string(content)
 
 
-def _provider_config(req: CanvasChatRequest) -> Dict[str, Any]:
+def _provider_config(req: Any) -> Dict[str, Any]:
     provider = _string(req.text_model.get("provider"))
     model = _string(req.text_model.get("model"))
     def with_model_config(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -131,19 +132,129 @@ def _selected_tool_lines(tools: List[Any]) -> List[str]:
     return lines
 
 
-def _system_prompt(req: CanvasChatRequest) -> str:
-    parts = [
-        req.system_prompt.strip(),
-        "You are the Alphart Canvas AI agent.",
-        "Use only Canvas tools for media operations.",
-        "Use write_plan for short execution plans.",
-        "Use canvas_generate_image for image creation and canvas_generate_video for video task submission.",
-        "Do not claim media was generated until the tool returns a backend result.",
-    ]
+def _model_supports_vision(text_model: Dict[str, Any]) -> bool:
+    provider = _string(text_model.get("provider")).lower()
+    model = _string(text_model.get("model")).lower()
+    vision_models = (
+        "gpt-4o",
+        "gpt-4.1",
+        "gpt-5",
+        "claude-3",
+        "claude-sonnet",
+        "gemini-pro-vision",
+        "gemini-2.5",
+        "gemini-3",
+        "seed-1-6",
+        "llava",
+        "bakllava",
+    )
+    if provider == "ollama":
+        return any(name in model for name in ("llava", "bakllava"))
+    if provider == "byteplus" and "deepseek" in model:
+        return False
+    return any(name in model for name in vision_models)
+
+
+def _filter_image_content(messages: List[Dict[str, Any]], text_model: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if _model_supports_vision(text_model):
+        return messages
+    filtered: List[Dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            filtered.append(msg)
+            continue
+        kept: List[Any] = []
+        for item in content:
+            if not isinstance(item, dict):
+                kept.append(item)
+                continue
+            item_type = item.get("type")
+            if item_type == "image_url":
+                continue
+            if item_type == "text":
+                kept.append(item)
+        if kept:
+            msg_copy = dict(msg)
+            if len(kept) == 1 and isinstance(kept[0], dict) and kept[0].get("type") == "text":
+                msg_copy["content"] = kept[0].get("text", "")
+            else:
+                msg_copy["content"] = kept
+            filtered.append(msg_copy)
+        elif msg.get("role") != "user":
+            filtered.append(msg)
+    return filtered
+
+
+def _fix_chat_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    tool_message_ids = {
+        _string(msg.get("tool_call_id"))
+        for msg in messages
+        if msg.get("role") == "tool" and _string(msg.get("tool_call_id"))
+    }
+    fixed: List[Dict[str, Any]] = []
+    for msg in messages:
+        if msg.get("role") != "assistant" or not isinstance(msg.get("tool_calls"), list):
+            fixed.append(msg)
+            continue
+        valid_tool_calls = []
+        for tool_call in msg.get("tool_calls") or []:
+            tool_call_id = _string(tool_call.get("id")) if isinstance(tool_call, dict) else ""
+            if tool_call_id and tool_call_id in tool_message_ids:
+                valid_tool_calls.append(tool_call)
+        if valid_tool_calls:
+            msg_copy = dict(msg)
+            msg_copy["tool_calls"] = valid_tool_calls
+            fixed.append(msg_copy)
+        elif msg.get("content"):
+            msg_copy = dict(msg)
+            msg_copy.pop("tool_calls", None)
+            fixed.append(msg_copy)
+    return fixed
+
+
+def _input_image_ids_from_text(text: str) -> List[str]:
+    return re.findall(r'<image[^>]*\bfile_id="([^"]+)"', text or "")
+
+
+def _canvas_agent_prompt(req: CanvasChatRequest) -> str:
     tool_lines = _selected_tool_lines(req.tool_list)
-    if tool_lines:
-        parts.append("Selected Canvas tools:\n" + "\n".join(tool_lines))
-    return "\n\n".join(part for part in parts if part)
+    selected_tools = "\n".join(tool_lines) if tool_lines else "- No image/video model selected. Ask the user to select a model before generation."
+    return f"""
+{req.system_prompt.strip()}
+
+CANVAS AGENT ROUTING:
+- You are replacing the old planner + image_video_creator agents.
+- Answer in the same language as the user's prompt.
+- For normal conversation, answer directly.
+- For image/video generation or editing requests, first call write_plan with a short user-facing plan, then immediately call the proper generation tool. Do not ask for approval unless the backend asks for confirmation.
+- If the legacy prompt says "generate_image", call generate_image or canvas_generate_image. If it says "generate_video", call generate_video or canvas_generate_video.
+
+SELECTED CANVAS TOOLS:
+{selected_tools}
+
+IMAGE CREATION RULES:
+- Before generating, write a concise Design Strategy Doc in the same language as the user.
+- Use a detailed professional prompt based on the strategy.
+- Respect <aspect_ratio>, <image_quantity>, and other XML tags in the user message.
+- If the user requests more than 5 images, generate in batches of at most 5 and preserve the requested total count.
+- When the user message contains <input_images> XML, extract file_id values and pass them as input_images.
+
+VIDEO CREATION RULES:
+- Use video generation tools for video tasks.
+- If input images are provided, pass file_id values as input_images when possible.
+- Respect duration, resolution, aspect ratio, camera movement, and shot references from XML tags.
+- Do not claim media was generated until the tool returns a backend result.
+
+ERROR HANDLING:
+- Read backend tool errors carefully.
+- Never retry the same failing tool call automatically.
+- Explain the specific failure and suggest a safer alternative prompt or model.
+""".strip()
+
+
+def _system_prompt(req: CanvasChatRequest) -> str:
+    return _canvas_agent_prompt(req)
 
 
 def _public_messages(messages: List[Any]) -> List[Any]:
@@ -196,6 +307,15 @@ def _generate_title_direct(endpoint: str, api_key: str, model: str, source: str,
     }
 
 
+def _agent_max_iterations(config: Dict[str, Any]) -> int:
+    raw = config.get("max_iterations") or os.getenv("HERMES_AGENT_MAX_ITERATIONS") or 12
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 12
+    return max(value, 3)
+
+
 @app.get("/health")
 @app.get("/api/v1/health")
 def health() -> Dict[str, Any]:
@@ -216,7 +336,8 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
     if not endpoint or not api_key:
         raise HTTPException(status_code=400, detail="text model endpoint/api_key is not configured")
 
-    messages = [msg for msg in req.messages if isinstance(msg, dict)]
+    raw_messages = [msg for msg in req.messages if isinstance(msg, dict)]
+    messages = _fix_chat_history(_filter_image_content(raw_messages, req.text_model))
     last_user_index = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"), -1)
     if last_user_index >= 0:
         user_message = _message_text(messages[last_user_index])
@@ -226,6 +347,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         conversation_history = messages[:-1] if messages else []
     if not user_message:
         raise HTTPException(status_code=400, detail="user message is required")
+    input_image_ids = _input_image_ids_from_text(user_message)
 
     events: List[Dict[str, Any]] = []
 
@@ -251,6 +373,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         "auth_token": req.auth_token,
         "backend_url": req.backend_url or os.getenv("CANVAS_BACKEND_URL", "http://localhost:57988"),
         "tool_list": req.tool_list,
+        "input_image_ids": input_image_ids,
     }
     agent = AIAgent(
         base_url=endpoint,
@@ -259,7 +382,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         api_mode=_string(config.get("api_mode")) or "chat_completions",
         model=model,
         enabled_toolsets=["alphart-canvas"],
-        max_iterations=int(config.get("max_iterations") or config.get("retry") or 8),
+        max_iterations=_agent_max_iterations(config),
         quiet_mode=True,
         session_id=req.session_id or None,
         stream_delta_callback=on_delta,

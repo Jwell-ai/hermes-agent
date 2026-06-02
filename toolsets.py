@@ -84,6 +84,8 @@ _HERMES_WEBHOOK_SAFE_TOOLS = [
 
 _ALPHART_CANVAS_TOOLS = [
     "write_plan",
+    "generate_image",
+    "generate_video",
     "canvas_generate_image",
     "canvas_generate_video",
 ]

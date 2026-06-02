@@ -141,6 +141,10 @@ def _handle_write_plan(args: Dict[str, Any], **_: Any) -> str:
 
 def _handle_canvas_generate_image(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
+    if args.get("image_quantity") and not args.get("quantity"):
+        args["quantity"] = args.get("image_quantity")
+    if not args.get("input_images") and _ctx().get("input_image_ids"):
+        args["input_images"] = _ctx().get("input_image_ids")
     tool = _pick_tool("image", args)
     args.setdefault("provider", tool.get("provider"))
     args.setdefault("model", tool.get("model") or tool.get("name") or tool.get("key"))
@@ -152,6 +156,12 @@ def _handle_canvas_generate_image(args: Dict[str, Any], **_: Any) -> str:
 
 def _handle_canvas_generate_video(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
+    if args.get("duration_seconds") and not args.get("duration"):
+        args["duration"] = args.get("duration_seconds")
+    if args.get("image_url") and not args.get("input_images"):
+        args["input_images"] = [args.get("image_url")]
+    if not args.get("input_images") and _ctx().get("input_image_ids"):
+        args["input_images"] = _ctx().get("input_image_ids")
     tool = _pick_tool("video", args)
     args.setdefault("provider", tool.get("provider"))
     args.setdefault("model", tool.get("model") or tool.get("name") or tool.get("key"))
@@ -186,16 +196,24 @@ WRITE_PLAN_SCHEMA = {
 
 CANVAS_GENERATE_IMAGE_SCHEMA = {
     "name": "canvas_generate_image",
-    "description": "Generate an image through the selected Canvas image model. The backend stores the result in S3.",
+    "description": (
+        "Generate or edit images through the selected Canvas image model. "
+        "Use this immediately after planning for image tasks. The backend stores results in S3 and updates Canvas."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
-            "prompt": {"type": "string"},
-            "tool_id": {"type": "string"},
-            "provider": {"type": "string"},
-            "model": {"type": "string"},
-            "aspect_ratio": {"type": "string"},
-            "input_images": {"type": "array", "items": {"type": "string"}},
+            "prompt": {"type": "string", "description": "Detailed professional image prompt."},
+            "tool_id": {"type": "string", "description": "Selected Canvas tool id, when known."},
+            "provider": {"type": "string", "description": "Selected image provider, when known."},
+            "model": {"type": "string", "description": "Selected image model, when known."},
+            "aspect_ratio": {"type": "string", "description": "1:1, 16:9, 9:16, 4:3, or 3:4."},
+            "image_quantity": {"type": "integer", "description": "Requested number of images."},
+            "input_images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Reference image file_id values extracted from <input_images> XML.",
+            },
         },
         "required": ["prompt"],
     },
@@ -203,17 +221,26 @@ CANVAS_GENERATE_IMAGE_SCHEMA = {
 
 CANVAS_GENERATE_VIDEO_SCHEMA = {
     "name": "canvas_generate_video",
-    "description": "Submit a video generation task through the selected Canvas video model. Seedance result polling stays in the Go backend.",
+    "description": (
+        "Submit a video generation task through the selected Canvas video model. "
+        "Use this for text-to-video and image-to-video tasks. Seedance result polling stays in the Go backend."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
-            "prompt": {"type": "string"},
-            "tool_id": {"type": "string"},
-            "provider": {"type": "string"},
-            "model": {"type": "string"},
-            "image_url": {"type": "string"},
-            "duration_seconds": {"type": "integer"},
-            "aspect_ratio": {"type": "string"},
+            "prompt": {"type": "string", "description": "Detailed cinematic video prompt."},
+            "tool_id": {"type": "string", "description": "Selected Canvas tool id, when known."},
+            "provider": {"type": "string", "description": "Selected video provider, when known."},
+            "model": {"type": "string", "description": "Selected video model, when known."},
+            "image_url": {"type": "string", "description": "Reference image URL or file_id."},
+            "input_images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Reference image file_id values extracted from <input_images> XML.",
+            },
+            "duration_seconds": {"type": "integer", "description": "Requested video duration in seconds."},
+            "resolution": {"type": "string", "description": "Video resolution, for example 480p, 720p, 1080p."},
+            "aspect_ratio": {"type": "string", "description": "Video aspect ratio, for example 16:9 or 9:16."},
             "wait": {"type": "boolean", "default": False},
         },
         "required": ["prompt"],
@@ -236,9 +263,23 @@ registry.register(
     is_async=False,
 )
 registry.register(
+    name="generate_image",
+    toolset="alphart-canvas",
+    schema={**CANVAS_GENERATE_IMAGE_SCHEMA, "name": "generate_image"},
+    handler=_handle_canvas_generate_image,
+    is_async=False,
+)
+registry.register(
     name="canvas_generate_video",
     toolset="alphart-canvas",
     schema=CANVAS_GENERATE_VIDEO_SCHEMA,
+    handler=_handle_canvas_generate_video,
+    is_async=False,
+)
+registry.register(
+    name="generate_video",
+    toolset="alphart-canvas",
+    schema={**CANVAS_GENERATE_VIDEO_SCHEMA, "name": "generate_video"},
     handler=_handle_canvas_generate_video,
     is_async=False,
 )
