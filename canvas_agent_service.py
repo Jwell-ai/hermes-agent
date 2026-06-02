@@ -218,6 +218,180 @@ def _input_image_ids_from_text(text: str) -> List[str]:
     return re.findall(r'<image[^>]*\bfile_id="([^"]+)"', text or "")
 
 
+def _media_intent(text: str) -> str:
+    value = (text or "").lower()
+    if not value.strip():
+        return ""
+    creation_words = (
+        "generate",
+        "create",
+        "make",
+        "draw",
+        "design",
+        "render",
+        "produce",
+        "edit",
+        "transform",
+        "turn",
+        "replace",
+        "inpaint",
+    )
+    image_words = (
+        "image",
+        "picture",
+        "photo",
+        "poster",
+        "logo",
+        "avatar",
+        "illustration",
+        "drawing",
+        "visual",
+        "cover",
+        "thumbnail",
+        "sticker",
+        "icon",
+    )
+    video_words = (
+        "video",
+        "clip",
+        "animation",
+        "animate",
+        "motion",
+        "trailer",
+        "seedance",
+        "veo",
+    )
+    has_creation = any(word in value for word in creation_words)
+    if not has_creation and not re.search(r"<(?:image_quantity|aspect_ratio|input_images)\b", value):
+        return ""
+    if any(word in value for word in video_words):
+        return "video"
+    if any(word in value for word in image_words):
+        return "image"
+    return ""
+
+
+def _selected_media_tools(media_type: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for tool in _selected_tools():
+        tool_type = _string(tool.get("type") or tool.get("model_type")).lower()
+        if tool_type == media_type:
+            out.append(tool)
+    return out
+
+
+def _generation_tool_called(messages: List[Any], media_type: str) -> bool:
+    expected = "image" if media_type == "image" else "video"
+    for msg in messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tool_call in msg.get("tool_calls") or []:
+            name = _tool_call_name(tool_call)
+            if name in {f"generate_{expected}", f"canvas_generate_{expected}"}:
+                return True
+            if name.startswith(f"generate_{expected}_by_"):
+                return True
+    return False
+
+
+def _xml_tag_text(text: str, tag: str) -> str:
+    match = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", text or "", flags=re.IGNORECASE | re.DOTALL)
+    return _string(match.group(1)) if match else ""
+
+
+def _quantity_from_text(text: str) -> int:
+    explicit = _xml_tag_text(text, "image_quantity")
+    if explicit.isdigit():
+        return max(1, int(explicit))
+    match = re.search(r"\b(\d{1,2})\s*(?:images?|pictures?|photos?)\b", text or "", flags=re.IGNORECASE)
+    if match:
+        return max(1, int(match.group(1)))
+    return 1
+
+
+def _aspect_ratio_from_text(text: str) -> str:
+    explicit = _xml_tag_text(text, "aspect_ratio")
+    if explicit:
+        return explicit
+    match = re.search(r"\b(1:1|16:9|9:16|4:3|3:4|2:3|3:2)\b", text or "")
+    return match.group(1) if match else ""
+
+
+def _tool_result_success(result: str) -> bool:
+    try:
+        decoded = json.loads(result)
+    except (TypeError, ValueError):
+        return False
+    if isinstance(decoded, dict) and decoded.get("success") is False:
+        return False
+    return True
+
+
+def _forced_media_tool_messages(user_message: str, response_messages: List[Any]) -> List[Dict[str, Any]]:
+    intent = _media_intent(user_message)
+    if not intent or _generation_tool_called(response_messages, intent):
+        return []
+    if not _selected_media_tools(intent):
+        return []
+
+    call_id = str(uuid.uuid4())
+    if intent == "image":
+        args: Dict[str, Any] = {
+            "prompt": user_message,
+            "tool_call_id": call_id,
+            "image_quantity": _quantity_from_text(user_message),
+        }
+        aspect_ratio = _aspect_ratio_from_text(user_message)
+        if aspect_ratio:
+            args["aspect_ratio"] = aspect_ratio
+        result = _handle_canvas_generate_image(args)
+        tool_name = "canvas_generate_image"
+        final_text = (
+            "Image generation has been submitted."
+            if _tool_result_success(result)
+            else "Image generation failed. Please check the tool result."
+        )
+    else:
+        args = {
+            "prompt": user_message,
+            "tool_call_id": call_id,
+        }
+        aspect_ratio = _aspect_ratio_from_text(user_message)
+        if aspect_ratio:
+            args["aspect_ratio"] = aspect_ratio
+        result = _handle_canvas_generate_video(args)
+        tool_name = "canvas_generate_video"
+        final_text = (
+            "Video generation has been submitted."
+            if _tool_result_success(result)
+            else "Video generation failed. Please check the tool result."
+        )
+
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(args, ensure_ascii=False),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "name": tool_name,
+            "content": result,
+        },
+        {"role": "assistant", "content": final_text},
+    ]
+
+
 def _canvas_agent_prompt(req: CanvasChatRequest) -> str:
     tool_lines = _selected_tool_lines(req.tool_list)
     selected_tools = "\n".join(tool_lines) if tool_lines else "- No image/video model selected. Ask the user to select a model before generation."
@@ -233,7 +407,9 @@ You must preserve both behaviors:
 PLANNER RULES:
 - Answer and write plans in the same language as the user's prompt.
 - For normal conversation, answer directly without calling tools.
-- For image/video generation or editing tasks, call write_plan first and wait for its result, then call exactly one generation tool next.
+- For obvious image/video generation or editing tasks, a generation tool call is mandatory.
+- For simple media requests, call canvas_generate_image/canvas_generate_video directly. Do not stop after a plan.
+- For complex media requests, you may call write_plan first, but you must continue to the generation tool after the plan result.
 - Do not ask for approval before media generation unless the backend returns a confirmation request.
 - Do not call multiple tools in the same assistant turn. Always wait for one tool result before making another tool call.
 - If a tool call fails, explain the error to the user and do not retry automatically.
@@ -243,8 +419,8 @@ SELECTED CANVAS TOOLS:
 {selected_tools}
 
 IMAGE CREATION RULES:
-- For image generation, write a concise Design Strategy Doc first in the same language as the user's prompt. Include resolution/aspect ratio, style and mood, key visual elements, composition/layout, color palette, typography if relevant, and expression/emotion details when people or characters are involved.
-- Then call generate_image or canvas_generate_image immediately. Do not wait for approval.
+- For image generation, call generate_image or canvas_generate_image. Do not wait for approval.
+- If you write a Design Strategy Doc, keep it concise and then call the image tool in the same task flow.
 - Use a detailed, professional prompt based on the strategy.
 - Respect <aspect_ratio>, <image_quantity>, and other XML tags in the user message.
 - If the user requests more than 5 images, generate in batches of at most 5. Complete each batch before starting the next batch.
@@ -440,26 +616,25 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         "tool_list": req.tool_list,
         "input_image_ids": input_image_ids,
     }
-    agent = AIAgent(
-        base_url=endpoint,
-        api_key=api_key,
-        provider=provider,
-        api_mode=_string(config.get("api_mode")) or "chat_completions",
-        model=model,
-        enabled_toolsets=["alphart-canvas"],
-        max_iterations=_agent_max_iterations(config),
-        quiet_mode=True,
-        session_id=req.session_id or None,
-        stream_delta_callback=on_delta,
-        status_callback=on_status,
-        platform="alphart-canvas",
-        user_id=req.user_id or req.user_uuid or None,
-        chat_id=req.session_id or None,
-        skip_memory=True,
-        skip_context_files=True,
-    )
-
     with canvas_context(context):
+        agent = AIAgent(
+            base_url=endpoint,
+            api_key=api_key,
+            provider=provider,
+            api_mode=_string(config.get("api_mode")) or "chat_completions",
+            model=model,
+            enabled_toolsets=["alphart-canvas"],
+            max_iterations=_agent_max_iterations(config),
+            quiet_mode=True,
+            session_id=req.session_id or None,
+            stream_delta_callback=on_delta,
+            status_callback=on_status,
+            platform="alphart-canvas",
+            user_id=req.user_id or req.user_uuid or None,
+            chat_id=req.session_id or None,
+            skip_memory=True,
+            skip_context_files=True,
+        )
         result = agent.run_conversation(
             user_message,
             system_message=_system_prompt(req),
@@ -468,6 +643,8 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         )
 
     response_messages = _public_messages(result.get("messages") or [])
+    with canvas_context(context):
+        response_messages.extend(_forced_media_tool_messages(user_message, response_messages))
     events = [*_events_from_messages(response_messages), *events]
     return {
         "status": "ok",
