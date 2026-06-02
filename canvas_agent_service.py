@@ -600,6 +600,30 @@ def _public_messages(messages: List[Any]) -> List[Any]:
     return out
 
 
+def _last_assistant_text(messages: List[Any]) -> str:
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        text = _message_text(msg)
+        if text:
+            return text
+    return ""
+
+
+def _has_visible_agent_output(messages: List[Any], final_response: str) -> bool:
+    if _string(final_response):
+        return True
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "assistant" and _message_text(msg):
+            return True
+        if role == "tool" and _tool_result_success(msg.get("content")):
+            return True
+    return False
+
+
 def _usage_value(usage: Any, name: str) -> int:
     if usage is None:
         return 0
@@ -780,14 +804,32 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
             task_id=req.session_id or None,
         )
 
-    response_messages = _public_messages(result.get("messages") or [])
+    raw_result_messages = result.get("messages") or []
+    response_messages = _public_messages(raw_result_messages)
+    final_response = _string(result.get("final_response"))
+    if not final_response:
+        final_response = _last_assistant_text(response_messages) or _last_assistant_text(raw_result_messages)
     with canvas_context(context):
         response_messages.extend(_forced_media_tool_messages(user_message, response_messages))
     response_messages = _append_visible_generated_media(response_messages)
+    empty_result_error = ""
+    if not _has_visible_agent_output(response_messages, final_response):
+        empty_result_error = "Hermes agent completed without returning a response."
+        response_messages.append({"role": "assistant", "content": empty_result_error})
+        final_response = empty_result_error
     events = [*_events_from_messages(response_messages), *events]
+    raw_count = len(raw_result_messages) if isinstance(raw_result_messages, list) else 0
+    print(
+        "[canvas-agent] chat result "
+        f"session_id={req.session_id} raw_messages={raw_count} "
+        f"public_messages={len(response_messages)} final_response_len={len(final_response)} "
+        f"failed={bool(result.get('failed') or empty_result_error)} "
+        f"error={empty_result_error}",
+        flush=True,
+    )
     return {
         "status": "ok",
-        "final_response": result.get("final_response") or "",
+        "final_response": final_response,
         "messages": response_messages,
         "events": events,
         "model": result.get("model") or model,
@@ -798,7 +840,8 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         "input_tokens": result.get("input_tokens") or 0,
         "output_tokens": result.get("output_tokens") or 0,
         "interrupted": bool(result.get("interrupted")),
-        "failed": bool(result.get("failed")),
+        "failed": bool(result.get("failed") or empty_result_error),
+        "error": empty_result_error or _string(result.get("error")),
     }
 
 
