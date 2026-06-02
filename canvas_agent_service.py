@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import Any, Dict, List, Optional
@@ -223,32 +224,46 @@ def _canvas_agent_prompt(req: CanvasChatRequest) -> str:
     return f"""
 {req.system_prompt.strip()}
 
-CANVAS AGENT ROUTING:
-- You are replacing the old planner + image_video_creator agents.
-- Answer in the same language as the user's prompt.
-- For normal conversation, answer directly.
-- For image/video generation or editing requests, first call write_plan with a short user-facing plan, then immediately call the proper generation tool. Do not ask for approval unless the backend asks for confirmation.
-- If the legacy prompt says "generate_image", call generate_image or canvas_generate_image. If it says "generate_video", call generate_video or canvas_generate_video.
+CANVAS AGENT ROLE:
+You are replacing the old planner + image_video_creator LangGraph swarm.
+You must preserve both behaviors:
+1. Planner behavior: understand the user request, write an execution plan when the task is complex, and route media tasks to generation immediately.
+2. Image/video creator behavior: write professional image/video prompts, call the selected generation tools, and explain tool results.
+
+PLANNER RULES:
+- Answer and write plans in the same language as the user's prompt.
+- For normal conversation, answer directly without calling tools.
+- For image/video generation or editing tasks, call write_plan first and wait for its result, then call exactly one generation tool next.
+- Do not ask for approval before media generation unless the backend returns a confirmation request.
+- Do not call multiple tools in the same assistant turn. Always wait for one tool result before making another tool call.
+- If a tool call fails, explain the error to the user and do not retry automatically.
+- Pay attention to requested quantity. If the user asks for 20 images, keep exactly 20 in the plan and generation batches. If no quantity is specified, assume 1.
 
 SELECTED CANVAS TOOLS:
 {selected_tools}
 
 IMAGE CREATION RULES:
-- Before generating, write a concise Design Strategy Doc in the same language as the user.
-- Use a detailed professional prompt based on the strategy.
+- For image generation, write a concise Design Strategy Doc first in the same language as the user's prompt. Include resolution/aspect ratio, style and mood, key visual elements, composition/layout, color palette, typography if relevant, and expression/emotion details when people or characters are involved.
+- Then call generate_image or canvas_generate_image immediately. Do not wait for approval.
+- Use a detailed, professional prompt based on the strategy.
 - Respect <aspect_ratio>, <image_quantity>, and other XML tags in the user message.
-- If the user requests more than 5 images, generate in batches of at most 5 and preserve the requested total count.
+- If the user requests more than 5 images, generate in batches of at most 5. Complete each batch before starting the next batch.
 - When the user message contains <input_images> XML, extract file_id values and pass them as input_images.
+- If more than one input image is present, prefer a selected image tool that supports multiple input_images.
+- If the request includes facial expression, mood, emotion, age, gender, region, or cultural constraints, add precise expression-control keywords to the prompt and avoid unsafe or culturally forbidden expression details.
 
 VIDEO CREATION RULES:
 - Use video generation tools for video tasks.
-- If input images are provided, pass file_id values as input_images when possible.
+- You may generate needed storyboard/keyframe images first, then call video generation using those images, or directly generate video from text if that better fits the request.
+- If input images are provided, pass file_id values as input_images.
 - Respect duration, resolution, aspect ratio, camera movement, and shot references from XML tags.
 - Do not claim media was generated until the tool returns a backend result.
+- If the legacy prompt mentions generate_image, call generate_image or canvas_generate_image. If it mentions generate_video, call generate_video or canvas_generate_video.
 
 ERROR HANDLING:
 - Read backend tool errors carefully.
 - Never retry the same failing tool call automatically.
+- Never call the same tool with the same parameters again without user confirmation.
 - Explain the specific failure and suggest a safer alternative prompt or model.
 """.strip()
 
@@ -308,12 +323,60 @@ def _generate_title_direct(endpoint: str, api_key: str, model: str, source: str,
 
 
 def _agent_max_iterations(config: Dict[str, Any]) -> int:
-    raw = config.get("max_iterations") or os.getenv("HERMES_AGENT_MAX_ITERATIONS") or 12
+    raw = config.get("max_iterations") or os.getenv("HERMES_AGENT_MAX_ITERATIONS") or 30
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        value = 12
+        value = 30
     return max(value, 3)
+
+
+def _tool_call_name(tool_call: Any) -> str:
+    if not isinstance(tool_call, dict):
+        return ""
+    function = tool_call.get("function")
+    if isinstance(function, dict):
+        return _string(function.get("name"))
+    return _string(tool_call.get("name"))
+
+
+def _tool_call_arguments(tool_call: Any) -> str:
+    if not isinstance(tool_call, dict):
+        return "{}"
+    function = tool_call.get("function")
+    if isinstance(function, dict):
+        raw = function.get("arguments")
+    else:
+        raw = tool_call.get("arguments")
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, dict):
+        return json.dumps(raw, ensure_ascii=False)
+    return "{}"
+
+
+def _events_from_messages(messages: List[Any]) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant" and isinstance(msg.get("tool_calls"), list):
+            for tool_call in msg.get("tool_calls") or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                tool_call_id = _string(tool_call.get("id"))
+                tool_name = _tool_call_name(tool_call)
+                if not tool_call_id or not tool_name:
+                    continue
+                events.append({"type": "tool_call", "id": tool_call_id, "name": tool_name})
+                args = _tool_call_arguments(tool_call)
+                if args and args != "{}":
+                    events.append({"type": "tool_call_arguments", "id": tool_call_id, "text": args})
+        elif msg.get("role") == "tool":
+            tool_call_id = _string(msg.get("tool_call_id"))
+            if tool_call_id:
+                events.append({"type": "tool_call_result", "id": tool_call_id, "message": msg})
+    return events
 
 
 @app.get("/health")
@@ -361,7 +424,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
             events.append({"type": "delta", "text": text})
 
     def on_status(*args: Any, **kwargs: Any) -> None:
-        message = _string(args[0] if args else kwargs.get("message"))
+        message = _string(args[1] if len(args) > 1 else (args[0] if args else kwargs.get("message")))
         if message:
             events.append({"type": "status", "message": message})
 
@@ -403,6 +466,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         )
 
     response_messages = _public_messages(result.get("messages") or [])
+    events = [*_events_from_messages(response_messages), *events]
     return {
         "status": "ok",
         "final_response": result.get("final_response") or "",
