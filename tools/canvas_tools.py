@@ -158,8 +158,8 @@ def _handle_canvas_generate_image(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
     if args.get("image_quantity") and not args.get("quantity"):
         args["quantity"] = args.get("image_quantity")
-    if not args.get("input_images") and _ctx().get("input_image_ids"):
-        args["input_images"] = _ctx().get("input_image_ids")
+    if not args.get("input_images") and _ctx().get("input_images"):
+        args["input_images"] = _ctx().get("input_images")
     tool = _pick_tool("image", args)
     args.setdefault("provider", tool.get("provider"))
     args.setdefault("model", tool.get("model") or tool.get("name") or tool.get("key"))
@@ -175,8 +175,8 @@ def _handle_canvas_generate_video(args: Dict[str, Any], **_: Any) -> str:
         args["duration"] = args.get("duration_seconds")
     if args.get("image_url") and not args.get("input_images"):
         args["input_images"] = [args.get("image_url")]
-    if not args.get("input_images") and _ctx().get("input_image_ids"):
-        args["input_images"] = _ctx().get("input_image_ids")
+    if not args.get("input_images") and _ctx().get("input_images"):
+        args["input_images"] = _ctx().get("input_images")
     tool = _pick_tool("video", args)
     args.setdefault("provider", tool.get("provider"))
     args.setdefault("model", tool.get("model") or tool.get("name") or tool.get("key"))
@@ -226,8 +226,14 @@ CANVAS_GENERATE_IMAGE_SCHEMA = {
             "image_quantity": {"type": "integer", "description": "Requested number of images."},
             "input_images": {
                 "type": "array",
-                "items": {"type": "string"},
-                "description": "Reference image file_id values extracted from <input_images> XML.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "s3_object_name": {"type": "string"},
+                        "file_id": {"type": "string"},
+                    },
+                },
+                "description": "Reference images extracted from <input_images> XML. Prefer s3_object_name objects; file_id strings are fallback only.",
             },
         },
         "required": ["prompt"],
@@ -250,8 +256,14 @@ CANVAS_GENERATE_VIDEO_SCHEMA = {
             "image_url": {"type": "string", "description": "Reference image URL or file_id."},
             "input_images": {
                 "type": "array",
-                "items": {"type": "string"},
-                "description": "Reference image file_id values extracted from <input_images> XML.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "s3_object_name": {"type": "string"},
+                        "file_id": {"type": "string"},
+                    },
+                },
+                "description": "Reference images extracted from <input_images> XML. Prefer s3_object_name objects; file_id strings are fallback only.",
             },
             "duration_seconds": {"type": "integer", "description": "Requested video duration in seconds."},
             "resolution": {"type": "string", "description": "Video resolution, for example 480p, 720p, 1080p."},

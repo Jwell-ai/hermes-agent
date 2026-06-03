@@ -221,8 +221,36 @@ def _fix_chat_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return fixed
 
 
-def _input_image_ids_from_text(text: str) -> List[str]:
-    return re.findall(r'<image[^>]*\bfile_id="([^"]+)"', text or "")
+def _input_image_refs_from_text(text: str) -> List[Dict[str, str]]:
+    refs: List[Dict[str, str]] = []
+    for tag in re.findall(r"<image\b[^>]*>", text or "", flags=re.IGNORECASE):
+        ref: Dict[str, str] = {}
+        for key, value in re.findall(r'\b([a-zA-Z0-9_:-]+)="([^"]*)"', tag):
+            if value:
+                ref[key] = value
+        if ref:
+            refs.append(ref)
+    return refs
+
+
+def _input_images_from_text(text: str) -> List[Any]:
+    images: List[Any] = []
+    for ref in _input_image_refs_from_text(text):
+        object_name = _string(ref.get("s3_object_name") or ref.get("object_name"))
+        if object_name:
+            images.append(
+                {
+                    "s3_object_name": object_name,
+                    "file_id": _string(ref.get("file_id")),
+                    "width": _string(ref.get("width")),
+                    "height": _string(ref.get("height")),
+                }
+            )
+            continue
+        file_id = _string(ref.get("file_id"))
+        if file_id:
+            images.append(file_id)
+    return images
 
 
 def _media_intent(text: str) -> str:
@@ -563,14 +591,14 @@ IMAGE CREATION RULES:
 - Use a detailed, professional prompt based on the strategy.
 - Respect <aspect_ratio>, <image_quantity>, and other XML tags in the user message.
 - If the user requests more than 5 images, generate in batches of at most 5. Complete each batch before starting the next batch.
-- When the user message contains <input_images> XML, extract file_id values and pass them as input_images.
+- When the user message contains <input_images> XML, extract s3_object_name values and pass them as input_images. Use file_id only as a fallback.
 - If more than one input image is present, prefer a selected image tool that supports multiple input_images.
 - If the request includes facial expression, mood, emotion, age, gender, region, or cultural constraints, add precise expression-control keywords to the prompt and avoid unsafe or culturally forbidden expression details.
 
 VIDEO CREATION RULES:
 - Use video generation tools for video tasks.
 - You may generate needed storyboard/keyframe images first, then call video generation using those images, or directly generate video from text if that better fits the request.
-- If input images are provided, pass file_id values as input_images.
+- If input images are provided, pass s3_object_name values as input_images. Use file_id only as a fallback.
 - Respect duration, resolution, aspect ratio, camera movement, and shot references from XML tags.
 - Do not claim media was generated until the tool returns a backend result.
 - If the legacy prompt mentions generate_image, call generate_image or canvas_generate_image. If it mentions generate_video, call generate_video or canvas_generate_video.
@@ -800,7 +828,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         conversation_history = messages[:-1] if messages else []
     if not user_message:
         raise HTTPException(status_code=400, detail="user message is required")
-    input_image_ids = _input_image_ids_from_text(user_message)
+    input_images = _input_images_from_text(user_message)
 
     events: List[Dict[str, Any]] = []
 
@@ -826,7 +854,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         "auth_token": req.auth_token,
         "backend_url": req.backend_url or os.getenv("CANVAS_BACKEND_URL", "http://localhost:57988"),
         "tool_list": req.tool_list,
-        "input_image_ids": input_image_ids,
+        "input_images": input_images,
     }
     with canvas_context(context):
         agent = AIAgent(
