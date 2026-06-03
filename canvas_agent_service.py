@@ -406,7 +406,7 @@ def _media_intent(text: str) -> str:
         "短片",
     )
     has_creation = any(word in value for word in creation_words)
-    if not has_creation and not re.search(r"<(?:image_quantity|aspect_ratio|input_images)\b", value):
+    if not has_creation:
         return ""
     if any(word in value for word in video_words):
         return "video"
@@ -444,13 +444,22 @@ def _media_analysis_intent(value: str) -> bool:
         "what is",
         "what's",
         "tell me about",
+        "tell me",
         "look at",
+        "what does this show",
+        "what is shown",
         "解释",
         "说明",
+        "说明一下",
         "分析",
         "描述",
         "总结",
         "识别",
+        "介绍",
+        "讲解",
+        "说说",
+        "看看",
+        "解读",
         "看一下",
         "这是什么",
         "是什么",
@@ -617,6 +626,8 @@ def _append_visible_generated_media(messages: List[Any]) -> List[Any]:
 
 
 def _forced_media_tool_messages(user_message: str, response_messages: List[Any]) -> List[Dict[str, Any]]:
+    if _media_analysis_intent(user_message.lower()):
+        return []
     intent = _media_intent(user_message)
     if not intent:
         return []
