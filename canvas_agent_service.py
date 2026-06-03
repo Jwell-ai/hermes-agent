@@ -46,6 +46,7 @@ class CanvasTitleRequest(BaseModel):
 
 
 app = FastAPI(title="Alphart Canvas Hermes Agent", version="1.0.0")
+SYSTEM_BUSY_MESSAGE = "System busy, please try again later."
 
 
 def _service_token() -> str:
@@ -1026,13 +1027,27 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
             skip_memory=True,
             skip_context_files=True,
         )
-        result = agent.run_conversation(
-            model_user_message,
-            system_message=_system_prompt(req),
-            conversation_history=conversation_history,
-            task_id=req.session_id or None,
-            persist_user_message=user_message,
-        )
+        try:
+            result = agent.run_conversation(
+                model_user_message,
+                system_message=_system_prompt(req),
+                conversation_history=conversation_history,
+                task_id=req.session_id or None,
+                persist_user_message=user_message,
+            )
+        except Exception as exc:
+            print(
+                f"[canvas-agent] chat model failed session_id={req.session_id} provider={provider} model={model} error={exc}",
+                flush=True,
+            )
+            result = {
+                "messages": [{"role": "assistant", "content": SYSTEM_BUSY_MESSAGE}],
+                "final_response": SYSTEM_BUSY_MESSAGE,
+                "model": model,
+                "provider": provider,
+                "failed": True,
+                "error": SYSTEM_BUSY_MESSAGE,
+            }
 
     raw_result_messages = result.get("messages") or []
     response_messages = _public_messages(raw_result_messages)
