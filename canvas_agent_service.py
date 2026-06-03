@@ -7,6 +7,8 @@ import json
 import os
 import re
 import uuid
+import base64
+from urllib.parse import quote
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Header, HTTPException
@@ -84,6 +86,91 @@ def _message_text(message: Any) -> str:
                     parts.append(f"[image: {raw}]")
         return "\n".join(part for part in parts if part)
     return _string(content)
+
+
+def _message_content(message: Any) -> Any:
+    if isinstance(message, dict):
+        return message.get("content")
+    return message
+
+
+def _has_media_content(content: Any) -> bool:
+    if not isinstance(content, list):
+        return False
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") in {"image_url", "input_image", "video_url", "input_video", "video"}:
+            return True
+    return False
+
+
+def _backend_media_url(req: CanvasChatRequest, ref: Dict[str, Any]) -> str:
+    raw_url = _string(ref.get("url") or ref.get("uri"))
+    if raw_url:
+        return raw_url
+    object_name = _string(ref.get("s3_object_name") or ref.get("object_name") or ref.get("key"))
+    if not object_name:
+        return ""
+    backend_url = (req.backend_url or os.getenv("CANVAS_BACKEND_URL", "http://localhost:57988")).rstrip("/")
+    file_id = _string(ref.get("file_id")) or "media"
+    return f"{backend_url}/api/v1/files/{file_id}?s3_object_name={quote(object_name, safe='')}"
+
+
+def _download_image_as_data_url(req: CanvasChatRequest, ref: Dict[str, Any]) -> str:
+    url = _backend_media_url(req, ref)
+    if not url:
+        return ""
+    if url.startswith("data:image/"):
+        return url
+    if not url.startswith(("http://", "https://")):
+        return ""
+    headers: Dict[str, str] = {}
+    if req.auth_token:
+        headers["Authorization"] = f"Bearer {req.auth_token}"
+    service_token = _service_token()
+    if service_token:
+        headers["X-Hermes-Agent-Token"] = service_token
+    try:
+        resp = requests.get(url, headers=headers, timeout=60, allow_redirects=True)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        print(f"[canvas-agent] image content hydrate failed url={url} error={exc}", flush=True)
+        return ""
+    mime_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip()
+    if not mime_type.startswith("image/"):
+        mime_type = _string(ref.get("mime_type") or ref.get("mimeType")) or "image/png"
+    if not mime_type.startswith("image/"):
+        return ""
+    return f"data:{mime_type};base64,{base64.b64encode(resp.content).decode('ascii')}"
+
+
+def _prepare_chat_content_for_model(req: CanvasChatRequest, content: Any) -> Any:
+    if not isinstance(content, list):
+        return content
+    prepared: List[Any] = []
+    for item in content:
+        if not isinstance(item, dict):
+            prepared.append(item)
+            continue
+        part_type = item.get("type")
+        if part_type in {"image_url", "input_image"}:
+            image_ref = item.get("image_url")
+            if not isinstance(image_ref, dict):
+                image_ref = {"url": _string(image_ref)}
+            data_url = _download_image_as_data_url(req, image_ref)
+            if data_url:
+                prepared.append({"type": "image_url", "image_url": {"url": data_url}})
+            continue
+        if part_type in {"video_url", "input_video", "video"}:
+            raw_ref = item.get("video_url") or item.get("video") or item
+            ref = raw_ref if isinstance(raw_ref, dict) else {"url": _string(raw_ref)}
+            video_url = _backend_media_url(req, ref)
+            if video_url:
+                prepared.append({"type": "text", "text": f"Video reference URL: {video_url}"})
+            continue
+        prepared.append(item)
+    return prepared
 
 
 def _provider_config(req: Any) -> Dict[str, Any]:
@@ -257,6 +344,8 @@ def _media_intent(text: str) -> str:
     value = (text or "").lower()
     if not value.strip():
         return ""
+    if _media_analysis_intent(value):
+        return ""
     creation_words = (
         "generate",
         "create",
@@ -280,7 +369,6 @@ def _media_intent(text: str) -> str:
         "绘制",
         "设计",
         "渲染",
-        "描述",
     )
     image_words = (
         "image",
@@ -327,6 +415,48 @@ def _media_intent(text: str) -> str:
     if any(word in value for word in ("draw", "render", "paint", "sketch", "illustrate", "画", "绘制")):
         return "image"
     return ""
+
+
+def _media_analysis_intent(value: str) -> bool:
+    if not re.search(r"<input_(?:images|videos)\b", value) and not any(
+        word in value
+        for word in (
+            "image",
+            "picture",
+            "photo",
+            "video",
+            "图片",
+            "图像",
+            "照片",
+            "视频",
+        )
+    ):
+        return False
+    analysis_words = (
+        "explain",
+        "describe",
+        "analyze",
+        "analyse",
+        "summarize",
+        "caption",
+        "identify",
+        "recognize",
+        "what is",
+        "what's",
+        "tell me about",
+        "look at",
+        "解释",
+        "说明",
+        "分析",
+        "描述",
+        "总结",
+        "识别",
+        "看一下",
+        "这是什么",
+        "是什么",
+        "讲讲",
+    )
+    return any(word in value for word in analysis_words)
 
 
 def _selected_media_tools(media_type: str) -> List[Dict[str, Any]]:
@@ -574,6 +704,7 @@ You must preserve both behaviors:
 PLANNER RULES:
 - Answer and write plans in the same language as the user's prompt.
 - For normal conversation, answer directly without calling tools.
+- If the user asks to explain, describe, analyze, summarize, caption, identify, or understand an attached image/video, answer with the text/chat model. Do not call image/video generation tools.
 - For obvious image/video generation or editing tasks, a generation tool call is mandatory.
 - For simple media requests, call canvas_generate_image/canvas_generate_video directly. Do not stop after a plan.
 - For complex media requests, you may call write_plan first, but you must continue to the generation tool after the plan result.
@@ -821,14 +952,23 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
     messages = _fix_chat_history(_filter_image_content(raw_messages, req.text_model))
     last_user_index = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"), -1)
     if last_user_index >= 0:
-        user_message = _message_text(messages[last_user_index])
+        latest_user = messages[last_user_index]
+        user_message = _message_text(latest_user)
+        user_content = _message_content(latest_user)
         conversation_history = messages[:last_user_index]
     else:
-        user_message = _message_text(messages[-1]) if messages else ""
+        latest_user = messages[-1] if messages else {}
+        user_message = _message_text(latest_user) if messages else ""
+        user_content = _message_content(latest_user) if messages else user_message
         conversation_history = messages[:-1] if messages else []
     if not user_message:
         raise HTTPException(status_code=400, detail="user message is required")
     input_images = _input_images_from_text(user_message)
+    model_user_message: Any = user_message
+    if _model_supports_vision(req.text_model) and _has_media_content(user_content):
+        prepared_content = _prepare_chat_content_for_model(req, user_content)
+        if isinstance(prepared_content, list) and prepared_content:
+            model_user_message = prepared_content
 
     events: List[Dict[str, Any]] = []
 
@@ -876,10 +1016,11 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
             skip_context_files=True,
         )
         result = agent.run_conversation(
-            user_message,
+            model_user_message,
             system_message=_system_prompt(req),
             conversation_history=conversation_history,
             task_id=req.session_id or None,
+            persist_user_message=user_message,
         )
 
     raw_result_messages = result.get("messages") or []
