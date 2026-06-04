@@ -760,6 +760,7 @@ def _forced_media_tool_messages(
     scan_messages: Optional[List[Any]] = None,
     has_image_context: bool = False,
     has_video_context: bool = False,
+    input_images: Optional[List[Any]] = None,
 ) -> List[Dict[str, Any]]:
     if _media_analysis_intent(user_message.lower()):
         return []
@@ -777,8 +778,8 @@ def _forced_media_tool_messages(
             "tool_call_id": call_id,
             "image_quantity": _quantity_from_text(user_message),
         }
-        if has_image_context and _ctx().get("input_images"):
-            args["input_images"] = _ctx().get("input_images")
+        if has_image_context and input_images:
+            args["input_images"] = input_images
         aspect_ratio = _aspect_ratio_from_text(user_message)
         if aspect_ratio:
             args["aspect_ratio"] = aspect_ratio
@@ -1270,6 +1271,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
             response_messages,
             current_turn_messages,
             has_image_context=bool(input_images),
+            input_images=input_images,
         )
         response_messages.extend(forced_messages)
     current_turn_messages = _messages_after_latest_user(response_messages)
