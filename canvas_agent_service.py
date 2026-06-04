@@ -832,6 +832,51 @@ def _append_visible_generated_media(messages: List[Any], scan_messages: Optional
     return out
 
 
+_MEDIA_URL_RE = re.compile(
+    r"https?://[^\s)'\"<>]+(?:\.(?:png|jpe?g|webp|gif|mp4|m4v|mov|f4v|flv|webm|ogg))(?:\?[^\s)'\"<>]*)?",
+    re.IGNORECASE,
+)
+
+
+def _strip_media_urls_from_text(text: str) -> str:
+    if not isinstance(text, str) or not text:
+        return text
+    cleaned = re.sub(
+        r"!\[[^\]]*\]\(" + _MEDIA_URL_RE.pattern + r"\)",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    cleaned = _MEDIA_URL_RE.sub("", cleaned)
+    cleaned = re.sub(r"^\s*(Generated image|Generated video|Image|Video|图片|图像|视频|影片|生成图片|生成视频)\s*[:：]?\s*$", "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _sanitize_assistant_media_url_text(messages: List[Any]) -> List[Any]:
+    out: List[Any] = []
+    for msg in messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            out.append(msg)
+            continue
+        msg_copy = dict(msg)
+        content = msg_copy.get("content")
+        if isinstance(content, str):
+            msg_copy["content"] = _strip_media_urls_from_text(content)
+        elif isinstance(content, list):
+            next_content = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    part = dict(part)
+                    part["text"] = _strip_media_urls_from_text(_string(part.get("text")))
+                    if not part["text"]:
+                        continue
+                next_content.append(part)
+            msg_copy["content"] = next_content
+        out.append(msg_copy)
+    return out
+
+
 def _forced_media_tool_messages(
     user_message: str,
     response_messages: List[Any],
@@ -1364,6 +1409,8 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         response_messages.extend(forced_messages)
     current_turn_messages = _messages_after_latest_user(response_messages)
     response_messages = _append_visible_generated_media(response_messages, current_turn_messages)
+    response_messages = _sanitize_assistant_media_url_text(response_messages)
+    final_response = _strip_media_urls_from_text(final_response)
     if reference_image_generation:
         final_response = _last_assistant_text(response_messages)
     empty_result_error = ""
