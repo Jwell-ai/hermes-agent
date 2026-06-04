@@ -1243,9 +1243,26 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
     raw_result_messages = result.get("messages") or []
     response_messages = _public_messages(raw_result_messages)
     response_messages = _current_turn_response_messages(response_messages, conversation_history)
+    reference_image_generation = bool(input_images) and _media_intent(user_message, has_image_context=True) == "image"
+    if reference_image_generation:
+        current_generated_messages = _messages_after_latest_user(response_messages)
+        if _generation_tool_completed(current_generated_messages, "image"):
+            response_messages = current_generated_messages
+        else:
+            if response_messages:
+                print(
+                    f"[canvas-agent] discarding non-tool reference image response session_id={req.session_id} message_count={len(response_messages)}",
+                    flush=True,
+                )
+            response_messages = []
     final_response = _string(result.get("final_response"))
+    if reference_image_generation and not _generation_tool_completed(response_messages, "image"):
+        final_response = ""
     if not final_response:
-        final_response = _last_assistant_text(response_messages) or _last_assistant_text(raw_result_messages)
+        if reference_image_generation:
+            final_response = _last_assistant_text(response_messages)
+        else:
+            final_response = _last_assistant_text(response_messages) or _last_assistant_text(raw_result_messages)
     with canvas_context(context):
         current_turn_messages = _messages_after_latest_user(response_messages)
         forced_messages = _forced_media_tool_messages(
@@ -1257,6 +1274,8 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         response_messages.extend(forced_messages)
     current_turn_messages = _messages_after_latest_user(response_messages)
     response_messages = _append_visible_generated_media(response_messages, current_turn_messages)
+    if reference_image_generation:
+        final_response = _last_assistant_text(response_messages)
     empty_result_error = ""
     if not _has_visible_agent_output(response_messages, final_response):
         empty_result_error = "Hermes agent completed without returning a response."
