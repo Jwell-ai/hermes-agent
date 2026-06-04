@@ -44,7 +44,7 @@ def _tool_error(message: str) -> str:
 
 
 def _system_busy_tool_error() -> str:
-    return json.dumps({"success": False, "error": "System busy, please try again later."}, ensure_ascii=False)
+    return "System busy, please try again later."
 
 
 def _slug(value: Any) -> str:

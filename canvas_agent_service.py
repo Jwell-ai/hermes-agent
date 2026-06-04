@@ -633,6 +633,50 @@ def _generation_tool_completed(messages: List[Any], media_type: str) -> bool:
     return False
 
 
+def _generation_tool_attempted(messages: List[Any], media_type: str = "") -> bool:
+    expected = media_type.lower().strip()
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant":
+            for tool_call in msg.get("tool_calls") or []:
+                name = _tool_call_name(tool_call).lower()
+                if not name:
+                    continue
+                if expected == "image" and ("generate_image" in name or "canvas_generate_image" in name):
+                    return True
+                if expected == "video" and ("generate_video" in name or "canvas_generate_video" in name):
+                    return True
+                if not expected and ("generate_image" in name or "canvas_generate_image" in name or "generate_video" in name or "canvas_generate_video" in name):
+                    return True
+        if msg.get("role") == "tool":
+            name = _string(msg.get("name")).lower()
+            if expected == "image" and "image" in name:
+                return True
+            if expected == "video" and "video" in name:
+                return True
+            if not expected and ("image" in name or "video" in name):
+                return True
+    return False
+
+
+def _generation_tool_failed(messages: List[Any], media_type: str = "") -> bool:
+    expected = media_type.lower().strip()
+    for msg in messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        name = _string(msg.get("name")).lower()
+        if expected == "image" and "image" not in name:
+            continue
+        if expected == "video" and "video" not in name:
+            continue
+        if expected == "" and "image" not in name and "video" not in name:
+            continue
+        if not _tool_result_success(msg.get("content")):
+            return True
+    return False
+
+
 def _xml_tag_text(text: str, tag: str) -> str:
     match = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", text or "", flags=re.IGNORECASE | re.DOTALL)
     return _string(match.group(1)) if match else ""
@@ -1244,11 +1288,17 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
     raw_result_messages = result.get("messages") or []
     response_messages = _public_messages(raw_result_messages)
     response_messages = _current_turn_response_messages(response_messages, conversation_history)
-    reference_image_generation = bool(input_images) and _media_intent(user_message, has_image_context=True) == "image"
+    current_turn_messages = _messages_after_latest_user(response_messages)
+    current_media_attempted = _generation_tool_attempted(current_turn_messages)
+    current_media_failed = _generation_tool_failed(current_turn_messages)
+    reference_image_generation = (
+        bool(input_images)
+        and not current_media_attempted
+        and _media_intent(user_message, has_image_context=True) == "image"
+    )
     if reference_image_generation:
-        current_generated_messages = _messages_after_latest_user(response_messages)
-        if _generation_tool_completed(current_generated_messages, "image"):
-            response_messages = current_generated_messages
+        if _generation_tool_completed(current_turn_messages, "image"):
+            response_messages = current_turn_messages
         else:
             if response_messages:
                 print(
@@ -1257,6 +1307,8 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
                 )
             response_messages = []
     final_response = _string(result.get("final_response"))
+    if current_media_failed:
+        final_response = SYSTEM_BUSY_MESSAGE
     if reference_image_generation and not _generation_tool_completed(response_messages, "image"):
         final_response = ""
     if not final_response:
@@ -1266,13 +1318,15 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
             final_response = _last_assistant_text(response_messages) or _last_assistant_text(raw_result_messages)
     with canvas_context(context):
         current_turn_messages = _messages_after_latest_user(response_messages)
-        forced_messages = _forced_media_tool_messages(
-            user_message,
-            response_messages,
-            current_turn_messages,
-            has_image_context=bool(input_images),
-            input_images=input_images,
-        )
+        forced_messages = []
+        if not current_media_attempted:
+            forced_messages = _forced_media_tool_messages(
+                user_message,
+                response_messages,
+                current_turn_messages,
+                has_image_context=bool(input_images),
+                input_images=input_images,
+            )
         response_messages.extend(forced_messages)
     current_turn_messages = _messages_after_latest_user(response_messages)
     response_messages = _append_visible_generated_media(response_messages, current_turn_messages)
