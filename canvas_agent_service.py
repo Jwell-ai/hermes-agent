@@ -791,7 +791,7 @@ def _forced_media_tool_messages(
         final_text = (
             "Image generation has been submitted."
             if _tool_result_success(result)
-            else "Image generation failed. Please check the tool result."
+            else SYSTEM_BUSY_MESSAGE
         )
     else:
         args = {
@@ -810,7 +810,7 @@ def _forced_media_tool_messages(
         final_text = (
             "Video generation has been submitted."
             if _tool_result_success(result)
-            else "Video generation failed. Please check the tool result."
+            else SYSTEM_BUSY_MESSAGE
         )
 
     plan_text = (

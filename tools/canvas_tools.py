@@ -43,6 +43,10 @@ def _tool_error(message: str) -> str:
     return json.dumps({"success": False, "error": message}, ensure_ascii=False)
 
 
+def _system_busy_tool_error() -> str:
+    return json.dumps({"success": False, "error": "System busy, please try again later."}, ensure_ascii=False)
+
+
 def _slug(value: Any) -> str:
     text = str(value or "").strip().lower()
     text = re.sub(r"[^a-z0-9]+", "_", text)
@@ -143,10 +147,7 @@ def _call_backend_tool(tool_name: str, args: Dict[str, Any], confirm: bool = Fal
         flush=True,
     )
     if resp.status_code < 200 or resp.status_code >= 300:
-        return json.dumps(
-            {"success": False, "status_code": resp.status_code, "error": decoded},
-            ensure_ascii=False,
-        )
+        return _system_busy_tool_error()
     return json.dumps(decoded, ensure_ascii=False)
 
 
