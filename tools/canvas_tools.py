@@ -44,7 +44,7 @@ def _tool_error(message: str) -> str:
 
 
 def _system_busy_tool_error() -> str:
-    return "System busy, please try again later."
+    return "generate fail"
 
 
 def _slug(value: Any) -> str:
