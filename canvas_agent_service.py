@@ -749,6 +749,22 @@ def _extract_generated_assets(result: Any, media_type: str) -> List[Dict[str, An
     return assets
 
 
+def _asset_object_name(asset: Dict[str, Any], media_type: str) -> str:
+    if media_type == "video":
+        return _string(
+            asset.get("s3_object_name")
+            or asset.get("object_name")
+            or asset.get("key")
+            or asset.get("video_url_s3_object_name")
+        )
+    return _string(
+        asset.get("s3_object_name")
+        or asset.get("object_name")
+        or asset.get("key")
+        or asset.get("image_url_s3_object_name")
+    )
+
+
 def _message_has_media_url(messages: List[Any], url: str) -> bool:
     for msg in messages or []:
         if not isinstance(msg, dict):
@@ -794,7 +810,25 @@ def _append_visible_generated_media(messages: List[Any], scan_messages: Optional
                 url = _string(asset.get("url") or asset.get("video_url"))
                 if not url or _message_has_media_url(out, url):
                     continue
-                out.append({"role": "assistant", "content": f"Generated video: {url}"})
+                video_part: Dict[str, Any] = {
+                    "type": "video_url",
+                    "video_url": url,
+                }
+                object_name = _asset_object_name(asset, "video")
+                if object_name:
+                    video_part["s3_object_name"] = object_name
+                mime_type = _string(asset.get("mime_type") or asset.get("mimeType") or "video/mp4")
+                if mime_type:
+                    video_part["mime_type"] = mime_type
+                out.append(
+                    {
+                        "role": "assistant",
+                        "content": [
+                            video_part,
+                            {"type": "text", "text": "Generated video."},
+                        ],
+                    }
+                )
     return out
 
 
