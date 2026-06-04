@@ -341,7 +341,110 @@ def _input_images_from_text(text: str) -> List[Any]:
     return images
 
 
-def _media_intent(text: str) -> str:
+def _asset_input_image(asset: Dict[str, Any]) -> Any:
+    object_name = _string(asset.get("s3_object_name") or asset.get("object_name") or asset.get("key"))
+    if object_name:
+        return {
+            "s3_object_name": object_name,
+            "file_id": _string(asset.get("file_id") or asset.get("id")),
+            "width": _string(asset.get("width")),
+            "height": _string(asset.get("height")),
+        }
+    url = _string(asset.get("url") or asset.get("image_url"))
+    return url
+
+
+def _image_ref_from_message(message: Any) -> Any:
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    if isinstance(content, list):
+        for item in reversed(content):
+            if not isinstance(item, dict) or item.get("type") != "image_url":
+                continue
+            raw = item.get("image_url")
+            ref = raw if isinstance(raw, dict) else {"url": _string(raw)}
+            image = _asset_input_image(ref)
+            if image:
+                return image
+    if message.get("role") == "tool" and "image" in _string(message.get("name")).lower():
+        assets = _extract_generated_assets(message.get("content"), "image")
+        for asset in reversed(assets):
+            image = _asset_input_image(asset)
+            if image:
+                return image
+    return None
+
+
+def _latest_generated_image_ref(messages: List[Any]) -> Any:
+    for message in reversed(messages or []):
+        image = _image_ref_from_message(message)
+        if image:
+            return image
+    return None
+
+
+def _regeneration_intent(value: str) -> bool:
+    regeneration_words = (
+        "regenerate",
+        "re-generate",
+        "redo",
+        "remake",
+        "again",
+        "one more",
+        "another version",
+        "new version",
+        "more detail",
+        "more details",
+        "add detail",
+        "enhance",
+        "improve",
+        "refine",
+        "polish",
+        "upscale",
+        "make it better",
+        "重新生成",
+        "重新產生",
+        "再生成",
+        "再產生",
+        "重生成",
+        "重做",
+        "再做",
+        "再来",
+        "再來",
+        "再画",
+        "再畫",
+        "换一版",
+        "換一版",
+        "新版本",
+        "另一个版本",
+        "另一個版本",
+        "更多细节",
+        "更多細節",
+        "加细节",
+        "加細節",
+        "细节更多",
+        "細節更多",
+        "增强",
+        "增強",
+        "优化",
+        "優化",
+        "改进",
+        "改進",
+        "改善",
+        "修改",
+        "调整",
+        "調整",
+        "精修",
+        "精细",
+        "精細",
+        "高清",
+        "清晰",
+    )
+    return any(word in value for word in regeneration_words)
+
+
+def _media_intent(text: str, has_image_context: bool = False, has_video_context: bool = False) -> str:
     value = (text or "").lower()
     if not value.strip():
         return ""
@@ -358,6 +461,12 @@ def _media_intent(text: str) -> str:
         "paint",
         "sketch",
         "illustrate",
+        "regenerate",
+        "redo",
+        "remake",
+        "enhance",
+        "improve",
+        "refine",
         "edit",
         "transform",
         "turn",
@@ -370,6 +479,19 @@ def _media_intent(text: str) -> str:
         "绘制",
         "设计",
         "渲染",
+        "重新生成",
+        "重新產生",
+        "再生成",
+        "再產生",
+        "重做",
+        "再做",
+        "再来",
+        "再來",
+        "优化",
+        "優化",
+        "增强",
+        "增強",
+        "修改",
     )
     image_words = (
         "image",
@@ -407,12 +529,18 @@ def _media_intent(text: str) -> str:
         "短片",
     )
     has_creation = any(word in value for word in creation_words)
-    if not has_creation:
+    has_regeneration = _regeneration_intent(value)
+    if not has_creation and not (has_regeneration and (has_image_context or has_video_context)):
         return ""
     if any(word in value for word in video_words):
         return "video"
     if any(word in value for word in image_words):
         return "image"
+    if has_regeneration:
+        if has_video_context:
+            return "video"
+        if has_image_context:
+            return "image"
     if any(word in value for word in ("draw", "render", "paint", "sketch", "illustrate", "画", "绘制")):
         return "image"
     return ""
@@ -597,9 +725,9 @@ def _message_has_media_url(messages: List[Any], url: str) -> bool:
     return False
 
 
-def _append_visible_generated_media(messages: List[Any]) -> List[Any]:
+def _append_visible_generated_media(messages: List[Any], scan_messages: Optional[List[Any]] = None) -> List[Any]:
     out = list(messages or [])
-    for msg in messages or []:
+    for msg in scan_messages if scan_messages is not None else messages or []:
         if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
         name = _string(msg.get("name")).lower()
@@ -626,13 +754,20 @@ def _append_visible_generated_media(messages: List[Any]) -> List[Any]:
     return out
 
 
-def _forced_media_tool_messages(user_message: str, response_messages: List[Any]) -> List[Dict[str, Any]]:
+def _forced_media_tool_messages(
+    user_message: str,
+    response_messages: List[Any],
+    scan_messages: Optional[List[Any]] = None,
+    has_image_context: bool = False,
+    has_video_context: bool = False,
+) -> List[Dict[str, Any]]:
     if _media_analysis_intent(user_message.lower()):
         return []
-    intent = _media_intent(user_message)
+    intent = _media_intent(user_message, has_image_context=has_image_context, has_video_context=has_video_context)
     if not intent:
         return []
-    if _generation_tool_completed(response_messages, intent):
+    current_messages = scan_messages if scan_messages is not None else response_messages
+    if _generation_tool_completed(current_messages, intent):
         return []
 
     call_id = str(uuid.uuid4())
@@ -642,6 +777,8 @@ def _forced_media_tool_messages(user_message: str, response_messages: List[Any])
             "tool_call_id": call_id,
             "image_quantity": _quantity_from_text(user_message),
         }
+        if has_image_context and _ctx().get("input_images"):
+            args["input_images"] = _ctx().get("input_images")
         aspect_ratio = _aspect_ratio_from_text(user_message)
         if aspect_ratio:
             args["aspect_ratio"] = aspect_ratio
@@ -676,7 +813,14 @@ def _forced_media_tool_messages(user_message: str, response_messages: List[Any])
             else "Video generation failed. Please check the tool result."
         )
 
+    plan_text = (
+        "Plan:\n"
+        "1. Use the referenced previous image as visual context.\n"
+        "2. Apply the requested changes as a new generation, not by reusing the old image.\n"
+        "3. Return only the newly generated result."
+    )
     return [
+        {"role": "assistant", "content": plan_text},
         {
             "role": "assistant",
             "content": "",
@@ -735,6 +879,9 @@ IMAGE CREATION RULES:
 - Respect <aspect_ratio>, <image_quantity>, and other XML tags in the user message.
 - If the user requests more than 5 images, generate in batches of at most 5. Complete each batch before starting the next batch.
 - When the user message contains <input_images> XML, extract s3_object_name values and pass them as input_images. Use file_id only as a fallback.
+- If the user asks to regenerate, redo, edit, transform, add more details, enhance, improve, or create a new image using a reference image, previous generated images are only references/history. You must call a fresh image generation tool and must not present an old image URL as the new result.
+- Treat equivalent Simplified/Traditional Chinese commands as regeneration/editing intent, including 重新生成, 重新產生, 再生成, 再產生, 重做, 再做, 再来, 再來, 换一版, 換一版, 更多细节, 更多細節, 优化, 優化, 增强, 增強, 修改, 调整, 調整.
+- If the user asks to regenerate or add details but does not attach a new image, use the most recent generated image in the session as the reference input image.
 - If more than one input image is present, prefer a selected image tool that supports multiple input_images.
 - If the request includes facial expression, mood, emotion, age, gender, region, or cultural constraints, add precise expression-control keywords to the prompt and avoid unsafe or culturally forbidden expression details.
 
@@ -780,6 +927,47 @@ def _last_assistant_text(messages: List[Any]) -> str:
         if text:
             return text
     return ""
+
+
+def _messages_after_latest_user(messages: List[Any]) -> List[Any]:
+    if not messages:
+        return []
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return messages[idx + 1 :]
+    return messages
+
+
+def _message_fingerprint(message: Any) -> str:
+    if not isinstance(message, dict):
+        return _string(message)
+    role = _string(message.get("role"))
+    name = _string(message.get("name"))
+    tool_call_id = _string(message.get("tool_call_id"))
+    tool_calls = message.get("tool_calls")
+    tool_calls_text = ""
+    if isinstance(tool_calls, list):
+        tool_calls_text = json.dumps(tool_calls, sort_keys=True, ensure_ascii=False, default=str)
+    return "\n".join(
+        (
+            role,
+            name,
+            tool_call_id,
+            _message_text(message),
+            tool_calls_text,
+        )
+    ).strip()
+
+
+def _current_turn_response_messages(messages: List[Any], prior_messages: List[Any]) -> List[Any]:
+    prior = {_message_fingerprint(msg) for msg in prior_messages or [] if _message_fingerprint(msg)}
+    filtered = [
+        msg
+        for msg in messages or []
+        if not prior or _message_fingerprint(msg) not in prior
+    ]
+    return _messages_after_latest_user(filtered)
 
 
 def _has_visible_agent_output(messages: List[Any], final_response: str) -> bool:
@@ -976,6 +1164,9 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
     if not user_message:
         raise HTTPException(status_code=400, detail="user message is required")
     input_images = _input_images_from_text(user_message)
+    latest_generated_image = _latest_generated_image_ref(conversation_history)
+    if not input_images and latest_generated_image and _media_intent(user_message, has_image_context=True) == "image":
+        input_images = [latest_generated_image]
     model_user_message: Any = user_message
     if _model_supports_vision(req.text_model) and _has_media_content(user_content):
         prepared_content = _prepare_chat_content_for_model(req, user_content)
@@ -1051,12 +1242,21 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
 
     raw_result_messages = result.get("messages") or []
     response_messages = _public_messages(raw_result_messages)
+    response_messages = _current_turn_response_messages(response_messages, conversation_history)
     final_response = _string(result.get("final_response"))
     if not final_response:
         final_response = _last_assistant_text(response_messages) or _last_assistant_text(raw_result_messages)
     with canvas_context(context):
-        response_messages.extend(_forced_media_tool_messages(user_message, response_messages))
-    response_messages = _append_visible_generated_media(response_messages)
+        current_turn_messages = _messages_after_latest_user(response_messages)
+        forced_messages = _forced_media_tool_messages(
+            user_message,
+            response_messages,
+            current_turn_messages,
+            has_image_context=bool(input_images),
+        )
+        response_messages.extend(forced_messages)
+    current_turn_messages = _messages_after_latest_user(response_messages)
+    response_messages = _append_visible_generated_media(response_messages, current_turn_messages)
     empty_result_error = ""
     if not _has_visible_agent_output(response_messages, final_response):
         empty_result_error = "Hermes agent completed without returning a response."
