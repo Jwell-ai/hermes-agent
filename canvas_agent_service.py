@@ -937,7 +937,14 @@ def _forced_media_tool_messages(
             else "generate fail"
         )
 
+    plan_text = (
+        "Plan:\n"
+        "1. Use the user's request and referenced media as generation context.\n"
+        "2. Create a new generation request instead of reusing an old result.\n"
+        "3. Return the newly generated media result."
+    )
     return [
+        {"role": "assistant", "content": plan_text},
         {
             "role": "assistant",
             "content": "",
