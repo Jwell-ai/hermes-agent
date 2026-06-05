@@ -820,6 +820,9 @@ def _append_visible_generated_media(messages: List[Any], scan_messages: Optional
                 mime_type = _string(asset.get("mime_type") or asset.get("mimeType") or "video/mp4")
                 if mime_type:
                     video_part["mime_type"] = mime_type
+                duration = asset.get("duration_seconds") or asset.get("duration") or asset.get("video_duration")
+                if duration:
+                    video_part["duration_seconds"] = duration
                 out.append(
                     {
                         "role": "assistant",
