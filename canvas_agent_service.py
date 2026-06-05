@@ -937,14 +937,7 @@ def _forced_media_tool_messages(
             else "generate fail"
         )
 
-    plan_text = (
-        "Plan:\n"
-        "1. Use the referenced previous image as visual context.\n"
-        "2. Apply the requested changes as a new generation, not by reusing the old image.\n"
-        "3. Return only the newly generated result."
-    )
     return [
-        {"role": "assistant", "content": plan_text},
         {
             "role": "assistant",
             "content": "",
