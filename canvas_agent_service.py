@@ -1131,10 +1131,13 @@ def _forced_media_tool_messages(
         )
         messages: List[Dict[str, Any]] = [{"role": "assistant", "content": plan_text}]
         success_count = 0
-        for _ in range(quantity):
+        for task_index in range(1, quantity + 1):
             call_id = str(uuid.uuid4())
+            task_prompt = user_message
+            if quantity > 1:
+                task_prompt = f"{user_message} (variation {task_index} of {quantity}: vary composition, angle, lighting, or style)"
             args: Dict[str, Any] = {
-                "prompt": user_message,
+                "prompt": task_prompt,
                 "tool_call_id": call_id,
                 "image_quantity": 1,
             }
@@ -1246,6 +1249,7 @@ PLANNER RULES:
 - Do not call multiple tools in the same assistant turn. Always wait for one tool result before making another tool call.
 - If a tool call fails, explain the error to the user and do not retry automatically.
 - Pay attention to requested quantity. If the user asks for 20 images, keep exactly 20 in the plan and generation batches. If no quantity is specified, assume 1.
+- If the user requests N images (N > 1) for the same theme, you MUST treat this as N separate generation tasks, e.g. "Image 1: <prompt for image 1>", "Image 2: <prompt for image 2>", ... "Image N: <prompt for image N>". Each task should have its own distinct, professionally written prompt (vary composition, angle, lighting, or style so the N images are not identical). After writing the task list, call the image generation tool ONCE PER TASK, one tool call per turn, continuing across turns until all N tool calls have been made and all N images are returned. Do not stop after the first image when more are requested.
 
 SELECTED CANVAS TOOLS:
 {selected_tools}
