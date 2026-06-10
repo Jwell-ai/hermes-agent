@@ -1298,10 +1298,16 @@ If no outstanding task exists, write "None."]
 ## Completed Actions
 [Numbered list of concrete actions taken — include tool used, target, and outcome.
 Format each as: N. ACTION target — outcome [tool: name]
+Only wrap a value in backticks if it is an actual code symbol, file path, or
+command — never leave an empty `` pair. Do NOT include URLs (image/video/asset
+links, download links, etc.) — those are tracked separately and repeating them
+here is redundant; describe the result in words instead (e.g. "generated a
+product photo of a red sneaker").
 Example:
 1. READ config.py:45 — found `==` should be `!=` [tool: read_file]
 2. PATCH config.py:45 — changed `==` to `!=` [tool: patch]
 3. TEST `pytest tests/` — 3/50 failed: test_parse, test_validate, test_edge [tool: terminal]
+4. GENERATE image of a red sneaker on white background [tool: canvas_generate_image]
 Be specific with file paths, commands, line numbers, and results.]
 
 ## Active State
