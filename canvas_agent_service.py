@@ -20,6 +20,7 @@ from run_agent import AIAgent
 from tools.canvas_tools import (
     _handle_canvas_generate_image,
     _handle_canvas_generate_video,
+    _handle_canvas_transcribe_audio,
     _selected_tools,
     canvas_context,
 )
@@ -33,6 +34,7 @@ class CanvasChatRequest(BaseModel):
     auth_token: str = ""
     messages: List[Any] = Field(default_factory=list)
     text_model: Dict[str, Any] = Field(default_factory=dict)
+    text_models: List[Dict[str, Any]] = Field(default_factory=list)
     tool_list: List[Any] = Field(default_factory=list)
     model_configs: Dict[str, Any] = Field(default_factory=dict)
     backend_url: str = ""
@@ -175,24 +177,41 @@ def _prepare_chat_content_for_model(req: CanvasChatRequest, content: Any) -> Any
 
 
 def _provider_config(req: Any) -> Dict[str, Any]:
-    provider = _string(req.text_model.get("provider"))
-    model = _string(req.text_model.get("model"))
+    return _provider_config_for(req.model_configs, req.text_model)
+
+
+def _provider_config_for(model_configs: Any, text_model: Dict[str, Any]) -> Dict[str, Any]:
+    provider = _string(text_model.get("provider"))
+    model = _string(text_model.get("model"))
     def with_model_config(raw: Dict[str, Any]) -> Dict[str, Any]:
         merged = dict(raw)
         models = raw.get("models")
         if isinstance(models, dict) and model and isinstance(models.get(model), dict):
             merged.update(models[model])
         return merged
-    config = req.model_configs.get("text")
+    if not isinstance(model_configs, dict):
+        return {}
+    config = model_configs.get("text")
     if isinstance(config, dict) and provider:
         raw = config.get(provider)
         if isinstance(raw, dict):
             return with_model_config(raw)
-    if isinstance(req.model_configs, dict) and provider:
-        raw = req.model_configs.get(provider)
+    if provider:
+        raw = model_configs.get(provider)
         if isinstance(raw, dict):
             return with_model_config(raw)
     return {}
+
+
+def _text_model_candidates(req: Any) -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+    for item in req.text_models:
+        if isinstance(item, dict) and _string(item.get("provider")) and _string(item.get("model")):
+            candidates.append(item)
+    if not candidates and isinstance(req.text_model, dict):
+        if _string(req.text_model.get("provider")) and _string(req.text_model.get("model")):
+            candidates.append(req.text_model)
+    return candidates
 
 
 def _api_key(config: Dict[str, Any]) -> str:
@@ -607,7 +626,12 @@ def _selected_media_tools(media_type: str) -> List[Dict[str, Any]]:
 
 
 def _generation_tool_called(messages: List[Any], media_type: str) -> bool:
-    expected = "image" if media_type == "image" else "video"
+    if media_type == "image":
+        expected = "image"
+    elif media_type == "video":
+        expected = "video"
+    else:
+        expected = "audio"
     for msg in messages or []:
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
             continue
@@ -621,7 +645,12 @@ def _generation_tool_called(messages: List[Any], media_type: str) -> bool:
 
 
 def _generation_tool_completed(messages: List[Any], media_type: str) -> bool:
-    expected = "image" if media_type == "image" else "video"
+    if media_type == "image":
+        expected = "image"
+    elif media_type == "video":
+        expected = "video"
+    else:
+        expected = "audio"
     for msg in messages or []:
         if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
@@ -737,13 +766,15 @@ def _extract_generated_assets(result: Any, media_type: str) -> List[Dict[str, An
     for item in candidates:
         if not isinstance(item, dict):
             continue
-        url = _string(item.get("url") or item.get("image_url") or item.get("video_url"))
+        url = _string(item.get("url") or item.get("image_url") or item.get("video_url") or item.get("audio_url"))
         mime_type = _string(item.get("mime_type") or item.get("mimeType"))
         if not url:
             continue
         if media_type == "image" and mime_type and not mime_type.startswith("image/"):
             continue
         if media_type == "video" and mime_type and not mime_type.startswith("video/"):
+            continue
+        if media_type == "audio" and mime_type and not mime_type.startswith("audio/"):
             continue
         assets.append(item)
     return assets
@@ -836,7 +867,7 @@ def _append_visible_generated_media(messages: List[Any], scan_messages: Optional
 
 
 _MEDIA_URL_RE = re.compile(
-    r"https?://[^\s)'\"<>]+(?:\.(?:png|jpe?g|webp|gif|mp4|m4v|mov|f4v|flv|webm|ogg))(?:\?[^\s)'\"<>]*)?",
+    r"https?://[^\s)'\"<>]+(?:\.(?:png|jpe?g|webp|gif|mp4|m4v|mov|f4v|flv|webm|ogg|mp3|opus|aac|flac|wav|pcm))(?:\?[^\s)'\"<>]*)?",
     re.IGNORECASE,
 )
 
@@ -851,7 +882,7 @@ def _strip_media_urls_from_text(text: str) -> str:
         flags=re.IGNORECASE,
     )
     cleaned = _MEDIA_URL_RE.sub("", cleaned)
-    cleaned = re.sub(r"^\s*(Generated image|Generated video|Image|Video|图片|图像|视频|影片|生成图片|生成视频)\s*[:：]?\s*$", "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    cleaned = re.sub(r"^\s*(Generated image|Generated video|Generated audio|Image|Video|Audio|图片|图像|视频|影片|音频|音声|生成图片|生成视频|生成音频)\s*[:：]?\s*$", "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
@@ -878,6 +909,175 @@ def _sanitize_assistant_media_url_text(messages: List[Any]) -> List[Any]:
             msg_copy["content"] = next_content
         out.append(msg_copy)
     return out
+
+
+def _audio_urls_from_content(content: Any) -> List[str]:
+    if not isinstance(content, list):
+        return []
+    urls: List[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") in {"audio_url", "audio"}:
+            url = _string(item.get("audio_url") or item.get("url"))
+            if url:
+                urls.append(url)
+    return urls
+
+
+def _transcribed_text_from_result(result: str) -> str:
+    try:
+        decoded = json.loads(result)
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(decoded, dict):
+        return ""
+    direct = _string(decoded.get("text"))
+    if direct:
+        return direct
+    nested = decoded.get("result")
+    if isinstance(nested, dict):
+        return _string(nested.get("text"))
+    return ""
+
+
+def _forced_audio_to_media_pipeline(
+    audio_urls: List[str],
+    user_message: str,
+    response_messages: List[Any],
+    scan_messages: Optional[List[Any]] = None,
+    input_images: Optional[List[Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Multi-step pipeline when user sends audio containing a generation command:
+    1. Transcribe audio → text
+    2. Refine into professional prompt
+    3. Call image/video generation API
+    """
+    if not audio_urls:
+        return []
+    current_messages = scan_messages if scan_messages is not None else response_messages
+    if _generation_tool_attempted(current_messages, "audio"):
+        return []
+
+    audio_url = audio_urls[0]
+    transcribe_id = str(uuid.uuid4())
+    transcribe_args: Dict[str, Any] = {"audio_url": audio_url, "tool_call_id": transcribe_id}
+
+    print(
+        f"[canvas-agent] audio pipeline: transcribing audio_url={audio_url[:80]}",
+        flush=True,
+    )
+    transcribe_result = _handle_canvas_transcribe_audio(transcribe_args)
+    transcribed_text = _transcribed_text_from_result(transcribe_result) if _tool_result_success(transcribe_result) else ""
+
+    transcribe_call_msg: Dict[str, Any] = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": transcribe_id,
+                "type": "function",
+                "function": {
+                    "name": "canvas_transcribe_audio",
+                    "arguments": json.dumps(transcribe_args, ensure_ascii=False),
+                },
+            }
+        ],
+    }
+    transcribe_result_msg: Dict[str, Any] = {
+        "role": "tool",
+        "tool_call_id": transcribe_id,
+        "name": "canvas_transcribe_audio",
+        "content": transcribe_result,
+    }
+
+    if not transcribed_text:
+        return [
+            {"role": "assistant", "content": "Plan:\n1. Transcribe audio input to text."},
+            transcribe_call_msg,
+            transcribe_result_msg,
+            {"role": "assistant", "content": "generate fail"},
+        ]
+
+    intent = _media_intent(transcribed_text)
+    effective_prompt = transcribed_text or user_message
+
+    if not intent:
+        return [
+            {
+                "role": "assistant",
+                "content": "Plan:\n1. Transcribe audio input to text.\n2. Respond based on transcribed content.",
+            },
+            transcribe_call_msg,
+            transcribe_result_msg,
+            {"role": "assistant", "content": f"Transcribed: {transcribed_text}"},
+        ]
+
+    plan_text = (
+        f"Plan:\n"
+        f"1. Transcribe the audio input to text.\n"
+        f"2. Refine the transcribed command into a professional {intent} generation prompt.\n"
+        f"3. Call the {intent} generation API with the refined prompt."
+    )
+
+    gen_id = str(uuid.uuid4())
+    print(
+        f"[canvas-agent] audio pipeline: intent={intent} transcribed_len={len(transcribed_text)}",
+        flush=True,
+    )
+
+    if intent == "image":
+        gen_args: Dict[str, Any] = {
+            "prompt": effective_prompt,
+            "tool_call_id": gen_id,
+            "image_quantity": _quantity_from_text(effective_prompt),
+        }
+        if input_images:
+            gen_args["input_images"] = input_images
+        aspect_ratio = _aspect_ratio_from_text(effective_prompt)
+        if aspect_ratio:
+            gen_args["aspect_ratio"] = aspect_ratio
+        gen_result = _handle_canvas_generate_image(gen_args)
+        gen_tool_name = "canvas_generate_image"
+        final_text = "Image generated from your audio command." if _tool_result_success(gen_result) else "generate fail"
+    else:
+        gen_args = {
+            "prompt": effective_prompt,
+            "tool_call_id": gen_id,
+        }
+        aspect_ratio = _aspect_ratio_from_text(effective_prompt)
+        if aspect_ratio:
+            gen_args["aspect_ratio"] = aspect_ratio
+        gen_result = _handle_canvas_generate_video(gen_args)
+        gen_tool_name = "canvas_generate_video"
+        final_text = "Video generated from your audio command." if _tool_result_success(gen_result) else "generate fail"
+
+    return [
+        {"role": "assistant", "content": plan_text},
+        transcribe_call_msg,
+        transcribe_result_msg,
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": gen_id,
+                    "type": "function",
+                    "function": {
+                        "name": gen_tool_name,
+                        "arguments": json.dumps(gen_args, ensure_ascii=False),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": gen_id,
+            "name": gen_tool_name,
+            "content": gen_result,
+        },
+        {"role": "assistant", "content": final_text},
+    ]
 
 
 def _forced_media_tool_messages(
@@ -920,7 +1120,7 @@ def _forced_media_tool_messages(
             if _tool_result_success(result)
             else "generate fail"
         )
-    else:
+    elif intent == "video":
         args = {
             "prompt": user_message,
             "tool_call_id": call_id,
@@ -974,7 +1174,7 @@ def _forced_media_tool_messages(
 
 def _canvas_agent_prompt(req: CanvasChatRequest) -> str:
     tool_lines = _selected_tool_lines(req.tool_list)
-    selected_tools = "\n".join(tool_lines) if tool_lines else "- No image/video model selected. Ask the user to select a model before generation."
+    selected_tools = "\n".join(tool_lines) if tool_lines else "- No image/video/audio model selected. Ask the user to select a model before generation."
     return f"""
 {req.system_prompt.strip()}
 
@@ -1019,6 +1219,13 @@ VIDEO CREATION RULES:
 - Respect duration, resolution, aspect ratio, camera movement, and shot references from XML tags.
 - Do not claim media was generated until the tool returns a backend result.
 - If the legacy prompt mentions generate_image, call generate_image or canvas_generate_image. If it mentions generate_video, call generate_video or canvas_generate_video.
+
+AUDIO INPUT RULES:
+- Audio is input-only. There is no text-to-speech output.
+- When the user message contains an audio_url content part, call canvas_transcribe_audio immediately to get the text.
+- After transcription, read the transcribed text, detect the user's intent, and act on it exactly as if the user had typed that text.
+- If the transcribed text is an image or video generation command, follow the plan: 1) transcribe, 2) refine prompt, 3) call the generation API.
+- If transcription fails, report the failure clearly and stop.
 
 ERROR HANDLING:
 - Read backend tool errors carefully.
@@ -1265,18 +1472,13 @@ def health() -> Dict[str, Any]:
 def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
     _check_auth(authorization)
 
-    provider = _string(req.text_model.get("provider"))
-    model = _string(req.text_model.get("model"))
-    config = _provider_config(req)
-    endpoint = _endpoint(config)
-    api_key = _api_key(config)
-    if not provider or not model:
+    candidates = _text_model_candidates(req)
+    if not candidates:
         raise HTTPException(status_code=400, detail="text model provider/model is required")
-    if not endpoint or not api_key:
-        raise HTTPException(status_code=400, detail="text model endpoint/api_key is not configured")
 
+    primary_text_model = candidates[0]
     raw_messages = [msg for msg in req.messages if isinstance(msg, dict)]
-    messages = _fix_chat_history(_filter_image_content(raw_messages, req.text_model))
+    messages = _fix_chat_history(_filter_image_content(raw_messages, primary_text_model))
     last_user_index = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"), -1)
     if last_user_index >= 0:
         latest_user = messages[last_user_index]
@@ -1295,26 +1497,10 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
     if not input_images and latest_generated_image and _media_intent(user_message, has_image_context=True) == "image":
         input_images = [latest_generated_image]
     model_user_message: Any = user_message
-    if _model_supports_vision(req.text_model) and _has_media_content(user_content):
+    if _model_supports_vision(primary_text_model) and _has_media_content(user_content):
         prepared_content = _prepare_chat_content_for_model(req, user_content)
         if isinstance(prepared_content, list) and prepared_content:
             model_user_message = prepared_content
-
-    events: List[Dict[str, Any]] = []
-
-    def on_delta(*args: Any, **kwargs: Any) -> None:
-        text = ""
-        if args:
-            text = _string(args[0])
-        if not text:
-            text = _string(kwargs.get("delta") or kwargs.get("text"))
-        if text:
-            events.append({"type": "delta", "text": text})
-
-    def on_status(*args: Any, **kwargs: Any) -> None:
-        message = _string(args[1] if len(args) > 1 else (args[0] if args else kwargs.get("message")))
-        if message:
-            events.append({"type": "status", "message": message})
 
     context = {
         "session_id": req.session_id,
@@ -1326,46 +1512,98 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         "tool_list": req.tool_list,
         "input_images": input_images,
     }
-    with canvas_context(context):
-        agent = AIAgent(
-            base_url=endpoint,
-            api_key=api_key,
-            provider=provider,
-            api_mode=_string(config.get("api_mode")) or "chat_completions",
-            model=model,
-            enabled_toolsets=["alphart-canvas"],
-            max_iterations=_agent_max_iterations(config),
-            quiet_mode=True,
-            session_id=req.session_id or None,
-            stream_delta_callback=on_delta,
-            status_callback=on_status,
-            platform="alphart-canvas",
-            user_id=req.user_id or req.user_uuid or None,
-            chat_id=req.session_id or None,
-            skip_memory=True,
-            skip_context_files=True,
-        )
-        try:
-            result = agent.run_conversation(
-                model_user_message,
-                system_message=_system_prompt(req),
-                conversation_history=conversation_history,
-                task_id=req.session_id or None,
-                persist_user_message=user_message,
-            )
-        except Exception as exc:
+
+    events: List[Dict[str, Any]] = []
+    result: Dict[str, Any] = {}
+    last_provider = ""
+    last_model = ""
+    for candidate in candidates:
+        provider = _string(candidate.get("provider"))
+        model = _string(candidate.get("model"))
+        config = _provider_config_for(req.model_configs, candidate)
+        endpoint = _endpoint(config)
+        api_key = _api_key(config)
+        if not provider or not model or not endpoint or not api_key:
             print(
-                f"[canvas-agent] chat model failed session_id={req.session_id} provider={provider} model={model} error={exc}",
+                f"[canvas-agent] skipping unconfigured text model session_id={req.session_id} provider={provider} model={model}",
                 flush=True,
             )
-            result = {
-                "messages": [{"role": "assistant", "content": SYSTEM_BUSY_MESSAGE}],
-                "final_response": SYSTEM_BUSY_MESSAGE,
-                "model": model,
-                "provider": provider,
-                "failed": True,
-                "error": SYSTEM_BUSY_MESSAGE,
-            }
+            continue
+        last_provider, last_model = provider, model
+        retry_count = max(1, _int(candidate.get("retry"), 1))
+        for attempt in range(1, retry_count + 1):
+            attempt_events: List[Dict[str, Any]] = []
+
+            def on_delta(*args: Any, **kwargs: Any) -> None:
+                text = ""
+                if args:
+                    text = _string(args[0])
+                if not text:
+                    text = _string(kwargs.get("delta") or kwargs.get("text"))
+                if text:
+                    attempt_events.append({"type": "delta", "text": text})
+
+            def on_status(*args: Any, **kwargs: Any) -> None:
+                message = _string(args[1] if len(args) > 1 else (args[0] if args else kwargs.get("message")))
+                if message:
+                    attempt_events.append({"type": "status", "message": message})
+
+            with canvas_context(context):
+                agent = AIAgent(
+                    base_url=endpoint,
+                    api_key=api_key,
+                    provider=provider,
+                    api_mode=_string(config.get("api_mode")) or "chat_completions",
+                    model=model,
+                    enabled_toolsets=["alphart-canvas"],
+                    max_iterations=_agent_max_iterations(config),
+                    quiet_mode=True,
+                    session_id=req.session_id or None,
+                    stream_delta_callback=on_delta,
+                    status_callback=on_status,
+                    platform="alphart-canvas",
+                    user_id=req.user_id or req.user_uuid or None,
+                    chat_id=req.session_id or None,
+                    skip_memory=True,
+                    skip_context_files=True,
+                )
+                try:
+                    result = agent.run_conversation(
+                        model_user_message,
+                        system_message=_system_prompt(req),
+                        conversation_history=conversation_history,
+                        task_id=req.session_id or None,
+                        persist_user_message=user_message,
+                    )
+                except Exception as exc:
+                    print(
+                        f"[canvas-agent] chat model failed session_id={req.session_id} provider={provider} "
+                        f"model={model} attempt={attempt}/{retry_count} error={exc}",
+                        flush=True,
+                    )
+                    result = {"failed": True, "error": str(exc), "model": model, "provider": provider}
+
+            if not result.get("failed"):
+                events = attempt_events
+                break
+            print(
+                f"[canvas-agent] chat model attempt failed session_id={req.session_id} provider={provider} "
+                f"model={model} attempt={attempt}/{retry_count} error={result.get('error')}",
+                flush=True,
+            )
+            events = attempt_events
+        if not result.get("failed"):
+            break
+
+    if result.get("failed"):
+        result = {
+            "messages": [{"role": "assistant", "content": SYSTEM_BUSY_MESSAGE}],
+            "final_response": SYSTEM_BUSY_MESSAGE,
+            "model": result.get("model") or last_model,
+            "provider": result.get("provider") or last_provider,
+            "failed": True,
+            "error": SYSTEM_BUSY_MESSAGE,
+        }
 
     raw_result_messages = result.get("messages") or []
     response_messages = _public_messages(raw_result_messages)
@@ -1398,10 +1636,19 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
             final_response = _last_assistant_text(response_messages)
         else:
             final_response = _last_assistant_text(response_messages) or _last_assistant_text(raw_result_messages)
+    user_audio_urls = _audio_urls_from_content(user_content)
     with canvas_context(context):
         current_turn_messages = _messages_after_latest_user(response_messages)
         forced_messages = []
-        if not current_media_attempted:
+        if user_audio_urls and not _generation_tool_attempted(current_turn_messages, "audio"):
+            forced_messages = _forced_audio_to_media_pipeline(
+                user_audio_urls,
+                user_message,
+                response_messages,
+                current_turn_messages,
+                input_images=input_images,
+            )
+        if not forced_messages and not current_media_attempted:
             forced_messages = _forced_media_tool_messages(
                 user_message,
                 response_messages,
@@ -1436,8 +1683,8 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         "final_response": final_response,
         "messages": response_messages,
         "events": events,
-        "model": result.get("model") or model,
-        "provider": result.get("provider") or provider,
+        "model": result.get("model") or last_model,
+        "provider": result.get("provider") or last_provider,
         "prompt_tokens": result.get("prompt_tokens") or 0,
         "completion_tokens": result.get("completion_tokens") or 0,
         "total_tokens": result.get("total_tokens") or 0,

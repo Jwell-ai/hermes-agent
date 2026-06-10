@@ -188,6 +188,17 @@ def _handle_canvas_generate_video(args: Dict[str, Any], **_: Any) -> str:
     return _call_backend_tool(tool_name, args, confirm=bool(tool.get("requires_confirmation")))
 
 
+def _handle_canvas_transcribe_audio(args: Dict[str, Any], **_: Any) -> str:
+    args = dict(args or {})
+    tool = _pick_tool("audio", args)
+    args.setdefault("provider", tool.get("provider"))
+    args.setdefault("model", tool.get("model") or tool.get("name") or tool.get("key"))
+    tool_name = str(tool.get("id") or "").strip()
+    if not tool_name:
+        tool_name = f"transcribe_audio_by_{_slug(args.get('provider'))}_{_slug(args.get('model'))}"
+    return _call_backend_tool(tool_name, args, confirm=False)
+
+
 WRITE_PLAN_SCHEMA = {
     "name": "write_plan",
     "description": "Create a concise plan before running media generation.",
@@ -309,5 +320,40 @@ registry.register(
     toolset="alphart-canvas",
     schema={**CANVAS_GENERATE_VIDEO_SCHEMA, "name": "generate_video"},
     handler=_handle_canvas_generate_video,
+    is_async=False,
+)
+
+CANVAS_TRANSCRIBE_AUDIO_SCHEMA = {
+    "name": "canvas_transcribe_audio",
+    "description": (
+        "Transcribe audio to text (STT) through the selected Canvas audio model. "
+        "Use this when the user provides an audio URL or asks to transcribe audio. "
+        "Returns the transcribed text."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "audio_url": {"type": "string", "description": "URL of the audio file to transcribe."},
+            "tool_id": {"type": "string", "description": "Selected Canvas tool id, when known."},
+            "provider": {"type": "string", "description": "Selected audio provider, when known."},
+            "model": {"type": "string", "description": "Selected audio model, when known."},
+            "language": {"type": "string", "description": "BCP-47 language code hint (e.g. en, zh, ja). Optional."},
+        },
+        "required": ["audio_url"],
+    },
+}
+
+registry.register(
+    name="canvas_transcribe_audio",
+    toolset="alphart-canvas",
+    schema=CANVAS_TRANSCRIBE_AUDIO_SCHEMA,
+    handler=_handle_canvas_transcribe_audio,
+    is_async=False,
+)
+registry.register(
+    name="transcribe_audio",
+    toolset="alphart-canvas",
+    schema={**CANVAS_TRANSCRIBE_AUDIO_SCHEMA, "name": "transcribe_audio"},
+    handler=_handle_canvas_transcribe_audio,
     is_async=False,
 )
