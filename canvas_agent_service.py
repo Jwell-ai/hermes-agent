@@ -68,6 +68,13 @@ def _string(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _message_text(message: Any) -> str:
     if not isinstance(message, dict):
         return _string(message)
