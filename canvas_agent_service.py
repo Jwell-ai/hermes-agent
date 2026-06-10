@@ -75,6 +75,16 @@ def _int(value: Any, default: int = 0) -> int:
         return default
 
 
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+_THINK_OPEN_RE = re.compile(r"<think>.*$", re.IGNORECASE | re.DOTALL)
+
+
+def _strip_think_tags(text: str) -> str:
+    text = _THINK_BLOCK_RE.sub("", text or "")
+    text = _THINK_OPEN_RE.sub("", text)
+    return text.strip()
+
+
 def _message_text(message: Any) -> str:
     if not isinstance(message, dict):
         return _string(message)
@@ -1104,54 +1114,88 @@ def _forced_media_tool_messages(
     if _generation_tool_completed(current_messages, intent):
         return []
 
-    call_id = str(uuid.uuid4())
-    if intent == "image":
-        args: Dict[str, Any] = {
-            "prompt": user_message,
-            "tool_call_id": call_id,
-            "image_quantity": _quantity_from_text(user_message),
-        }
-        if has_image_context and input_images:
-            args["input_images"] = input_images
-        aspect_ratio = _aspect_ratio_from_text(user_message)
-        if aspect_ratio:
-            args["aspect_ratio"] = aspect_ratio
-        print(
-            f"[canvas-agent] forcing image generation session_intent={intent} tool_count={len(_selected_media_tools(intent))}",
-            flush=True,
-        )
-        result = _handle_canvas_generate_image(args)
-        tool_name = "canvas_generate_image"
-        final_text = (
-            "Image generation has been submitted."
-            if _tool_result_success(result)
-            else "generate fail"
-        )
-    elif intent == "video":
-        args = {
-            "prompt": user_message,
-            "tool_call_id": call_id,
-        }
-        aspect_ratio = _aspect_ratio_from_text(user_message)
-        if aspect_ratio:
-            args["aspect_ratio"] = aspect_ratio
-        print(
-            f"[canvas-agent] forcing video generation session_intent={intent} tool_count={len(_selected_media_tools(intent))}",
-            flush=True,
-        )
-        result = _handle_canvas_generate_video(args)
-        tool_name = "canvas_generate_video"
-        final_text = (
-            "Video generation has been submitted."
-            if _tool_result_success(result)
-            else "generate fail"
-        )
-
     plan_text = (
         "Plan:\n"
         "1. Use the user's request and referenced media as generation context.\n"
         "2. Create a new generation request instead of reusing an old result.\n"
         "3. Return the newly generated media result."
+    )
+
+    if intent == "image":
+        quantity = min(_quantity_from_text(user_message), 5)
+        aspect_ratio = _aspect_ratio_from_text(user_message)
+        print(
+            f"[canvas-agent] forcing image generation session_intent={intent} quantity={quantity} "
+            f"tool_count={len(_selected_media_tools(intent))}",
+            flush=True,
+        )
+        messages: List[Dict[str, Any]] = [{"role": "assistant", "content": plan_text}]
+        success_count = 0
+        for _ in range(quantity):
+            call_id = str(uuid.uuid4())
+            args: Dict[str, Any] = {
+                "prompt": user_message,
+                "tool_call_id": call_id,
+                "image_quantity": 1,
+            }
+            if has_image_context and input_images:
+                args["input_images"] = input_images
+            if aspect_ratio:
+                args["aspect_ratio"] = aspect_ratio
+            result = _handle_canvas_generate_image(args)
+            if _tool_result_success(result):
+                success_count += 1
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": "canvas_generate_image",
+                                "arguments": json.dumps(args, ensure_ascii=False),
+                            },
+                        }
+                    ],
+                }
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": "canvas_generate_image",
+                    "content": result,
+                }
+            )
+        if success_count == quantity:
+            final_text = "Image generation has been submitted."
+        elif success_count > 0:
+            final_text = f"Generated {success_count} of {quantity} requested images."
+        else:
+            final_text = "generate fail"
+        messages.append({"role": "assistant", "content": final_text})
+        return messages
+
+    call_id = str(uuid.uuid4())
+    args = {
+        "prompt": user_message,
+        "tool_call_id": call_id,
+    }
+    aspect_ratio = _aspect_ratio_from_text(user_message)
+    if aspect_ratio:
+        args["aspect_ratio"] = aspect_ratio
+    print(
+        f"[canvas-agent] forcing video generation session_intent={intent} tool_count={len(_selected_media_tools(intent))}",
+        flush=True,
+    )
+    result = _handle_canvas_generate_video(args)
+    tool_name = "canvas_generate_video"
+    final_text = (
+        "Video generation has been submitted."
+        if _tool_result_success(result)
+        else "generate fail"
     )
     return [
         {"role": "assistant", "content": plan_text},
@@ -1403,6 +1447,7 @@ def _generate_title_direct(endpoint: str, api_key: str, model: str, source: str,
     content = ""
     if response.choices:
         content = response.choices[0].message.content or ""
+    content = _strip_think_tags(content)
     usage = getattr(response, "usage", None)
     return {
         "title": content,
