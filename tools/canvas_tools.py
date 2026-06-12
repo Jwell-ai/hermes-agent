@@ -188,6 +188,11 @@ def _handle_canvas_generate_video(args: Dict[str, Any], **_: Any) -> str:
     return _call_backend_tool(tool_name, args, confirm=bool(tool.get("requires_confirmation")))
 
 
+def _handle_canvas_generate_game(args: Dict[str, Any], **_: Any) -> str:
+    args = dict(args or {})
+    return _call_backend_tool("canvas_generate_game", args, confirm=False)
+
+
 def _handle_canvas_transcribe_audio(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
     tool = _pick_tool("audio", args)
@@ -320,6 +325,53 @@ registry.register(
     toolset="alphart-canvas",
     schema={**CANVAS_GENERATE_VIDEO_SCHEMA, "name": "generate_video"},
     handler=_handle_canvas_generate_video,
+    is_async=False,
+)
+
+CANVAS_GENERATE_GAME_SCHEMA = {
+    "name": "canvas_generate_game",
+    "description": (
+        "Generate a small playable web game from a prompt, e.g. an interactive teaching demo "
+        "that explains a concept (physics, biology, economics, etc.), a quiz, or a simple "
+        "platformer. The game is built from a starter template, hosted in S3, and embedded on "
+        "the canvas as a playable iframe. Use this for 'make a game that teaches/explains ...' "
+        "or 'create a quiz/game about ...' requests."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": "Detailed description of the game to generate, including the concept/topic to teach and any specific requirements.",
+            },
+            "template": {
+                "type": "string",
+                "enum": ["quiz", "platformer", "concept"],
+                "description": (
+                    "Optional starter template to use. 'concept' is an interactive explainer "
+                    "(good for 'explain how X works'), 'quiz' is multiple-choice trivia, "
+                    "'platformer' is a side-scrolling jump game. If omitted, it is auto-selected "
+                    "from the prompt."
+                ),
+            },
+            "game_id": {"type": "string", "description": "Optional stable identifier for the game."},
+        },
+        "required": ["prompt"],
+    },
+}
+
+registry.register(
+    name="canvas_generate_game",
+    toolset="alphart-canvas",
+    schema=CANVAS_GENERATE_GAME_SCHEMA,
+    handler=_handle_canvas_generate_game,
+    is_async=False,
+)
+registry.register(
+    name="generate_game",
+    toolset="alphart-canvas",
+    schema={**CANVAS_GENERATE_GAME_SCHEMA, "name": "generate_game"},
+    handler=_handle_canvas_generate_game,
     is_async=False,
 )
 
