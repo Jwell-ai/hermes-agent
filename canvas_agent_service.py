@@ -1430,19 +1430,73 @@ def _usage_value(usage: Any, name: str) -> int:
     return int(getattr(usage, name, 0) or 0)
 
 
-def _generate_title_direct(endpoint: str, api_key: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
+_TITLE_SYSTEM = (
+    "Create a short chat session title. Return only the title, no quotes, "
+    "no markdown, no punctuation-only text. Max 8 words."
+)
+
+
+def _provider_format(provider: str, endpoint: str) -> str:
+    """Mirror relay.go textProviderFormat: returns 'anthropic', 'gemini', or 'openai'."""
+    p = provider.lower()
+    u = endpoint.lower()
+    if "claude" in p or "anthropic" in p or "anthropic.com" in u:
+        return "anthropic"
+    if (
+        "generativelanguage.googleapis.com" in u
+        or ":generatecontent" in u
+        or (not u and ("vertex" in p or "gemini" in p or "google" in p))
+    ):
+        return "gemini"
+    return "openai"
+
+
+def _generate_title_anthropic(endpoint: str, api_key: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    timeout = int(config.get("timeout") or config.get("timeout_seconds") or 60)
+    base = (endpoint or "https://api.anthropic.com/v1").rstrip("/")
+    if not base.endswith("/messages"):
+        base += "/messages"
+    body = {
+        "model": model,
+        "max_tokens": 32,
+        "system": _TITLE_SYSTEM,
+        "messages": [{"role": "user", "content": source}],
+    }
+    resp = requests.post(
+        base,
+        json=body,
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    content = ""
+    for block in data.get("content", []):
+        if isinstance(block, dict) and block.get("type") == "text":
+            content += block.get("text", "")
+    usage = data.get("usage", {})
+    return {
+        "title": _strip_think_tags(content),
+        "prompt_tokens": int(usage.get("input_tokens") or 0),
+        "completion_tokens": int(usage.get("output_tokens") or 0),
+        "total_tokens": int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0),
+    }
+
+
+def _generate_title_direct(provider: str, endpoint: str, api_key: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    fmt = _provider_format(provider, endpoint)
+    if fmt == "anthropic":
+        return _generate_title_anthropic(endpoint, api_key, model, source, config)
     timeout = int(config.get("timeout") or config.get("timeout_seconds") or 60)
     client = OpenAI(api_key=api_key, base_url=endpoint, timeout=timeout)
     response = client.chat.completions.create(
         model=model,
         messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Create a short chat session title. Return only the title, no quotes, "
-                    "no markdown, no punctuation-only text. Max 8 words."
-                ),
-            },
+            {"role": "system", "content": _TITLE_SYSTEM},
             {"role": "user", "content": source},
         ],
         max_tokens=32,
@@ -1772,7 +1826,7 @@ def title(req: CanvasTitleRequest, authorization: Optional[str] = Header(default
     if not source:
         raise HTTPException(status_code=400, detail="title source is required")
 
-    result = _generate_title_direct(endpoint, api_key, model, source, config)
+    result = _generate_title_direct(provider, endpoint, api_key, model, source, config)
     raw_title = _string(result.get("title"))
     cleaned = raw_title.strip().strip("\"'`").splitlines()[0].strip() if raw_title else ""
     if len(cleaned) > 80:
