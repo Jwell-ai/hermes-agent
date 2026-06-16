@@ -1542,7 +1542,14 @@ def _generate_title_gemini(endpoint: str, api_key: str, model: str, source: str,
         "systemInstruction": {"parts": [{"text": _TITLE_SYSTEM}]},
         "generationConfig": {"maxOutputTokens": 32, "temperature": 0.2},
     }
-    headers = {"content-type": "application/json", "authorization": "Bearer " + (api_key or "")}
+    # Mirror relay.go callGeminiChat: send both auth styles so the request
+    # works with Google AI Studio directly and with local proxies that may
+    # require one or the other.
+    headers = {
+        "content-type": "application/json",
+        "authorization": "Bearer " + (api_key or ""),
+        "x-goog-api-key": api_key or "",
+    }
     logger.info("title gemini url=%s model=%s", url, model)
     try:
         resp = requests.post(url, json=body, headers=headers, timeout=timeout)
@@ -1922,11 +1929,7 @@ def title(req: CanvasTitleRequest, authorization: Optional[str] = Header(default
         provider, model, endpoint, bool(api_key), config_providers,
     )
     if not provider or not model:
-        logger.warning("title 400: provider=%r model=%r", provider, model)
-        raise HTTPException(status_code=400, detail="text model provider/model is required")
-    if not endpoint or not api_key:
-        logger.warning("title 400: endpoint=%r has_key=%s provider=%r config_keys=%s", endpoint, bool(api_key), provider, config_providers)
-        raise HTTPException(status_code=400, detail="text model endpoint/api_key is not configured")
+        logger.warning("title: primary text_model missing provider/model provider=%r model=%r", provider, model)
 
     source = "\n".join(_message_text(msg) for msg in req.messages if isinstance(msg, dict)).strip()
     if not source:
@@ -1962,6 +1965,9 @@ def title(req: CanvasTitleRequest, authorization: Optional[str] = Header(default
         except HTTPException as exc:
             logger.warning("title failed provider=%r model=%r status=%s: %s", cand_provider, cand_model, exc.status_code, exc.detail)
             last_exc = exc
+        except Exception as exc:
+            logger.warning("title error provider=%r model=%r: %s", cand_provider, cand_model, exc)
+            last_exc = HTTPException(status_code=502, detail=str(exc))
     if result is None:
         if last_exc is not None:
             raise last_exc
