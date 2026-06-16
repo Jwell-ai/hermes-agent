@@ -12,6 +12,7 @@ import base64
 from urllib.parse import quote
 from typing import Any, Dict, List, Optional
 
+logging.basicConfig(level=logging.INFO, format="%(levelname)s [%(name)s] %(message)s")
 logger = logging.getLogger("canvas_agent")
 
 from fastapi import FastAPI, Header, HTTPException
