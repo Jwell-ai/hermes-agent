@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import uuid
 import base64
 from urllib.parse import quote
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("canvas_agent")
 
 from fastapi import FastAPI, Header, HTTPException
 from openai import OpenAI, APIConnectionError as OpenAIConnectionError, APIStatusError as OpenAIStatusError
@@ -1479,6 +1482,7 @@ def _generate_title_anthropic(endpoint: str, api_key: str, model: str, source: s
         "system": _TITLE_SYSTEM,
         "messages": [{"role": "user", "content": source}],
     }
+    logger.info("title anthropic url=%s model=%s", base, model)
     try:
         resp = requests.post(
             base,
@@ -1492,9 +1496,12 @@ def _generate_title_anthropic(endpoint: str, api_key: str, model: str, source: s
         )
         resp.raise_for_status()
     except requests.ConnectionError as exc:
+        logger.error("title anthropic connection error url=%s: %s", base, exc)
         raise HTTPException(status_code=502, detail=f"Title model connection error: {exc}") from exc
     except requests.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else 502
+        body_text = exc.response.text[:500] if exc.response is not None else ""
+        logger.error("title anthropic http error url=%s status=%s body=%s", base, status, body_text)
         raise HTTPException(status_code=status, detail=f"Title model error: {exc}") from exc
     data = resp.json()
     content = ""
@@ -1512,6 +1519,7 @@ def _generate_title_anthropic(endpoint: str, api_key: str, model: str, source: s
 
 def _generate_title_direct(provider: str, endpoint: str, api_key: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
     fmt = _provider_format(provider, endpoint, model)
+    logger.info("title provider=%s model=%s endpoint=%s format=%s", provider, model, endpoint, fmt)
     if fmt == "anthropic":
         return _generate_title_anthropic(endpoint, api_key, model, source, config)
     timeout = int(config.get("timeout") or config.get("timeout_seconds") or 60)
@@ -1527,8 +1535,10 @@ def _generate_title_direct(provider: str, endpoint: str, api_key: str, model: st
             temperature=0.2,
         )
     except OpenAIConnectionError as exc:
+        logger.error("title openai connection error endpoint=%s model=%s: %s", endpoint, model, exc)
         raise HTTPException(status_code=502, detail=f"Title model connection error: {exc}") from exc
     except OpenAIStatusError as exc:
+        logger.error("title openai status error endpoint=%s model=%s status=%s: %s", endpoint, model, exc.status_code, exc.message)
         raise HTTPException(status_code=exc.status_code, detail=f"Title model error: {exc.message}") from exc
     content = ""
     if response.choices:
