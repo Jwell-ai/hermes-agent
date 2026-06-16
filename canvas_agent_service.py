@@ -48,6 +48,7 @@ class CanvasChatRequest(BaseModel):
 class CanvasTitleRequest(BaseModel):
     messages: List[Any] = Field(default_factory=list)
     text_model: Dict[str, Any] = Field(default_factory=dict)
+    text_models: List[Dict[str, Any]] = Field(default_factory=list)
     model_configs: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -1931,7 +1932,41 @@ def title(req: CanvasTitleRequest, authorization: Optional[str] = Header(default
     if not source:
         raise HTTPException(status_code=400, detail="title source is required")
 
-    result = _generate_title_direct(provider, endpoint, api_key, model, source, config)
+    # Build ordered candidate list: primary first, then remaining text_models
+    candidates: List[Dict[str, Any]] = []
+    seen: set = set()
+    def _add_candidate(m: Dict[str, Any]) -> None:
+        p = _string(m.get("provider"))
+        mo = _string(m.get("model"))
+        if p and mo and (p, mo) not in seen:
+            seen.add((p, mo))
+            candidates.append(m)
+    _add_candidate(req.text_model)
+    for m in req.text_models:
+        if isinstance(m, dict):
+            _add_candidate(m)
+
+    last_exc: Optional[HTTPException] = None
+    result: Optional[Dict[str, Any]] = None
+    for candidate in candidates:
+        cand_provider = _string(candidate.get("provider"))
+        cand_model = _string(candidate.get("model"))
+        cand_config = _provider_config_for(req.model_configs, candidate)
+        cand_endpoint = _endpoint(cand_config)
+        cand_key = _api_key(cand_config)
+        if not cand_provider or not cand_model or not cand_endpoint or not cand_key:
+            continue
+        try:
+            result = _generate_title_direct(cand_provider, cand_endpoint, cand_key, cand_model, source, cand_config)
+            break
+        except HTTPException as exc:
+            logger.warning("title failed provider=%r model=%r status=%s: %s", cand_provider, cand_model, exc.status_code, exc.detail)
+            last_exc = exc
+    if result is None:
+        if last_exc is not None:
+            raise last_exc
+        raise HTTPException(status_code=400, detail="no usable text model configured for title generation")
+
     raw_title = _string(result.get("title"))
     cleaned = raw_title.strip().strip("\"'`").splitlines()[0].strip() if raw_title else ""
     if len(cleaned) > 80:

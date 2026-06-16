@@ -35,13 +35,26 @@ DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 
 def is_native_gemini_base_url(base_url: str) -> bool:
-    """Return True when the endpoint speaks Gemini's native REST API."""
+    """Return True when the endpoint speaks Gemini's native REST API.
+
+    Matches both Google's own API domain and self-hosted / proxy endpoints
+    that expose the same Gemini generateContent wire format, identified by
+    the presence of ':generatecontent' or '/v1beta' in the path, or a '%s'
+    placeholder used for model interpolation (the Gemini proxy convention).
+    """
     normalized = str(base_url or "").strip().rstrip("/").lower()
     if not normalized:
         return False
-    if "generativelanguage.googleapis.com" not in normalized:
+    if normalized.endswith("/openai"):
         return False
-    return not normalized.endswith("/openai")
+    if "generativelanguage.googleapis.com" in normalized:
+        return True
+    # Proxy / self-hosted Gemini endpoints that carry the native path shape
+    if ":generatecontent" in normalized or ":streamgeneratecontent" in normalized:
+        return True
+    if "%s" in normalized and ("/v1beta" in normalized or "models/" in normalized):
+        return True
+    return False
 
 
 def probe_gemini_tier(
