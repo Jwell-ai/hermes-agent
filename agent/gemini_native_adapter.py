@@ -69,7 +69,10 @@ def probe_gemini_tier(
     if normalized_base.lower().endswith("/openai"):
         normalized_base = normalized_base[: -len("/openai")]
 
-    url = f"{normalized_base}/models/{model}:generateContent"
+    if "%s" in normalized_base:
+        url = normalized_base.replace("%s", model)
+    else:
+        url = f"{normalized_base}/models/{model}:generateContent"
     payload = {
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
         "generationConfig": {"maxOutputTokens": 1},
@@ -847,6 +850,17 @@ class GeminiNativeClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    def _build_url(self, model: str, action: str = "generateContent") -> str:
+        if "%s" in self.base_url:
+            base = self.base_url.replace("%s", model)
+            # Strip any existing action suffix so we can append the correct one
+            for suffix in (":streamGenerateContent", ":generateContent"):
+                if base.endswith(suffix):
+                    base = base[: -len(suffix)]
+                    break
+            return base + ":" + action
+        return f"{self.base_url}/models/{model}:{action}"
+
     def _headers(self) -> Dict[str, str]:
         headers = {
             "Content-Type": "application/json",
@@ -898,7 +912,7 @@ class GeminiNativeClient:
         if stream:
             return self._stream_completion(model=model, request=request, timeout=timeout)
 
-        url = f"{self.base_url}/models/{model}:generateContent"
+        url = self._build_url(model)
         response = self._http.post(url, json=request, headers=self._headers(), timeout=timeout)
         if response.status_code != 200:
             raise gemini_http_error(response)
@@ -914,7 +928,7 @@ class GeminiNativeClient:
         return translate_gemini_response(payload, model=model)
 
     def _stream_completion(self, *, model: str, request: Dict[str, Any], timeout: Any = None) -> Iterator[_GeminiStreamChunk]:
-        url = f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse"
+        url = self._build_url(model, "streamGenerateContent") + "?alt=sse"
         stream_headers = dict(self._headers())
         stream_headers["Accept"] = "text/event-stream"
 

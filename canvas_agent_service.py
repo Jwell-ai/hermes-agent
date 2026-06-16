@@ -723,6 +723,17 @@ def _generation_tool_failed(messages: List[Any], media_type: str = "") -> bool:
     return False
 
 
+def _game_tool_failed(messages: List[Any]) -> bool:
+    for msg in messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        if "generate_game" not in _string(msg.get("name")).lower():
+            continue
+        if not _tool_result_success(msg.get("content")):
+            return True
+    return False
+
+
 def _xml_tag_text(text: str, tag: str) -> str:
     match = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", text or "", flags=re.IGNORECASE | re.DOTALL)
     return _string(match.group(1)) if match else ""
@@ -1721,6 +1732,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
     current_turn_messages = _messages_after_latest_user(response_messages)
     current_media_attempted = _generation_tool_attempted(current_turn_messages)
     current_media_failed = _generation_tool_failed(current_turn_messages)
+    current_game_failed = _game_tool_failed(current_turn_messages)
     reference_image_generation = (
         bool(input_images)
         and not current_media_attempted
@@ -1737,7 +1749,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
                 )
             response_messages = []
     final_response = _string(result.get("final_response"))
-    if current_media_failed:
+    if current_media_failed or current_game_failed:
         final_response = SYSTEM_BUSY_MESSAGE
     if reference_image_generation and not _generation_tool_completed(response_messages, "image"):
         final_response = ""
@@ -1800,7 +1812,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         "total_tokens": result.get("total_tokens") or 0,
         "input_tokens": result.get("input_tokens") or 0,
         "output_tokens": result.get("output_tokens") or 0,
-        "interrupted": bool(result.get("interrupted")),
+        "interrupted": bool(result.get("interrupted") or current_game_failed),
         "failed": bool(result.get("failed") or empty_result_error),
         "error": empty_result_error or _string(result.get("error")),
     }
