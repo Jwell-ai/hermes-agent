@@ -1521,11 +1521,63 @@ def _generate_title_anthropic(endpoint: str, api_key: str, model: str, source: s
     }
 
 
+def _gemini_chat_url(endpoint: str, model: str) -> str:
+    """Mirror geminiChatEndpoint in relay.go: resolve the generateContent URL."""
+    if "%s" in endpoint:
+        return endpoint % model
+    endpoint = endpoint.rstrip("/")
+    if ":generatecontent" in endpoint.lower():
+        return endpoint
+    if "/models/" in endpoint.lower():
+        return endpoint + ":generateContent"
+    return endpoint + "/models/" + model + ":generateContent"
+
+
+def _generate_title_gemini(endpoint: str, api_key: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    timeout = int(config.get("timeout") or config.get("timeout_seconds") or 60)
+    url = _gemini_chat_url(endpoint, model)
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": source}]}],
+        "systemInstruction": {"parts": [{"text": _TITLE_SYSTEM}]},
+        "generationConfig": {"maxOutputTokens": 32, "temperature": 0.2},
+    }
+    headers = {"content-type": "application/json", "authorization": "Bearer " + (api_key or "")}
+    logger.info("title gemini url=%s model=%s", url, model)
+    try:
+        resp = requests.post(url, json=body, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+    except requests.exceptions.Timeout as exc:
+        logger.error("title gemini read timeout url=%s timeout=%s: %s", url, timeout, exc)
+        raise HTTPException(status_code=504, detail=f"Title model timed out after {timeout}s") from exc
+    except requests.ConnectionError as exc:
+        logger.error("title gemini connection error url=%s: %s", url, exc)
+        raise HTTPException(status_code=502, detail=f"Title model connection error: {exc}") from exc
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else 502
+        body_text = exc.response.text[:500] if exc.response is not None else ""
+        logger.error("title gemini http error url=%s status=%s body=%s", url, status, body_text)
+        raise HTTPException(status_code=status, detail=f"Title model error: {exc}") from exc
+    data = resp.json()
+    content = ""
+    for candidate in data.get("candidates", []):
+        for part in candidate.get("content", {}).get("parts", []):
+            content += part.get("text", "")
+    usage = data.get("usageMetadata", {})
+    return {
+        "title": _strip_think_tags(content),
+        "prompt_tokens": int(usage.get("promptTokenCount") or 0),
+        "completion_tokens": int(usage.get("candidatesTokenCount") or 0),
+        "total_tokens": int(usage.get("totalTokenCount") or 0),
+    }
+
+
 def _generate_title_direct(provider: str, endpoint: str, api_key: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
     fmt = _provider_format(provider, endpoint, model)
     logger.info("title provider=%s model=%s endpoint=%s format=%s", provider, model, endpoint, fmt)
     if fmt == "anthropic":
         return _generate_title_anthropic(endpoint, api_key, model, source, config)
+    if fmt == "gemini":
+        return _generate_title_gemini(endpoint, api_key, model, source, config)
     timeout = int(config.get("timeout") or config.get("timeout_seconds") or 60)
     client = OpenAI(api_key=api_key, base_url=endpoint, timeout=timeout)
     try:
