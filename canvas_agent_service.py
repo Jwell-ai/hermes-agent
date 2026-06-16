@@ -12,7 +12,7 @@ from urllib.parse import quote
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Header, HTTPException
-from openai import OpenAI
+from openai import OpenAI, APIConnectionError as OpenAIConnectionError, APIStatusError as OpenAIStatusError
 from pydantic import BaseModel, Field
 import requests
 
@@ -1447,15 +1447,21 @@ _TITLE_SYSTEM = (
 )
 
 
-def _provider_format(provider: str, endpoint: str) -> str:
-    """Mirror relay.go textProviderFormat: returns 'anthropic', 'gemini', or 'openai'."""
+def _provider_format(provider: str, endpoint: str, model: str = "") -> str:
+    """Mirror relay.go textProviderFormat: returns 'anthropic', 'gemini', or 'openai'.
+
+    Model name is the most reliable signal when the provider/endpoint strings are
+    generic (e.g. provider='text', endpoint='https://my-proxy.example.com').
+    """
     p = provider.lower()
     u = endpoint.lower()
-    if "claude" in p or "anthropic" in p or "anthropic.com" in u:
+    m = model.lower()
+    if "claude" in p or "anthropic" in p or "anthropic.com" in u or m.startswith("claude"):
         return "anthropic"
     if (
         "generativelanguage.googleapis.com" in u
         or ":generatecontent" in u
+        or m.startswith("gemini")
         or (not u and ("vertex" in p or "gemini" in p or "google" in p))
     ):
         return "gemini"
@@ -1473,17 +1479,23 @@ def _generate_title_anthropic(endpoint: str, api_key: str, model: str, source: s
         "system": _TITLE_SYSTEM,
         "messages": [{"role": "user", "content": source}],
     }
-    resp = requests.post(
-        base,
-        json=body,
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        timeout=timeout,
-    )
-    resp.raise_for_status()
+    try:
+        resp = requests.post(
+            base,
+            json=body,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+    except requests.ConnectionError as exc:
+        raise HTTPException(status_code=502, detail=f"Title model connection error: {exc}") from exc
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else 502
+        raise HTTPException(status_code=status, detail=f"Title model error: {exc}") from exc
     data = resp.json()
     content = ""
     for block in data.get("content", []):
@@ -1499,20 +1511,25 @@ def _generate_title_anthropic(endpoint: str, api_key: str, model: str, source: s
 
 
 def _generate_title_direct(provider: str, endpoint: str, api_key: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
-    fmt = _provider_format(provider, endpoint)
+    fmt = _provider_format(provider, endpoint, model)
     if fmt == "anthropic":
         return _generate_title_anthropic(endpoint, api_key, model, source, config)
     timeout = int(config.get("timeout") or config.get("timeout_seconds") or 60)
     client = OpenAI(api_key=api_key, base_url=endpoint, timeout=timeout)
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": _TITLE_SYSTEM},
-            {"role": "user", "content": source},
-        ],
-        max_tokens=32,
-        temperature=0.2,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": _TITLE_SYSTEM},
+                {"role": "user", "content": source},
+            ],
+            max_tokens=32,
+            temperature=0.2,
+        )
+    except OpenAIConnectionError as exc:
+        raise HTTPException(status_code=502, detail=f"Title model connection error: {exc}") from exc
+    except OpenAIStatusError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=f"Title model error: {exc.message}") from exc
     content = ""
     if response.choices:
         content = response.choices[0].message.content or ""
