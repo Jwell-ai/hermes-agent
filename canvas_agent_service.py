@@ -1856,9 +1856,16 @@ def title(req: CanvasTitleRequest, authorization: Optional[str] = Header(default
     config = _provider_config(req)
     endpoint = _endpoint(config)
     api_key = _api_key(config)
+    config_providers = list(req.model_configs.keys()) if isinstance(req.model_configs, dict) else []
+    logger.info(
+        "title request provider=%r model=%r endpoint=%r has_key=%s config_providers=%s",
+        provider, model, endpoint, bool(api_key), config_providers,
+    )
     if not provider or not model:
+        logger.warning("title 400: provider=%r model=%r", provider, model)
         raise HTTPException(status_code=400, detail="text model provider/model is required")
     if not endpoint or not api_key:
+        logger.warning("title 400: endpoint=%r has_key=%s provider=%r config_keys=%s", endpoint, bool(api_key), provider, config_providers)
         raise HTTPException(status_code=400, detail="text model endpoint/api_key is not configured")
 
     source = "\n".join(_message_text(msg) for msg in req.messages if isinstance(msg, dict)).strip()
