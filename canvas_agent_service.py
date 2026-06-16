@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger("canvas_agent")
 
 from fastapi import FastAPI, Header, HTTPException
-from openai import OpenAI, APIConnectionError as OpenAIConnectionError, APIStatusError as OpenAIStatusError
+from openai import OpenAI, APIConnectionError as OpenAIConnectionError, APIStatusError as OpenAIStatusError, APITimeoutError as OpenAITimeoutError
 from pydantic import BaseModel, Field
 import requests
 
@@ -1495,6 +1495,9 @@ def _generate_title_anthropic(endpoint: str, api_key: str, model: str, source: s
             timeout=timeout,
         )
         resp.raise_for_status()
+    except requests.exceptions.Timeout as exc:
+        logger.error("title anthropic read timeout url=%s timeout=%s: %s", base, timeout, exc)
+        raise HTTPException(status_code=504, detail=f"Title model timed out after {timeout}s") from exc
     except requests.ConnectionError as exc:
         logger.error("title anthropic connection error url=%s: %s", base, exc)
         raise HTTPException(status_code=502, detail=f"Title model connection error: {exc}") from exc
@@ -1534,6 +1537,9 @@ def _generate_title_direct(provider: str, endpoint: str, api_key: str, model: st
             max_tokens=32,
             temperature=0.2,
         )
+    except OpenAITimeoutError as exc:
+        logger.error("title openai read timeout endpoint=%s model=%s timeout=%s: %s", endpoint, model, timeout, exc)
+        raise HTTPException(status_code=504, detail=f"Title model timed out after {timeout}s") from exc
     except OpenAIConnectionError as exc:
         logger.error("title openai connection error endpoint=%s model=%s: %s", endpoint, model, exc)
         raise HTTPException(status_code=502, detail=f"Title model connection error: {exc}") from exc
