@@ -111,6 +111,9 @@ def _call_backend_tool(tool_name: str, args: Dict[str, Any], confirm: bool = Fal
     merged_args = dict(args or {})
     merged_args.setdefault("session_id", _ctx().get("session_id"))
     merged_args.setdefault("user_uuid", _ctx().get("user_uuid"))
+    if _ctx().get("storage_prefix"):
+        merged_args.setdefault("storage_prefix", _ctx().get("storage_prefix"))
+        merged_args.setdefault("org_no", _ctx().get("storage_prefix"))
     if _ctx().get("canvas_id"):
         merged_args.setdefault("canvas_id", _ctx().get("canvas_id"))
 

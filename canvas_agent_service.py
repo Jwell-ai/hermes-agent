@@ -35,6 +35,7 @@ class CanvasChatRequest(BaseModel):
     canvas_id: str = ""
     user_id: str = ""
     user_uuid: str = ""
+    storage_prefix: str = ""
     auth_token: str = ""
     messages: List[Any] = Field(default_factory=list)
     text_model: Dict[str, Any] = Field(default_factory=dict)
@@ -1756,6 +1757,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         "canvas_id": req.canvas_id,
         "user_id": req.user_id,
         "user_uuid": req.user_uuid,
+        "storage_prefix": req.storage_prefix,
         "auth_token": req.auth_token,
         "backend_url": req.backend_url or os.getenv("CANVAS_BACKEND_URL", "http://localhost:57988"),
         "tool_list": req.tool_list,
