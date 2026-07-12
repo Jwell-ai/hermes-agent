@@ -252,12 +252,111 @@ def _default_game_review_checklist() -> Dict[str, Any]:
     }
 
 
+def _game_html_feedback(html: str) -> str:
+    value = str(html or "").strip()
+    lower = value.lower()
+    if not value:
+        return "game HTML is empty"
+    if not (lower.startswith("<!doctype html") or lower.startswith("<html")):
+        return "game HTML must start with <!DOCTYPE html> or <html"
+    if "<body" not in lower:
+        return "game HTML must include a <body> with visible content"
+    if "</body>" not in lower:
+        return "game HTML is truncated: missing </body>"
+    if "</html>" not in lower:
+        return "game HTML is truncated: missing </html>"
+    if "<script" not in lower and "onclick=" not in lower and "addeventlistener" not in lower:
+        return "game HTML must include inline JavaScript interaction code"
+    body_start = lower.find("<body")
+    body_end = lower.rfind("</body>")
+    body_open_end = lower.find(">", body_start)
+    if body_start < 0 or body_end <= body_start or body_open_end < 0:
+        return "game HTML must include a valid <body> element"
+    body = value[body_start + body_open_end + 1 : body_end].strip().lower()
+    if not any(tag in body for tag in ("<div", "<main", "<section", "<canvas", "<button")):
+        return "game HTML body must include visible game DOM content"
+    return ""
+
+
+def _request_game_upload_target(args: Dict[str, Any]) -> Dict[str, Any]:
+    backend_url = _backend_url()
+    if not backend_url:
+        raise RuntimeError("ALPHART_EDU_BACKEND_URL is not configured")
+    token = _auth_token()
+    service_token = _service_token()
+    payload = {
+        "session_id": args.get("session_id") or _ctx().get("session_id"),
+        "canvas_id": args.get("canvas_id") or _ctx().get("canvas_id"),
+        "user_uuid": args.get("user_uuid") or _ctx().get("user_uuid"),
+        "storage_prefix": args.get("storage_prefix") or _ctx().get("storage_prefix"),
+        "org_no": args.get("org_no") or _ctx().get("storage_prefix"),
+        "game_id": args.get("game_id"),
+        "content_type": "text/html; charset=utf-8",
+    }
+    resp = requests.post(
+        f"{backend_url}/api/v1/agent/game-upload-target",
+        json=payload,
+        headers={
+            **({"Authorization": f"Bearer {service_token or token}"} if (service_token or token) else {}),
+            **({"X-Hermes-Agent-Token": service_token} if service_token else {}),
+        },
+        timeout=int(
+            os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
+            or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")
+        ),
+    )
+    if resp.status_code < 200 or resp.status_code >= 300:
+        raise RuntimeError(f"game upload target failed {resp.status_code}: {resp.text[:300]}")
+    decoded = resp.json()
+    if not isinstance(decoded, dict) or not decoded.get("url"):
+        raise RuntimeError("game upload target response is invalid")
+    decoded.setdefault("upload_url", decoded.get("url"))
+    return decoded
+
+
+def _upload_game_html(target: Dict[str, Any], html: str) -> None:
+    upload_headers = {"Content-Type": str(target.get("content_type") or "text/html; charset=utf-8")}
+    resp = requests.put(
+        str(target.get("upload_url") or target["url"]),
+        data=html.encode("utf-8"),
+        headers=upload_headers,
+        timeout=int(
+            os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
+            or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")
+        ),
+    )
+    if resp.status_code < 200 or resp.status_code >= 300:
+        raise RuntimeError(f"game upload failed {resp.status_code}: {resp.text[:300]}")
+
+
 def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
     args.setdefault("game_plan", _default_game_plan())
     args.setdefault("layout_requirements", _default_game_layout_requirements())
     args.setdefault("review_checklist", _default_game_review_checklist())
-    return _call_backend_tool("canvas_generate_game", args, confirm=False)
+    html = str(args.get("html") or args.get("index_html") or "").strip()
+    feedback = _game_html_feedback(html)
+    if feedback:
+        return _tool_error(feedback)
+    try:
+        target = _request_game_upload_target(args)
+        _upload_game_html(target, html)
+    except Exception as exc:
+        return _tool_error(str(exc))
+    result = {
+        "status": "success",
+        "result": {
+            "type": "generate_game_result",
+            "phase": "result",
+            "game_id": target.get("game_id") or args.get("game_id"),
+            "url": target.get("url"),
+            "s3_object_name": target.get("s3_object_name"),
+            "summary": args.get("prompt") or args.get("description") or "Generated game",
+            "width": int(args.get("width") or 800),
+            "height": int(args.get("height") or 600),
+        },
+    }
+    return json.dumps(result, ensure_ascii=False)
 
 
 def _handle_alphart_transcribe_audio(args: Dict[str, Any], **_: Any) -> str:
@@ -425,6 +524,13 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                 ),
             },
             "game_id": {"type": "string", "description": "Optional stable identifier for the game."},
+            "html": {
+                "type": "string",
+                "description": (
+                    "Complete self-contained playable game HTML. Must start with <!DOCTYPE html>, "
+                    "include <body> visible DOM, inline CSS/JS, closing </body></html>, and responsive layout."
+                ),
+            },
             "game_plan": {
                 "type": "object",
                 "description": (
@@ -457,7 +563,7 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                 ),
             },
         },
-        "required": ["prompt", "game_plan", "layout_requirements", "review_checklist"],
+        "required": ["prompt", "html", "game_plan", "layout_requirements", "review_checklist"],
     },
 }
 

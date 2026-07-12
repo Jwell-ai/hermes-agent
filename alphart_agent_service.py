@@ -1329,12 +1329,14 @@ VIDEO CREATION RULES:
 
 GAME CREATION RULES:
 - Use canvas_generate_game or generate_game for requests like "make a game", "interactive demo", "quiz game", "platformer", "storybook game", "create a playable teaching activity", and equivalent Chinese/Traditional Chinese requests such as 生成游戏, 製作遊戲, 互动游戏, 互動遊戲, 闯关, 闖關, 小游戏, 小遊戲.
-- Game generation must follow this pipeline: 1) write a concise plan, 2) call the game tool with game_plan, layout_requirements, and review_checklist, 3) review the result, 4) only finalize after the result passes review.
+- Game generation must follow this pipeline: 1) write a concise plan, 2) create the complete self-contained game HTML yourself, 3) call the game tool with prompt, html, game_plan, layout_requirements, and review_checklist, 4) only finalize after the tool uploads and returns a result.
 - The plan must include learning goal, target audience, template choice, core loop/rules, screen states, layout grid, safe area, asset list, and win/fail/completion states.
 - The layout requirements must explicitly require all content, labels, controls, sprites, dialogs, score panels, and buttons to stay inside the visible frame and their parent borders.
 - Review the result for content correctness, readable instructions, no clipped text, no overlapping elements, no overflow outside cards/frame/borders, usable controls, start/restart flow, win/fail state, and desktop/mobile fit.
 - If the game result has any layout or content issue, do not present it as finished. Revise the prompt with concrete fixes and call the game tool again.
 - Do not use image/video generation tools for playable game requests unless the game plan explicitly needs a static asset first.
+- The game tool uploads the HTML from the agent. Never call the game tool with only a prompt. The html argument must be a full document beginning with <!DOCTYPE html> and ending with </html>.
+- Keep generated HTML compact enough for a tool argument, but complete. Do not omit <body>, script, controls, or closing tags.
 
 AUDIO INPUT RULES:
 - Audio is input-only. There is no text-to-speech output.
