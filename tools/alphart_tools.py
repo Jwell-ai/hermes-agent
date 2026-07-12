@@ -211,23 +211,39 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **_: Any) -> str:
 
 def _default_game_plan() -> Dict[str, Any]:
     return {
+        "default_style": "simple pixel game, not a web form",
+        "preferred_patterns": [
+            "side-scrolling collect-and-dodge platformer",
+            "top-down maze/exploration game",
+            "drag-and-drop sorting challenge with moving sprites",
+            "timed arcade matcher",
+            "mini simulation sandbox with cause/effect meters",
+            "boss/level challenge where answers power attacks or shields",
+            "physics launcher/trajectory challenge",
+            "story quest with rooms, NPC prompts, and collectible facts",
+        ],
         "steps": [
             "Define the learning goal, audience, and winning objective.",
-            "Choose a template and core interaction that teaches the concept.",
-            "Design the screen layout with a safe content area and responsive controls.",
-            "Generate the playable game and embed it on the canvas.",
-            "Review content accuracy, layout overflow, and interaction states before finalizing.",
-        ]
+            "Extract the exact facts, formulas, definitions, vocabulary, constraints, and misconceptions that must be preserved.",
+            "Choose a playable pixel-game pattern that fits the concept; avoid a static form or plain card quiz unless explicitly requested.",
+            "Map learning content into player actions, hazards, collectibles, levels, feedback, and win/fail conditions.",
+            "Design the screen layout with a pixel playfield, HUD, safe text panels, and responsive controls.",
+            "Generate one complete self-contained HTML file with inline CSS/JS and no external assets.",
+            "Review content accuracy, playability, layout overflow, sprite readability, and interaction states before finalizing.",
+        ],
     }
 
 
 def _default_game_layout_requirements() -> Dict[str, Any]:
     return {
         "responsive": True,
+        "visual_style": "Default to a simple pixel-art game: blocky sprites, tile/grid playfield, crisp edges, limited high-contrast palette, 8-bit inspired UI.",
+        "anti_form_rule": "Do not make a plain web form, static worksheet, or button-only quiz unless the user explicitly asks for a quiz/form.",
+        "playfield": "Use a real game area with player movement, collectibles/hazards/targets, score/progress, and visible feedback.",
         "safe_area": "Keep all text, buttons, sprites, score panels, and dialogs inside the visible game frame.",
         "overflow_policy": "No clipped text, horizontal scroll, overlapping cards, or elements outside their parent border.",
         "typography": "Use readable font sizes and wrap long labels instead of shrinking below legibility.",
-        "controls": "Mouse/touch controls must remain reachable on desktop and mobile sizes.",
+        "controls": "Support keyboard and mouse/touch. On-screen controls must remain reachable on desktop and mobile sizes.",
     }
 
 
@@ -235,6 +251,9 @@ def _default_game_review_checklist() -> Dict[str, Any]:
     return {
         "content": [
             "Matches the user's requested topic and age/education level.",
+            "Preserves factual precision: formulas, units, definitions, dates, names, symbols, vocabulary, and causal relationships must be correct.",
+            "No oversimplification that changes meaning; if simplifying for children, keep the core concept technically accurate.",
+            "Wrong answers, hazards, and feedback must teach the correct misconception explicitly.",
             "Includes clear instructions and a measurable goal or win condition.",
             "Does not add unrelated facts, unsafe content, or confusing filler.",
         ],
@@ -246,8 +265,15 @@ def _default_game_review_checklist() -> Dict[str, Any]:
         ],
         "interaction": [
             "Start/restart flow works.",
+            "There is an actual play loop: move/choose/collect/avoid/solve, then receive immediate feedback.",
+            "Player can win, fail, or complete a level; the state is visible.",
             "Win/fail/completion state is visible.",
             "Keyboard, mouse, and touch interactions are not blocked.",
+        ],
+        "playability": [
+            "Not just a form or static card.",
+            "At least one sprite/player/object moves or changes in response to input.",
+            "Challenge has pacing: timer, level, score target, hazards, or progression.",
         ],
     }
 
@@ -528,11 +554,14 @@ registry.register(
 CANVAS_GENERATE_GAME_SCHEMA = {
     "name": "canvas_generate_game",
     "description": (
-        "Generate a small playable web game from a prompt, e.g. an interactive teaching demo "
-        "that explains a concept (physics, biology, economics, etc.), a quiz, or a simple "
-        "platformer. The game is built from a starter template, hosted in S3, and embedded on "
-        "the canvas as a playable iframe. Use this for 'make a game that teaches/explains ...' "
-        "or 'create a quiz/game about ...' requests. Before calling, create a strict plan. "
+        "Upload a complete self-contained educational HTML game generated by the agent. "
+        "Default style should be a simple pixel-art game with a real play loop, not a plain "
+        "web form or static quiz. Good patterns include platformer, top-down maze, arcade "
+        "matcher, drag-and-drop sorter, physics launcher, simulation sandbox, boss challenge, "
+        "and story quest. Because this is for an education platform, preserve content "
+        "precision: formulas, units, definitions, terminology, names, dates, and causal "
+        "relationships must stay correct. Use this for 'make a game that teaches/explains ...' or "
+        "'create a quiz/game about ...' requests. Before calling, create a strict plan. "
         "After the tool returns, review content, UI layout, and interactions; if the result "
         "has clipped text, overflow, overlapping controls, or out-of-frame elements, revise "
         "the prompt and regenerate instead of finalizing."
@@ -546,12 +575,11 @@ CANVAS_GENERATE_GAME_SCHEMA = {
             },
             "template": {
                 "type": "string",
-                "enum": ["quiz", "platformer", "concept"],
+                "enum": ["pixel_platformer", "topdown_maze", "arcade_matcher", "drag_sorter", "simulation", "boss_challenge", "physics_launcher", "story_quest", "quiz", "concept"],
                 "description": (
-                    "Optional starter template to use. 'concept' is an interactive explainer "
-                    "(good for 'explain how X works'), 'quiz' is multiple-choice trivia, "
-                    "'platformer' is a side-scrolling jump game. If omitted, it is auto-selected "
-                    "from the prompt."
+                    "Optional game pattern. Prefer pixel_platformer, topdown_maze, arcade_matcher, "
+                    "drag_sorter, simulation, boss_challenge, physics_launcher, or story_quest. "
+                    "Use quiz/concept only when the user explicitly wants a quiz or pure explainer."
                 ),
             },
             "game_id": {"type": "string", "description": "Optional stable identifier for the game."},
@@ -565,13 +593,30 @@ CANVAS_GENERATE_GAME_SCHEMA = {
             "game_plan": {
                 "type": "object",
                 "description": (
-                    "Required planning payload: learning goal, audience, rules, interaction loop, "
-                    "screen states, layout grid/safe area, assets, and success/failure states."
+                    "Required planning payload: learning goal, audience, precise knowledge points, "
+                    "selected game pattern, core loop, player controls, hazards/collectibles/targets, "
+                    "rules, screen states, pixel-art style, layout grid/safe area, assets, and "
+                    "success/failure states."
                 ),
                 "properties": {
                     "learning_goal": {"type": "string"},
                     "audience": {"type": "string"},
+                    "knowledge_points": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Exact facts, formulas, definitions, vocabulary, units, dates, symbols, or source constraints to preserve.",
+                    },
+                    "misconceptions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Likely wrong ideas and the precise feedback that corrects them.",
+                    },
+                    "game_pattern": {"type": "string"},
                     "template_reason": {"type": "string"},
+                    "core_loop": {"type": "string"},
+                    "player_controls": {"type": "array", "items": {"type": "string"}},
+                    "hazards": {"type": "array", "items": {"type": "string"}},
+                    "collectibles": {"type": "array", "items": {"type": "string"}},
                     "rules": {"type": "array", "items": {"type": "string"}},
                     "screen_states": {"type": "array", "items": {"type": "string"}},
                     "layout_plan": {"type": "string"},

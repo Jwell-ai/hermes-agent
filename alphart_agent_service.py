@@ -1330,9 +1330,17 @@ VIDEO CREATION RULES:
 GAME CREATION RULES:
 - Use canvas_generate_game or generate_game for requests like "make a game", "interactive demo", "quiz game", "platformer", "storybook game", "create a playable teaching activity", and equivalent Chinese/Traditional Chinese requests such as 生成游戏, 製作遊戲, 互动游戏, 互動遊戲, 闯关, 闖關, 小游戏, 小遊戲.
 - Game generation must follow this pipeline: 1) write a concise plan, 2) create the complete self-contained game HTML yourself, 3) call the game tool with prompt, html, game_plan, layout_requirements, and review_checklist, 4) only finalize after the tool uploads and returns a result.
-- The plan must include learning goal, target audience, template choice, core loop/rules, screen states, layout grid, safe area, asset list, and win/fail/completion states.
+- Default to a simple pixel-art game, not a plain web form. Use blocky sprites, tile/grid playfields, crisp edges, limited high-contrast palettes, HUD panels, and 8-bit inspired controls.
+- Prefer real playable patterns: pixel platformer, top-down maze/exploration, arcade matcher, drag-and-drop sorter, physics launcher, simulation sandbox, boss challenge, or story quest. Use a plain quiz/card/form only if the user explicitly asks for a quiz.
+- This is an education platform: preserve content precision over visual novelty. Formulas, units, definitions, names, dates, symbols, vocabulary, causal relationships, and domain constraints must be correct.
+- If the source content is ambiguous, avoid inventing details. Use only stable facts from the user request and generally accepted knowledge; mark uncertainty in plain language when necessary.
+- The plan must include learning goal, target audience, precise knowledge points, likely misconceptions, selected game pattern, core loop, player controls, hazards/collectibles/targets, rules, screen states, pixel-art style, layout grid, safe area, asset list, and win/fail/completion states.
+- Map correct knowledge into mechanics carefully: collectibles should represent correct facts, hazards should represent specific misconceptions, and feedback must explain why an answer/action is correct or wrong.
+- The game must have an actual loop: the player moves/chooses/collects/avoids/solves, receives immediate feedback, and advances toward score, timer, level, or completion.
 - The layout requirements must explicitly require all content, labels, controls, sprites, dialogs, score panels, and buttons to stay inside the visible frame and their parent borders.
 - Review the result for content correctness, readable instructions, no clipped text, no overlapping elements, no overflow outside cards/frame/borders, usable controls, start/restart flow, win/fail state, and desktop/mobile fit.
+- Reject boring outputs: if it is only a static explanation, a button list, or a form-like quiz, redesign it as a playable pixel game before calling the tool.
+- Reject inaccurate outputs: if any educational statement is wrong, vague enough to mislead, or conflicts with the user's content, fix it before calling the tool.
 - If the game result has any layout or content issue, do not present it as finished. Revise the prompt with concrete fixes and call the game tool again.
 - Do not use image/video generation tools for playable game requests unless the game plan explicitly needs a static asset first.
 - The game tool uploads the HTML from the agent. Never call the game tool with only a prompt. The html argument must be a full document beginning with <!DOCTYPE html> and ending with </html>.
