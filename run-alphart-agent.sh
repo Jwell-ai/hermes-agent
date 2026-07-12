@@ -4,15 +4,19 @@ set -eu
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-if [ -f "../server/server.env" ]; then
+if [ -f "../backend/server.env" ]; then
+  set -a
+  . "../backend/server.env"
+  set +a
+elif [ -f "../server/server.env" ]; then
   set -a
   . "../server/server.env"
   set +a
 fi
 
-if [ -f ".env.canvas" ]; then
+if [ -f ".env.alphart" ]; then
   set -a
-  . ".env.canvas"
+  . ".env.alphart"
   set +a
 fi
 
@@ -21,4 +25,4 @@ if [ -x "$SCRIPT_DIR/venv/bin/python" ]; then
   PYTHON="$SCRIPT_DIR/venv/bin/python"
 fi
 
-exec "$PYTHON" canvas_agent_service.py
+exec "$PYTHON" alphart_agent_service.py

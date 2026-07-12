@@ -27,10 +27,10 @@ from toolsets import validate_toolset
 # Distribution definitions
 # Each key is a distribution name, and the value is a dict of toolset_name: probability_percentage
 DISTRIBUTIONS = {
-    "alphart_canvas": {
-        "description": "Alphart Canvas agent service tools only",
+    "alphart": {
+        "description": "Alphart app agent service tools only",
         "toolsets": {
-            "alphart-canvas": 100
+            "alphart-edu": 100
         }
     },
 

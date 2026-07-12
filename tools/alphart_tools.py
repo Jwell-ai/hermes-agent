@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Alphart Canvas tool bridge.
+"""Alphart app tool bridge.
 
 The Hermes agent owns the reasoning loop. Canvas still owns auth, credit
 billing, S3 persistence, and Seedance polling, so these tools call the Go
@@ -21,22 +21,22 @@ import requests
 from tools.registry import registry
 
 
-_canvas_context: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar(
-    "canvas_context", default={}
+_alphart_context: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar(
+    "alphart_context", default={}
 )
 
 
 @contextlib.contextmanager
-def canvas_context(values: Dict[str, Any]) -> Iterator[None]:
-    token = _canvas_context.set(dict(values or {}))
+def alphart_context(values: Dict[str, Any]) -> Iterator[None]:
+    token = _alphart_context.set(dict(values or {}))
     try:
         yield
     finally:
-        _canvas_context.reset(token)
+        _alphart_context.reset(token)
 
 
 def _ctx() -> Dict[str, Any]:
-    return _canvas_context.get() or {}
+    return _alphart_context.get() or {}
 
 
 def _tool_error(message: str) -> str:
@@ -89,22 +89,37 @@ def _pick_tool(media_type: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _backend_url() -> str:
-    value = str(_ctx().get("backend_url") or os.getenv("CANVAS_BACKEND_URL") or "").strip()
+    value = str(
+        _ctx().get("backend_url")
+        or os.getenv("ALPHART_EDU_BACKEND_URL")
+        or os.getenv("CANVAS_BACKEND_URL")
+        or ""
+    ).strip()
     return value.rstrip("/")
 
 
 def _auth_token() -> str:
-    return str(_ctx().get("auth_token") or os.getenv("CANVAS_AUTH_TOKEN") or "").strip()
+    return str(
+        _ctx().get("auth_token")
+        or os.getenv("ALPHART_AUTH_TOKEN")
+        or os.getenv("CANVAS_AUTH_TOKEN")
+        or ""
+    ).strip()
 
 
 def _service_token() -> str:
-    return str(os.getenv("CANVAS_AGENT_TOKEN") or os.getenv("HERMES_AGENT_TOKEN") or "").strip()
+    return str(
+        os.getenv("ALPHART_AGENT_TOKEN")
+        or os.getenv("CANVAS_AGENT_TOKEN")
+        or os.getenv("HERMES_AGENT_TOKEN")
+        or ""
+    ).strip()
 
 
 def _call_backend_tool(tool_name: str, args: Dict[str, Any], confirm: bool = False) -> str:
     backend_url = _backend_url()
     if not backend_url:
-        return _tool_error("CANVAS_BACKEND_URL is not configured")
+        return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
     token = _auth_token()
     service_token = _service_token()
 
@@ -125,7 +140,7 @@ def _call_backend_tool(tool_name: str, args: Dict[str, Any], confirm: bool = Fal
         "confirm": bool(confirm),
     }
     print(
-        f"[canvas-agent] calling backend tool name={tool_name} session_id={payload['session_id']} backend_url={backend_url}",
+        f"[alphart-agent] calling backend tool name={tool_name} session_id={payload['session_id']} backend_url={backend_url}",
         flush=True,
     )
     try:
@@ -136,7 +151,10 @@ def _call_backend_tool(tool_name: str, args: Dict[str, Any], confirm: bool = Fal
                 **({"Authorization": f"Bearer {token}"} if token else {}),
                 **({"X-Hermes-Agent-Token": service_token} if service_token else {}),
             },
-            timeout=int(os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")),
+            timeout=int(
+                os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
+                or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")
+            ),
         )
     except requests.RequestException as exc:
         return _tool_error(f"Canvas backend request failed: {exc}")
@@ -146,7 +164,7 @@ def _call_backend_tool(tool_name: str, args: Dict[str, Any], confirm: bool = Fal
         decoded = {"raw": resp.text}
     response_preview = (resp.text or "").replace("\n", " ")[:500]
     print(
-        f"[canvas-agent] backend tool response name={tool_name} status={resp.status_code} bytes={len(resp.text)} body={response_preview}",
+        f"[alphart-agent] backend tool response name={tool_name} status={resp.status_code} bytes={len(resp.text)} body={response_preview}",
         flush=True,
     )
     if resp.status_code < 200 or resp.status_code >= 300:
@@ -158,7 +176,7 @@ def _handle_write_plan(args: Dict[str, Any], **_: Any) -> str:
     return _call_backend_tool("write_plan", args or {}, confirm=False)
 
 
-def _handle_canvas_generate_image(args: Dict[str, Any], **_: Any) -> str:
+def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
     if args.get("image_quantity") and not args.get("quantity"):
         args["quantity"] = args.get("image_quantity")
@@ -173,7 +191,7 @@ def _handle_canvas_generate_image(args: Dict[str, Any], **_: Any) -> str:
     return _call_backend_tool(tool_name, args, confirm=bool(tool.get("requires_confirmation")))
 
 
-def _handle_canvas_generate_video(args: Dict[str, Any], **_: Any) -> str:
+def _handle_alphart_generate_video(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
     if args.get("duration_seconds") and not args.get("duration"):
         args["duration"] = args.get("duration_seconds")
@@ -191,12 +209,58 @@ def _handle_canvas_generate_video(args: Dict[str, Any], **_: Any) -> str:
     return _call_backend_tool(tool_name, args, confirm=bool(tool.get("requires_confirmation")))
 
 
-def _handle_canvas_generate_game(args: Dict[str, Any], **_: Any) -> str:
+def _default_game_plan() -> Dict[str, Any]:
+    return {
+        "steps": [
+            "Define the learning goal, audience, and winning objective.",
+            "Choose a template and core interaction that teaches the concept.",
+            "Design the screen layout with a safe content area and responsive controls.",
+            "Generate the playable game and embed it on the canvas.",
+            "Review content accuracy, layout overflow, and interaction states before finalizing.",
+        ]
+    }
+
+
+def _default_game_layout_requirements() -> Dict[str, Any]:
+    return {
+        "responsive": True,
+        "safe_area": "Keep all text, buttons, sprites, score panels, and dialogs inside the visible game frame.",
+        "overflow_policy": "No clipped text, horizontal scroll, overlapping cards, or elements outside their parent border.",
+        "typography": "Use readable font sizes and wrap long labels instead of shrinking below legibility.",
+        "controls": "Mouse/touch controls must remain reachable on desktop and mobile sizes.",
+    }
+
+
+def _default_game_review_checklist() -> Dict[str, Any]:
+    return {
+        "content": [
+            "Matches the user's requested topic and age/education level.",
+            "Includes clear instructions and a measurable goal or win condition.",
+            "Does not add unrelated facts, unsafe content, or confusing filler.",
+        ],
+        "ui_layout": [
+            "No element exceeds the viewport, card, panel, or border.",
+            "No text is clipped or hidden behind another element.",
+            "Buttons, score, progress, dialogs, and game objects have enough spacing.",
+            "The layout works at common 16:9, 4:3, tablet, and mobile viewport sizes.",
+        ],
+        "interaction": [
+            "Start/restart flow works.",
+            "Win/fail/completion state is visible.",
+            "Keyboard, mouse, and touch interactions are not blocked.",
+        ],
+    }
+
+
+def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
+    args.setdefault("game_plan", _default_game_plan())
+    args.setdefault("layout_requirements", _default_game_layout_requirements())
+    args.setdefault("review_checklist", _default_game_review_checklist())
     return _call_backend_tool("canvas_generate_game", args, confirm=False)
 
 
-def _handle_canvas_transcribe_audio(args: Dict[str, Any], **_: Any) -> str:
+def _handle_alphart_transcribe_audio(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
     tool = _pick_tool("audio", args)
     args.setdefault("provider", tool.get("provider"))
@@ -297,37 +361,37 @@ CANVAS_GENERATE_VIDEO_SCHEMA = {
 
 registry.register(
     name="write_plan",
-    toolset="alphart-canvas",
+    toolset="alphart-edu",
     schema=WRITE_PLAN_SCHEMA,
     handler=_handle_write_plan,
     is_async=False,
 )
 registry.register(
     name="canvas_generate_image",
-    toolset="alphart-canvas",
+    toolset="alphart-edu",
     schema=CANVAS_GENERATE_IMAGE_SCHEMA,
-    handler=_handle_canvas_generate_image,
+    handler=_handle_alphart_generate_image,
     is_async=False,
 )
 registry.register(
     name="generate_image",
-    toolset="alphart-canvas",
+    toolset="alphart-edu",
     schema={**CANVAS_GENERATE_IMAGE_SCHEMA, "name": "generate_image"},
-    handler=_handle_canvas_generate_image,
+    handler=_handle_alphart_generate_image,
     is_async=False,
 )
 registry.register(
     name="canvas_generate_video",
-    toolset="alphart-canvas",
+    toolset="alphart-edu",
     schema=CANVAS_GENERATE_VIDEO_SCHEMA,
-    handler=_handle_canvas_generate_video,
+    handler=_handle_alphart_generate_video,
     is_async=False,
 )
 registry.register(
     name="generate_video",
-    toolset="alphart-canvas",
+    toolset="alphart-edu",
     schema={**CANVAS_GENERATE_VIDEO_SCHEMA, "name": "generate_video"},
-    handler=_handle_canvas_generate_video,
+    handler=_handle_alphart_generate_video,
     is_async=False,
 )
 
@@ -338,7 +402,10 @@ CANVAS_GENERATE_GAME_SCHEMA = {
         "that explains a concept (physics, biology, economics, etc.), a quiz, or a simple "
         "platformer. The game is built from a starter template, hosted in S3, and embedded on "
         "the canvas as a playable iframe. Use this for 'make a game that teaches/explains ...' "
-        "or 'create a quiz/game about ...' requests."
+        "or 'create a quiz/game about ...' requests. Before calling, create a strict plan. "
+        "After the tool returns, review content, UI layout, and interactions; if the result "
+        "has clipped text, overflow, overlapping controls, or out-of-frame elements, revise "
+        "the prompt and regenerate instead of finalizing."
     ),
     "parameters": {
         "type": "object",
@@ -358,23 +425,54 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                 ),
             },
             "game_id": {"type": "string", "description": "Optional stable identifier for the game."},
+            "game_plan": {
+                "type": "object",
+                "description": (
+                    "Required planning payload: learning goal, audience, rules, interaction loop, "
+                    "screen states, layout grid/safe area, assets, and success/failure states."
+                ),
+                "properties": {
+                    "learning_goal": {"type": "string"},
+                    "audience": {"type": "string"},
+                    "template_reason": {"type": "string"},
+                    "rules": {"type": "array", "items": {"type": "string"}},
+                    "screen_states": {"type": "array", "items": {"type": "string"}},
+                    "layout_plan": {"type": "string"},
+                    "asset_plan": {"type": "array", "items": {"type": "string"}},
+                    "steps": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+            "layout_requirements": {
+                "type": "object",
+                "description": (
+                    "Responsive layout constraints. Must require no overflow, no clipped text, "
+                    "no overlap, readable labels, and all controls inside the game frame."
+                ),
+            },
+            "review_checklist": {
+                "type": "object",
+                "description": (
+                    "QA checklist used after generation. Include content accuracy, layout/frame "
+                    "fit, border overflow, text clipping, interaction states, and mobile/desktop fit."
+                ),
+            },
         },
-        "required": ["prompt"],
+        "required": ["prompt", "game_plan", "layout_requirements", "review_checklist"],
     },
 }
 
 registry.register(
     name="canvas_generate_game",
-    toolset="alphart-canvas",
+    toolset="alphart-edu",
     schema=CANVAS_GENERATE_GAME_SCHEMA,
-    handler=_handle_canvas_generate_game,
+    handler=_handle_alphart_generate_game,
     is_async=False,
 )
 registry.register(
     name="generate_game",
-    toolset="alphart-canvas",
+    toolset="alphart-edu",
     schema={**CANVAS_GENERATE_GAME_SCHEMA, "name": "generate_game"},
-    handler=_handle_canvas_generate_game,
+    handler=_handle_alphart_generate_game,
     is_async=False,
 )
 
@@ -400,15 +498,15 @@ CANVAS_TRANSCRIBE_AUDIO_SCHEMA = {
 
 registry.register(
     name="canvas_transcribe_audio",
-    toolset="alphart-canvas",
+    toolset="alphart-edu",
     schema=CANVAS_TRANSCRIBE_AUDIO_SCHEMA,
-    handler=_handle_canvas_transcribe_audio,
+    handler=_handle_alphart_transcribe_audio,
     is_async=False,
 )
 registry.register(
     name="transcribe_audio",
-    toolset="alphart-canvas",
+    toolset="alphart-edu",
     schema={**CANVAS_TRANSCRIBE_AUDIO_SCHEMA, "name": "transcribe_audio"},
-    handler=_handle_canvas_transcribe_audio,
+    handler=_handle_alphart_transcribe_audio,
     is_async=False,
 )

@@ -1,11 +1,11 @@
 services:
-  canvas-agent:
+  alphart-agent:
     build:
       context: .
-      dockerfile: Dockerfile.canvas
-    image: canvas-hermes-agent:latest
+      dockerfile: Dockerfile.alphart
+    image: alphart-hermes-agent:latest
     restart: unless-stopped
     env_file:
-      - ./.env.canvas
+      - ./.env.alphart
     ports:
       - "58088:58088"

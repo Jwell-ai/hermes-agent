@@ -82,7 +82,7 @@ _HERMES_WEBHOOK_SAFE_TOOLS = [
     "clarify",
 ]
 
-_ALPHART_CANVAS_TOOLS = [
+_ALPHART_TOOLS = [
     "write_plan",
     "generate_image",
     "generate_video",
@@ -94,9 +94,9 @@ _ALPHART_CANVAS_TOOLS = [
 # Core toolset definitions
 # These can include individual tools or reference other toolsets
 TOOLSETS = {
-    "alphart-canvas": {
-        "description": "Alphart Canvas agent tools: planning plus backend-managed image/video generation.",
-        "tools": _ALPHART_CANVAS_TOOLS,
+    "alphart-edu": {
+        "description": "Alphart app tools: planning plus backend-managed media generation.",
+        "tools": _ALPHART_TOOLS,
         "includes": []
     },
 
@@ -378,8 +378,8 @@ TOOLSETS = {
     },
 
     "hermes-api-server": {
-        "description": "Canvas API server toolset. It intentionally exposes only Canvas-safe backend tools.",
-        "tools": _ALPHART_CANVAS_TOOLS,
+        "description": "Alphart Edu API server toolset. It intentionally exposes only app-safe backend tools.",
+        "tools": _ALPHART_TOOLS,
         "includes": []
     },
     

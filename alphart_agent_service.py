@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HTTP service wrapper for running Hermes as the Alphart Canvas agent."""
+"""HTTP service wrapper for running Hermes as an Alphart agent."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from urllib.parse import quote
 from typing import Any, Dict, List, Optional
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s [%(name)s] %(message)s")
-logger = logging.getLogger("canvas_agent")
+logger = logging.getLogger("alphart_agent")
 
 from fastapi import FastAPI, Header, HTTPException
 from openai import OpenAI, APIConnectionError as OpenAIConnectionError, APIStatusError as OpenAIStatusError, APITimeoutError as OpenAITimeoutError
@@ -21,16 +21,16 @@ from pydantic import BaseModel, Field
 import requests
 
 from run_agent import AIAgent
-from tools.canvas_tools import (
-    _handle_canvas_generate_image,
-    _handle_canvas_generate_video,
-    _handle_canvas_transcribe_audio,
+from tools.alphart_tools import (
+    _handle_alphart_generate_image,
+    _handle_alphart_generate_video,
+    _handle_alphart_transcribe_audio,
     _selected_tools,
-    canvas_context,
+    alphart_context,
 )
 
 
-class CanvasChatRequest(BaseModel):
+class AlphartEduChatRequest(BaseModel):
     session_id: str = ""
     canvas_id: str = ""
     user_id: str = ""
@@ -46,14 +46,14 @@ class CanvasChatRequest(BaseModel):
     system_prompt: str = ""
 
 
-class CanvasTitleRequest(BaseModel):
+class AlphartEduTitleRequest(BaseModel):
     messages: List[Any] = Field(default_factory=list)
     text_model: Dict[str, Any] = Field(default_factory=dict)
     text_models: List[Dict[str, Any]] = Field(default_factory=list)
     model_configs: Dict[str, Any] = Field(default_factory=dict)
 
 
-app = FastAPI(title="Alphart Canvas Hermes Agent", version="1.0.0")
+app = FastAPI(title="Alphart Hermes Agent", version="1.0.0")
 SYSTEM_BUSY_MESSAGE = "System busy, please try again later."
 
 
@@ -150,19 +150,19 @@ def _has_media_content(content: Any) -> bool:
     return False
 
 
-def _backend_media_url(req: CanvasChatRequest, ref: Dict[str, Any]) -> str:
+def _backend_media_url(req: AlphartEduChatRequest, ref: Dict[str, Any]) -> str:
     raw_url = _string(ref.get("url") or ref.get("uri"))
     if raw_url:
         return raw_url
     object_name = _string(ref.get("s3_object_name") or ref.get("object_name") or ref.get("key"))
     if not object_name:
         return ""
-    backend_url = (req.backend_url or os.getenv("CANVAS_BACKEND_URL", "http://localhost:57988")).rstrip("/")
+    backend_url = (req.backend_url or os.getenv("ALPHART_EDU_BACKEND_URL") or os.getenv("CANVAS_BACKEND_URL", "http://localhost:57988")).rstrip("/")
     file_id = _string(ref.get("file_id")) or "media"
     return f"{backend_url}/api/v1/files/{file_id}?s3_object_name={quote(object_name, safe='')}"
 
 
-def _download_image_as_data_url(req: CanvasChatRequest, ref: Dict[str, Any]) -> str:
+def _download_image_as_data_url(req: AlphartEduChatRequest, ref: Dict[str, Any]) -> str:
     url = _backend_media_url(req, ref)
     if not url:
         return ""
@@ -180,7 +180,7 @@ def _download_image_as_data_url(req: CanvasChatRequest, ref: Dict[str, Any]) -> 
         resp = requests.get(url, headers=headers, timeout=60, allow_redirects=True)
         resp.raise_for_status()
     except requests.RequestException as exc:
-        print(f"[canvas-agent] image content hydrate failed url={url} error={exc}", flush=True)
+        print(f"[alphart-agent] image content hydrate failed url={url} error={exc}", flush=True)
         return ""
     mime_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip()
     if not mime_type.startswith("image/"):
@@ -190,7 +190,7 @@ def _download_image_as_data_url(req: CanvasChatRequest, ref: Dict[str, Any]) -> 
     return f"data:{mime_type};base64,{base64.b64encode(resp.content).decode('ascii')}"
 
 
-def _prepare_chat_content_for_model(req: CanvasChatRequest, content: Any) -> Any:
+def _prepare_chat_content_for_model(req: AlphartEduChatRequest, content: Any) -> Any:
     if not isinstance(content, list):
         return content
     prepared: List[Any] = []
@@ -1017,10 +1017,10 @@ def _forced_audio_to_media_pipeline(
     transcribe_args: Dict[str, Any] = {"audio_url": audio_url, "tool_call_id": transcribe_id}
 
     print(
-        f"[canvas-agent] audio pipeline: transcribing audio_url={audio_url[:80]}",
+        f"[alphart-agent] audio pipeline: transcribing audio_url={audio_url[:80]}",
         flush=True,
     )
-    transcribe_result = _handle_canvas_transcribe_audio(transcribe_args)
+    transcribe_result = _handle_alphart_transcribe_audio(transcribe_args)
     transcribed_text = _transcribed_text_from_result(transcribe_result) if _tool_result_success(transcribe_result) else ""
 
     transcribe_call_msg: Dict[str, Any] = {
@@ -1075,7 +1075,7 @@ def _forced_audio_to_media_pipeline(
 
     gen_id = str(uuid.uuid4())
     print(
-        f"[canvas-agent] audio pipeline: intent={intent} transcribed_len={len(transcribed_text)}",
+        f"[alphart-agent] audio pipeline: intent={intent} transcribed_len={len(transcribed_text)}",
         flush=True,
     )
 
@@ -1090,7 +1090,7 @@ def _forced_audio_to_media_pipeline(
         aspect_ratio = _aspect_ratio_from_text(effective_prompt)
         if aspect_ratio:
             gen_args["aspect_ratio"] = aspect_ratio
-        gen_result = _handle_canvas_generate_image(gen_args)
+        gen_result = _handle_alphart_generate_image(gen_args)
         gen_tool_name = "canvas_generate_image"
         final_text = "Image generated from your audio command." if _tool_result_success(gen_result) else "generate fail"
     else:
@@ -1101,7 +1101,7 @@ def _forced_audio_to_media_pipeline(
         aspect_ratio = _aspect_ratio_from_text(effective_prompt)
         if aspect_ratio:
             gen_args["aspect_ratio"] = aspect_ratio
-        gen_result = _handle_canvas_generate_video(gen_args)
+        gen_result = _handle_alphart_generate_video(gen_args)
         gen_tool_name = "canvas_generate_video"
         final_text = "Video generated from your audio command." if _tool_result_success(gen_result) else "generate fail"
 
@@ -1161,7 +1161,7 @@ def _forced_media_tool_messages(
         quantity = min(_quantity_from_text(user_message), 5)
         aspect_ratio = _aspect_ratio_from_text(user_message)
         print(
-            f"[canvas-agent] forcing image generation session_intent={intent} quantity={quantity} "
+            f"[alphart-agent] forcing image generation session_intent={intent} quantity={quantity} "
             f"tool_count={len(_selected_media_tools(intent))}",
             flush=True,
         )
@@ -1181,7 +1181,7 @@ def _forced_media_tool_messages(
                 args["input_images"] = input_images
             if aspect_ratio:
                 args["aspect_ratio"] = aspect_ratio
-            result = _handle_canvas_generate_image(args)
+            result = _handle_alphart_generate_image(args)
             if _tool_result_success(result):
                 success_count += 1
             messages.append(
@@ -1226,10 +1226,10 @@ def _forced_media_tool_messages(
     if aspect_ratio:
         args["aspect_ratio"] = aspect_ratio
     print(
-        f"[canvas-agent] forcing video generation session_intent={intent} tool_count={len(_selected_media_tools(intent))}",
+        f"[alphart-agent] forcing video generation session_intent={intent} tool_count={len(_selected_media_tools(intent))}",
         flush=True,
     )
-    result = _handle_canvas_generate_video(args)
+    result = _handle_alphart_generate_video(args)
     tool_name = "canvas_generate_video"
     final_text = (
         "Video generation has been submitted."
@@ -1262,7 +1262,7 @@ def _forced_media_tool_messages(
     ]
 
 
-def _canvas_agent_prompt(req: CanvasChatRequest) -> str:
+def _alphart_agent_prompt(req: AlphartEduChatRequest) -> str:
     tool_lines = _selected_tool_lines(req.tool_list)
     selected_tools = "\n".join(tool_lines) if tool_lines else "- No image/video/audio model selected. Ask the user to select a model before generation."
     return f"""
@@ -1311,6 +1311,15 @@ VIDEO CREATION RULES:
 - Do not claim media was generated until the tool returns a backend result.
 - If the legacy prompt mentions generate_image, call generate_image or canvas_generate_image. If it mentions generate_video, call generate_video or canvas_generate_video.
 
+GAME CREATION RULES:
+- Use canvas_generate_game or generate_game for requests like "make a game", "interactive demo", "quiz game", "platformer", "storybook game", "create a playable teaching activity", and equivalent Chinese/Traditional Chinese requests such as 生成游戏, 製作遊戲, 互动游戏, 互動遊戲, 闯关, 闖關, 小游戏, 小遊戲.
+- Game generation must follow this pipeline: 1) write a concise plan, 2) call the game tool with game_plan, layout_requirements, and review_checklist, 3) review the result, 4) only finalize after the result passes review.
+- The plan must include learning goal, target audience, template choice, core loop/rules, screen states, layout grid, safe area, asset list, and win/fail/completion states.
+- The layout requirements must explicitly require all content, labels, controls, sprites, dialogs, score panels, and buttons to stay inside the visible frame and their parent borders.
+- Review the result for content correctness, readable instructions, no clipped text, no overlapping elements, no overflow outside cards/frame/borders, usable controls, start/restart flow, win/fail state, and desktop/mobile fit.
+- If the game result has any layout or content issue, do not present it as finished. Revise the prompt with concrete fixes and call the game tool again.
+- Do not use image/video generation tools for playable game requests unless the game plan explicitly needs a static asset first.
+
 AUDIO INPUT RULES:
 - Audio is input-only. There is no text-to-speech output.
 - When the user message contains an audio_url content part, call canvas_transcribe_audio immediately to get the text.
@@ -1326,8 +1335,8 @@ ERROR HANDLING:
 """.strip()
 
 
-def _system_prompt(req: CanvasChatRequest) -> str:
-    return _canvas_agent_prompt(req)
+def _system_prompt(req: AlphartEduChatRequest) -> str:
+    return _alphart_agent_prompt(req)
 
 
 def _public_messages(messages: List[Any]) -> List[Any]:
@@ -1409,19 +1418,19 @@ def _has_visible_agent_output(messages: List[Any], final_response: str) -> bool:
     return False
 
 
-def _callback_backend_url(req: CanvasChatRequest) -> str:
-    return _string(req.backend_url or os.getenv("CANVAS_BACKEND_URL")).rstrip("/")
+def _callback_backend_url(req: AlphartEduChatRequest) -> str:
+    return _string(req.backend_url or os.getenv("ALPHART_EDU_BACKEND_URL") or os.getenv("CANVAS_BACKEND_URL")).rstrip("/")
 
 
 def _callback_service_token() -> str:
-    return _string(os.getenv("CANVAS_AGENT_TOKEN") or os.getenv("HERMES_AGENT_TOKEN"))
+    return _string(os.getenv("ALPHART_AGENT_TOKEN") or os.getenv("CANVAS_AGENT_TOKEN") or os.getenv("HERMES_AGENT_TOKEN"))
 
 
-def _post_chat_result_callback(req: CanvasChatRequest, response: Dict[str, Any]) -> None:
+def _post_chat_result_callback(req: AlphartEduChatRequest, response: Dict[str, Any]) -> None:
     backend_url = _callback_backend_url(req)
     if not backend_url:
         print(
-            f"[canvas-agent] chat result callback skipped session_id={req.session_id} reason=missing_backend_url",
+            f"[alphart-agent] chat result callback skipped session_id={req.session_id} reason=missing_backend_url",
             flush=True,
         )
         return
@@ -1443,17 +1452,17 @@ def _post_chat_result_callback(req: CanvasChatRequest, response: Dict[str, Any])
                 **({"Authorization": f"Bearer {token}"} if token else {}),
                 **({"X-Hermes-Agent-Token": token} if token else {}),
             },
-            timeout=int(os.getenv("CANVAS_BACKEND_CALLBACK_TIMEOUT_SECONDS", "30")),
+            timeout=int(os.getenv("ALPHART_BACKEND_CALLBACK_TIMEOUT_SECONDS") or os.getenv("CANVAS_BACKEND_CALLBACK_TIMEOUT_SECONDS", "30")),
         )
     except requests.RequestException as exc:
         print(
-            f"[canvas-agent] chat result callback failed session_id={req.session_id} error={exc}",
+            f"[alphart-agent] chat result callback failed session_id={req.session_id} error={exc}",
             flush=True,
         )
         return
     preview = (resp.text or "").replace("\n", " ")[:500]
     print(
-        f"[canvas-agent] chat result callback response session_id={req.session_id} status={resp.status_code} bytes={len(resp.text)} body={preview}",
+        f"[alphart-agent] chat result callback response session_id={req.session_id} status={resp.status_code} bytes={len(resp.text)} body={preview}",
         flush=True,
     )
 
@@ -1719,7 +1728,7 @@ def health() -> Dict[str, Any]:
 
 
 @app.post("/api/v1/agent/chats")
-def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
+def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
     _check_auth(authorization)
 
     candidates = _text_model_candidates(req)
@@ -1759,7 +1768,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         "user_uuid": req.user_uuid,
         "storage_prefix": req.storage_prefix,
         "auth_token": req.auth_token,
-        "backend_url": req.backend_url or os.getenv("CANVAS_BACKEND_URL", "http://localhost:57988"),
+        "backend_url": req.backend_url or os.getenv("ALPHART_EDU_BACKEND_URL") or os.getenv("CANVAS_BACKEND_URL", "http://localhost:57988"),
         "tool_list": req.tool_list,
         "input_images": input_images,
     }
@@ -1776,7 +1785,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         api_key = _api_key(config)
         if not provider or not model or not endpoint or not api_key:
             print(
-                f"[canvas-agent] skipping unconfigured text model session_id={req.session_id} provider={provider} model={model}",
+                f"[alphart-agent] skipping unconfigured text model session_id={req.session_id} provider={provider} model={model}",
                 flush=True,
             )
             continue
@@ -1799,20 +1808,20 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
                 if message:
                     attempt_events.append({"type": "status", "message": message})
 
-            with canvas_context(context):
+            with alphart_context(context):
                 agent = AIAgent(
                     base_url=endpoint,
                     api_key=api_key,
                     provider=provider,
                     api_mode=_string(config.get("api_mode")) or "chat_completions",
                     model=model,
-                    enabled_toolsets=["alphart-canvas"],
+                    enabled_toolsets=["alphart-edu"],
                     max_iterations=_agent_max_iterations(config),
                     quiet_mode=True,
                     session_id=req.session_id or None,
                     stream_delta_callback=on_delta,
                     status_callback=on_status,
-                    platform="alphart-canvas",
+                    platform="alphart",
                     user_id=req.user_id or req.user_uuid or None,
                     chat_id=req.session_id or None,
                     skip_memory=True,
@@ -1828,7 +1837,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
                     )
                 except Exception as exc:
                     print(
-                        f"[canvas-agent] chat model failed session_id={req.session_id} provider={provider} "
+                        f"[alphart-agent] chat model failed session_id={req.session_id} provider={provider} "
                         f"model={model} attempt={attempt}/{retry_count} error={exc}",
                         flush=True,
                     )
@@ -1838,7 +1847,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
                 events = attempt_events
                 break
             print(
-                f"[canvas-agent] chat model attempt failed session_id={req.session_id} provider={provider} "
+                f"[alphart-agent] chat model attempt failed session_id={req.session_id} provider={provider} "
                 f"model={model} attempt={attempt}/{retry_count} error={result.get('error')}",
                 flush=True,
             )
@@ -1874,7 +1883,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         else:
             if response_messages:
                 print(
-                    f"[canvas-agent] discarding non-tool reference image response session_id={req.session_id} message_count={len(response_messages)}",
+                    f"[alphart-agent] discarding non-tool reference image response session_id={req.session_id} message_count={len(response_messages)}",
                     flush=True,
                 )
             response_messages = []
@@ -1889,7 +1898,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
         else:
             final_response = _last_assistant_text(response_messages) or _last_assistant_text(raw_result_messages)
     user_audio_urls = _audio_urls_from_content(user_content)
-    with canvas_context(context):
+    with alphart_context(context):
         current_turn_messages = _messages_after_latest_user(response_messages)
         forced_messages = []
         if user_audio_urls and not _generation_tool_attempted(current_turn_messages, "audio"):
@@ -1923,7 +1932,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
     events = [*_events_from_messages(response_messages), *events]
     raw_count = len(raw_result_messages) if isinstance(raw_result_messages, list) else 0
     print(
-        "[canvas-agent] chat result "
+        "[alphart-agent] chat result "
         f"session_id={req.session_id} raw_messages={raw_count} "
         f"public_messages={len(response_messages)} final_response_len={len(final_response)} "
         f"failed={bool(result.get('failed') or empty_result_error)} "
@@ -1951,7 +1960,7 @@ def chat(req: CanvasChatRequest, authorization: Optional[str] = Header(default=N
 
 
 @app.post("/api/v1/agent/titles")
-def title(req: CanvasTitleRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
+def title(req: AlphartEduTitleRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
     _check_auth(authorization)
 
     provider = _string(req.text_model.get("provider"))
@@ -2027,7 +2036,7 @@ def main() -> None:
 
     host = os.getenv("HERMES_AGENT_HOST", "0.0.0.0")
     port = int(os.getenv("HERMES_AGENT_PORT", "58088"))
-    uvicorn.run("canvas_agent_service:app", host=host, port=port, reload=False)
+    uvicorn.run("alphart_agent_service:app", host=host, port=port, reload=False)
 
 
 if __name__ == "__main__":
