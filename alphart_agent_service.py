@@ -718,7 +718,16 @@ def _generation_tool_attempted(messages: List[Any], media_type: str = "") -> boo
                     return True
                 if expected == "video" and ("generate_video" in name or "canvas_generate_video" in name):
                     return True
-                if not expected and ("generate_image" in name or "canvas_generate_image" in name or "generate_video" in name or "canvas_generate_video" in name):
+                if expected == "game" and ("generate_game" in name or "canvas_generate_game" in name):
+                    return True
+                if not expected and (
+                    "generate_image" in name
+                    or "canvas_generate_image" in name
+                    or "generate_video" in name
+                    or "canvas_generate_video" in name
+                    or "generate_game" in name
+                    or "canvas_generate_game" in name
+                ):
                     return True
         if msg.get("role") == "tool":
             name = _string(msg.get("name")).lower()
@@ -726,7 +735,9 @@ def _generation_tool_attempted(messages: List[Any], media_type: str = "") -> boo
                 return True
             if expected == "video" and "video" in name:
                 return True
-            if not expected and ("image" in name or "video" in name):
+            if expected == "game" and "game" in name:
+                return True
+            if not expected and ("image" in name or "video" in name or "game" in name):
                 return True
     return False
 
@@ -741,7 +752,9 @@ def _generation_tool_failed(messages: List[Any], media_type: str = "") -> bool:
             continue
         if expected == "video" and "video" not in name:
             continue
-        if expected == "" and "image" not in name and "video" not in name:
+        if expected == "game" and "game" not in name:
+            continue
+        if expected == "" and "image" not in name and "video" not in name and "game" not in name:
             continue
         if not _tool_result_success(msg.get("content")):
             return True
@@ -752,7 +765,8 @@ def _game_tool_failed(messages: List[Any]) -> bool:
     for msg in messages or []:
         if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
-        if "generate_game" not in _string(msg.get("name")).lower():
+        name = _string(msg.get("name")).lower()
+        if "generate_game" not in name and "canvas_generate_game" not in name and "game" not in name:
             continue
         if not _tool_result_success(msg.get("content")):
             return True
@@ -783,6 +797,8 @@ def _aspect_ratio_from_text(text: str) -> str:
 
 
 def _tool_result_success(result: str) -> bool:
+    if _string(result).strip().lower() in {"generate fail", "system busy", SYSTEM_BUSY_MESSAGE.lower()}:
+        return False
     try:
         decoded = json.loads(result)
     except (TypeError, ValueError):
@@ -1452,7 +1468,7 @@ def _post_chat_result_callback(req: AlphartEduChatRequest, response: Dict[str, A
                 **({"Authorization": f"Bearer {token}"} if token else {}),
                 **({"X-Hermes-Agent-Token": token} if token else {}),
             },
-            timeout=int(os.getenv("ALPHART_BACKEND_CALLBACK_TIMEOUT_SECONDS") or os.getenv("CANVAS_BACKEND_CALLBACK_TIMEOUT_SECONDS", "30")),
+            timeout=int(os.getenv("ALPHART_EDU_BACKEND_CALLBACK_TIMEOUT_SECONDS") or os.getenv("CANVAS_BACKEND_CALLBACK_TIMEOUT_SECONDS", "30")),
         )
     except requests.RequestException as exc:
         print(
@@ -1872,6 +1888,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
     current_media_attempted = _generation_tool_attempted(current_turn_messages)
     current_media_failed = _generation_tool_failed(current_turn_messages)
     current_game_failed = _game_tool_failed(current_turn_messages)
+    current_tool_failed = current_media_failed or current_game_failed
     reference_image_generation = (
         bool(input_images)
         and not current_media_attempted
@@ -1888,7 +1905,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                 )
             response_messages = []
     final_response = _string(result.get("final_response"))
-    if current_media_failed or current_game_failed:
+    if current_tool_failed:
         final_response = SYSTEM_BUSY_MESSAGE
     if reference_image_generation and not _generation_tool_completed(response_messages, "image"):
         final_response = ""
@@ -1919,6 +1936,11 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
             )
         response_messages.extend(forced_messages)
     current_turn_messages = _messages_after_latest_user(response_messages)
+    current_media_failed = current_media_failed or _generation_tool_failed(current_turn_messages)
+    current_game_failed = current_game_failed or _game_tool_failed(current_turn_messages)
+    current_tool_failed = current_media_failed or current_game_failed
+    if current_tool_failed:
+        final_response = SYSTEM_BUSY_MESSAGE
     response_messages = _append_visible_generated_media(response_messages, current_turn_messages)
     response_messages = _sanitize_assistant_media_url_text(response_messages)
     final_response = _strip_media_urls_from_text(final_response)
@@ -1935,8 +1957,8 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "[alphart-agent] chat result "
         f"session_id={req.session_id} raw_messages={raw_count} "
         f"public_messages={len(response_messages)} final_response_len={len(final_response)} "
-        f"failed={bool(result.get('failed') or empty_result_error)} "
-        f"error={empty_result_error}",
+        f"failed={bool(result.get('failed') or current_tool_failed or empty_result_error)} "
+        f"error={empty_result_error or (SYSTEM_BUSY_MESSAGE if current_tool_failed else '')}",
         flush=True,
     )
     response = {
@@ -1951,9 +1973,9 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "total_tokens": result.get("total_tokens") or 0,
         "input_tokens": result.get("input_tokens") or 0,
         "output_tokens": result.get("output_tokens") or 0,
-        "interrupted": bool(result.get("interrupted") or current_game_failed),
-        "failed": bool(result.get("failed") or empty_result_error),
-        "error": empty_result_error or _string(result.get("error")),
+        "interrupted": bool(result.get("interrupted") or current_tool_failed),
+        "failed": bool(result.get("failed") or current_tool_failed or empty_result_error),
+        "error": empty_result_error or (SYSTEM_BUSY_MESSAGE if current_tool_failed else _string(result.get("error"))),
     }
     _post_chat_result_callback(req, response)
     return response
