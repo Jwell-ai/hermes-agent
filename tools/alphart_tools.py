@@ -315,18 +315,49 @@ def _request_game_upload_target(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _upload_game_html(target: Dict[str, Any], html: str) -> None:
-    upload_headers = {"Content-Type": str(target.get("content_type") or "text/html; charset=utf-8")}
-    resp = requests.put(
-        str(target.get("upload_url") or target["url"]),
-        data=html.encode("utf-8"),
-        headers=upload_headers,
-        timeout=int(
-            os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
-            or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")
-        ),
+    try:
+        import boto3  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("boto3 is required for game artifact upload; rebuild the agent image with the bedrock extra") from exc
+
+    bucket = str(
+        os.getenv("ALPHART_EDU_S3_PUBLIC_BUCKET")
+        or os.getenv("S3_PUBLIC_BUCKET")
+        or os.getenv("S3_BUCKET")
+        or target.get("bucket_name")
+        or ""
+    ).strip()
+    key = str(target.get("s3_object_name") or "").strip()
+    endpoint = str(os.getenv("ALPHART_EDU_S3_ENDPOINT") or os.getenv("S3_ENDPOINT") or "").strip()
+    region = str(os.getenv("ALPHART_EDU_S3_REGION") or os.getenv("S3_REGION") or "us-east-1").strip()
+    access_key = str(os.getenv("ALPHART_EDU_S3_ACCESS_KEY_ID") or os.getenv("S3_ACCESS_KEY_ID") or "").strip()
+    secret_key = str(os.getenv("ALPHART_EDU_S3_SECRET_ACCESS_KEY") or os.getenv("S3_SECRET_ACCESS_KEY") or "").strip()
+    force_path_style = str(os.getenv("ALPHART_EDU_S3_FORCE_PATH_STYLE") or os.getenv("S3_FORCE_PATH_STYLE") or "true").strip().lower() in {"1", "true", "yes", "on"}
+    if not bucket or not key:
+        raise RuntimeError("game upload target missing bucket or s3_object_name")
+    if not access_key or not secret_key:
+        raise RuntimeError("ALPHART_EDU_S3_ACCESS_KEY_ID and ALPHART_EDU_S3_SECRET_ACCESS_KEY are required for game upload")
+    client_kwargs: Dict[str, Any] = {
+        "region_name": region,
+        "aws_access_key_id": access_key,
+        "aws_secret_access_key": secret_key,
+    }
+    if endpoint:
+        if not endpoint.startswith(("http://", "https://")):
+            endpoint = "https://" + endpoint
+        client_kwargs["endpoint_url"] = endpoint
+    if force_path_style:
+        from botocore.config import Config  # type: ignore
+
+        client_kwargs["config"] = Config(s3={"addressing_style": "path"})
+    s3 = boto3.client("s3", **client_kwargs)
+    s3.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=html.encode("utf-8"),
+        ContentType=str(target.get("content_type") or "text/html; charset=utf-8"),
+        ACL="public-read",
     )
-    if resp.status_code < 200 or resp.status_code >= 300:
-        raise RuntimeError(f"game upload failed {resp.status_code}: {resp.text[:300]}")
 
 
 def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
