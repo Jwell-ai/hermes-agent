@@ -280,6 +280,8 @@ def _selected_tool_lines(tools: List[Any]) -> List[str]:
             continue
         tool_id = _string(tool.get("id"))
         media_type = _string(tool.get("type") or tool.get("model_type"))
+        if media_type.lower() == "game" or "generate_game" in tool_id or "canvas_generate_game" in tool_id:
+            continue
         provider = _string(tool.get("provider"))
         model = _string(tool.get("model") or tool.get("name") or tool.get("key"))
         if not tool_id and not (media_type and provider and model):
@@ -602,6 +604,15 @@ def _media_intent(text: str, has_image_context: bool = False, has_video_context:
         "boss challenge",
         "maze",
         "arcade",
+        "gba",
+        "pokemon",
+        "pokémon",
+        "battle",
+        "rpg",
+        "quest",
+        "trainer",
+        "level up",
+        "level-up",
         "juego",
         "juegos",
         "小游戏",
@@ -1431,13 +1442,18 @@ VIDEO CREATION RULES:
 - If the legacy prompt mentions generate_image, call generate_image or canvas_generate_image. If it mentions generate_video, call generate_video or canvas_generate_video.
 
 GAME CREATION RULES:
-- Use canvas_generate_game or generate_game for requests like "make a game", "interactive demo", "quiz game", "platformer", "storybook game", "create a playable teaching activity", and equivalent Chinese/Traditional Chinese requests such as 生成游戏, 製作遊戲, 互动游戏, 互動遊戲, 闯关, 闖關, 小游戏, 小遊戲.
-- Game generation must follow this pipeline: 1) write a concise plan, 2) create the complete self-contained game HTML yourself, 3) call the game tool with prompt, html, game_plan, layout_requirements, and review_checklist, 4) only finalize after the tool uploads and returns a result.
+- Game requests are backend-routed by this service before the normal model/tool loop. Do not manually call canvas_generate_game or generate_game from the chat model.
+- Never serialize full game HTML into tool_call arguments. The Go backend owns HTML generation, review, upload, and retry for games.
+- Treat requests like "make a game", "interactive demo", "quiz game", "platformer", "storybook game", "GBA/Pokemon-style educational battle", "create a playable teaching activity", and equivalent Chinese/Traditional Chinese/Spanish requests such as 生成游戏, 製作遊戲, 互动游戏, 互動遊戲, 闯关, 闖關, 小游戏, 小遊戲, crear juego as game requests.
+- Game generation pipeline is: this service detects game intent, sends the compact prompt to the Go backend, and the backend creates/reviews/uploads the complete self-contained game HTML.
 - Default to a simple pixel-art game, not a plain web form. Use blocky sprites, tile/grid playfields, crisp edges, limited high-contrast palettes, HUD panels, and 8-bit inspired controls.
 - Prefer real playable patterns: pixel platformer, top-down maze/exploration, arcade matcher, drag-and-drop sorter, physics launcher, simulation sandbox, boss challenge, or story quest. Use a plain quiz/card/form only if the user explicitly asks for a quiz.
 - This is an education platform: preserve content precision over visual novelty. Formulas, units, definitions, names, dates, symbols, vocabulary, causal relationships, and domain constraints must be correct.
+- This is also a student-safe education platform: do not include vulgar/profane language, sexual content, graphic violence, gore, hate/harassment, self-harm, drug abuse, gambling, extremist content, humiliation, or age-inappropriate jokes. If the game has enemies, attacks, hazards, or penalties, make them non-graphic classroom-safe metaphors such as shields, puzzles, energy, obstacles, misconception blockers, or abstract pixel effects.
 - If the source content is ambiguous, avoid inventing details. Use only stable facts from the user request and generally accepted knowledge; mark uncertainty in plain language when necessary.
-- The plan must include learning goal, target audience, precise knowledge points, likely misconceptions, selected game pattern, core loop, player controls, hazards/collectibles/targets, rules, screen states, pixel-art style, layout grid, safe area, asset list, and win/fail/completion states.
+- The plan must include learning goal, target audience, precise knowledge points, a content_facts ledger, answer option groups with correct choices, likely misconceptions, selected game pattern, core loop, player controls, hazards/collectibles/targets, rules, screen states, pixel-art style, layout grid, safe area, asset list, and win/fail/completion states.
+- Every educational label, collectible, hazard, correct answer, wrong answer, dialog, and feedback message must trace to the content_facts ledger, the user request, or stable common knowledge. Do not invent numbers, formulas, dates, names, properties, or causal claims for gameplay.
+- Every question or answer-option set must include at least one correct choice. Single-answer questions must have exactly one correct choice. Multi-select questions must clearly say multi-select and have one or more correct choices. Never show an impossible question with no right answer.
 - Map correct knowledge into mechanics carefully: collectibles should represent correct facts, hazards should represent specific misconceptions, and feedback must explain why an answer/action is correct or wrong.
 - The game must have an actual loop: the player moves/chooses/collects/avoids/solves, receives immediate feedback, and advances toward score, timer, level, or completion.
 - The layout requirements must explicitly require all content, labels, controls, sprites, dialogs, score panels, and buttons to stay inside the visible frame and their parent borders.
