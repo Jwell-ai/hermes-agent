@@ -22,7 +22,6 @@ import requests
 
 from run_agent import AIAgent
 from tools.alphart_tools import (
-    _handle_alphart_generate_game,
     _handle_alphart_generate_image,
     _handle_alphart_generate_video,
     _handle_alphart_transcribe_audio,
@@ -280,8 +279,6 @@ def _selected_tool_lines(tools: List[Any]) -> List[str]:
             continue
         tool_id = _string(tool.get("id"))
         media_type = _string(tool.get("type") or tool.get("model_type"))
-        if media_type.lower() == "game" or "generate_game" in tool_id or "canvas_generate_game" in tool_id:
-            continue
         provider = _string(tool.get("provider"))
         model = _string(tool.get("model") or tool.get("name") or tool.get("key"))
         if not tool_id and not (media_type and provider and model):
@@ -594,44 +591,10 @@ def _media_intent(text: str, has_image_context: bool = False, has_video_context:
         "动画",
         "短片",
     )
-    game_words = (
-        "game",
-        "playable",
-        "interactive demo",
-        "interactive activity",
-        "quiz game",
-        "platformer",
-        "boss challenge",
-        "maze",
-        "arcade",
-        "gba",
-        "pokemon",
-        "pokémon",
-        "battle",
-        "rpg",
-        "quest",
-        "trainer",
-        "level up",
-        "level-up",
-        "juego",
-        "juegos",
-        "小游戏",
-        "小遊戲",
-        "游戏",
-        "遊戲",
-        "互动游戏",
-        "互動遊戲",
-        "闯关",
-        "闖關",
-        "关卡",
-        "關卡",
-    )
     has_creation = any(word in value for word in creation_words)
     has_regeneration = _regeneration_intent(value)
     if not has_creation and not (has_regeneration and (has_image_context or has_video_context)):
         return ""
-    if any(word in value for word in game_words):
-        return "game"
     if any(word in value for word in video_words):
         return "video"
     if any(word in value for word in image_words):
@@ -1272,48 +1235,6 @@ def _forced_media_tool_messages(
         messages.append({"role": "assistant", "content": final_text})
         return messages
 
-    if intent == "game":
-        call_id = str(uuid.uuid4())
-        args = {
-            "prompt": user_message,
-            "tool_call_id": call_id,
-        }
-        print(
-            "[alphart-agent] forcing game generation session_intent=game",
-            flush=True,
-        )
-        result = _handle_alphart_generate_game(args)
-        tool_name = "canvas_generate_game"
-        final_text = (
-            "Game generation has been submitted."
-            if _tool_result_success(result)
-            else "generate fail"
-        )
-        return [
-            {"role": "assistant", "content": plan_text},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_name,
-                            "arguments": json.dumps(args, ensure_ascii=False),
-                        },
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": call_id,
-                "name": tool_name,
-                "content": result,
-            },
-            {"role": "assistant", "content": final_text},
-        ]
-
     call_id = str(uuid.uuid4())
     args = {
         "prompt": user_message,
@@ -1357,39 +1278,6 @@ def _forced_media_tool_messages(
         },
         {"role": "assistant", "content": final_text},
     ]
-
-
-ALPHART_GAME_HTML_SCAFFOLD = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#050816}
-    body{display:grid;place-items:center}
-    #viewport{position:relative;width:100vw;height:100vh;overflow:hidden;display:grid;place-items:center}
-    #game-root{position:absolute;width:1920px;height:1080px;overflow:hidden;transform-origin:top left;box-sizing:border-box}
-  </style>
-</head>
-<body>
-  <div id="viewport"><main id="game-root" role="application" aria-label="Educational game">visible HUD/playfield/instructions/controls go here</main></div>
-  <script>
-    const STAGE_W=1920, STAGE_H=1080, root=document.getElementById('game-root');
-    function fitStage(){
-      const s=Math.min(innerWidth/STAGE_W, innerHeight/STAGE_H);
-      root.style.transform='scale('+s+')';
-      root.style.left=((innerWidth-STAGE_W*s)/2)+'px';
-      root.style.top=((innerHeight-STAGE_H*s)/2)+'px';
-    }
-    addEventListener('resize', fitStage); fitStage();
-    addEventListener('message', function(e){
-      if(e.data && e.data.type==='mute'){
-        document.querySelectorAll('audio,video').forEach(function(el){ el.muted=!!e.data.muted; });
-      }
-    });
-  </script>
-</body>
-</html>"""
 
 
 def _alphart_agent_prompt(req: AlphartEduChatRequest) -> str:
@@ -1442,10 +1330,8 @@ VIDEO CREATION RULES:
 - If the legacy prompt mentions generate_image, call generate_image or canvas_generate_image. If it mentions generate_video, call generate_video or canvas_generate_video.
 
 GAME CREATION RULES:
-- Game requests are backend-routed by this service before the normal model/tool loop. Do not manually call canvas_generate_game or generate_game from the chat model.
-- Never serialize full game HTML into tool_call arguments. The Go backend owns HTML generation, review, upload, and retry for games.
-- Treat requests like "make a game", "interactive demo", "quiz game", "platformer", "storybook game", "GBA/Pokemon-style educational battle", "create a playable teaching activity", and equivalent Chinese/Traditional Chinese/Spanish requests such as 生成游戏, 製作遊戲, 互动游戏, 互動遊戲, 闯关, 闖關, 小游戏, 小遊戲, crear juego as game requests.
-- Game generation pipeline is: this service detects game intent, sends the compact prompt to the Go backend, and the backend creates/reviews/uploads the complete self-contained game HTML.
+- Use canvas_generate_game or generate_game for requests like "make a game", "interactive demo", "quiz game", "platformer", "storybook game", "GBA/Pokemon-style educational battle", "create a playable teaching activity", and equivalent Chinese/Traditional Chinese/Spanish requests such as 生成游戏, 製作遊戲, 互动游戏, 互動遊戲, 闯关, 闖關, 小游戏, 小遊戲, crear juego.
+- Game generation must follow this pipeline: 1) write a concise plan, 2) create the complete self-contained game HTML yourself, 3) call the game tool with prompt, html, game_plan, layout_requirements, and review_checklist, 4) only finalize after the tool uploads and returns a result.
 - Default to a simple pixel-art game, not a plain web form. Use blocky sprites, tile/grid playfields, crisp edges, limited high-contrast palettes, HUD panels, and 8-bit inspired controls.
 - Prefer real playable patterns: pixel platformer, top-down maze/exploration, arcade matcher, drag-and-drop sorter, physics launcher, simulation sandbox, boss challenge, or story quest. Use a plain quiz/card/form only if the user explicitly asks for a quiz.
 - This is an education platform: preserve content precision over visual novelty. Formulas, units, definitions, names, dates, symbols, vocabulary, causal relationships, and domain constraints must be correct.
@@ -1459,8 +1345,6 @@ GAME CREATION RULES:
 - The layout requirements must explicitly require all content, labels, controls, sprites, dialogs, score panels, and buttons to stay inside the visible frame and their parent borders.
 - The game result page must keep a fixed 1920x1080 logical game window/stage. Include a visible root element such as #game-root or #game-stage with width:1920px and height:1080px, center it, and scale the whole stage with transform: scale(...) for smaller browser/iframe viewports. Do not reflow the game into arbitrary smaller dimensions.
 - Keep every sprite, row/column, HUD panel, dialog, button, and label inside the 1920x1080 stage safe area.
-- Use a coding-agent scaffold instead of starting from a blank file. Required scaffold shape:
-{ALPHART_GAME_HTML_SCAFFOLD}
 - Review the result for content correctness, readable instructions, no clipped text, no overlapping elements, no overflow outside cards/frame/borders, usable controls, start/restart flow, win/fail state, and desktop/mobile fit.
 - Reject boring outputs: if it is only a static explanation, a button list, or a form-like quiz, redesign it as a playable pixel game before calling the tool.
 - Reject inaccurate outputs: if any educational statement is wrong, vague enough to mislead, or conflicts with the user's content, fix it before calling the tool.
@@ -1566,50 +1450,6 @@ def _has_visible_agent_output(messages: List[Any], final_response: str) -> bool:
         if role == "tool" and _tool_result_success(msg.get("content")):
             return True
     return False
-
-
-def _chat_response_from_forced_messages(
-    req: AlphartEduChatRequest,
-    response_messages: List[Dict[str, Any]],
-    model: str = "",
-    provider: str = "",
-) -> Dict[str, Any]:
-    current_turn_messages = _messages_after_latest_user(response_messages)
-    current_tool_failed = _generation_tool_failed(current_turn_messages) or _game_tool_failed(current_turn_messages)
-    final_response = SYSTEM_BUSY_MESSAGE if current_tool_failed else _last_assistant_text(response_messages)
-    response_messages = _append_visible_generated_media(response_messages, current_turn_messages)
-    response_messages = _sanitize_assistant_media_url_text(response_messages)
-    final_response = _strip_media_urls_from_text(final_response)
-    if not _has_visible_agent_output(response_messages, final_response):
-        final_response = "generate fail"
-        response_messages.append({"role": "assistant", "content": final_response})
-        current_tool_failed = True
-    events = _events_from_messages(response_messages)
-    print(
-        "[alphart-agent] chat result "
-        f"session_id={req.session_id} raw_messages=0 "
-        f"public_messages={len(response_messages)} final_response_len={len(final_response)} "
-        f"failed={current_tool_failed} error={SYSTEM_BUSY_MESSAGE if current_tool_failed else ''}",
-        flush=True,
-    )
-    response = {
-        "status": "ok",
-        "final_response": final_response,
-        "messages": response_messages,
-        "events": events,
-        "model": model,
-        "provider": provider,
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "interrupted": current_tool_failed,
-        "failed": current_tool_failed,
-        "error": SYSTEM_BUSY_MESSAGE if current_tool_failed else "",
-    }
-    _post_chat_result_callback(req, response)
-    return response
 
 
 def _callback_backend_url(req: AlphartEduChatRequest) -> str:
@@ -1966,23 +1806,6 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "tool_list": req.tool_list,
         "input_images": input_images,
     }
-
-    if _media_intent(user_message, has_image_context=bool(input_images)) == "game":
-        with alphart_context(context):
-            response_messages = _forced_media_tool_messages(
-                user_message,
-                [],
-                [],
-                has_image_context=bool(input_images),
-                input_images=input_images,
-            )
-        if response_messages:
-            return _chat_response_from_forced_messages(
-                req,
-                response_messages,
-                model=_string(primary_text_model.get("model")),
-                provider=_string(primary_text_model.get("provider")),
-            )
 
     events: List[Dict[str, Any]] = []
     result: Dict[str, Any] = {}
