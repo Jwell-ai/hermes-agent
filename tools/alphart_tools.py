@@ -244,8 +244,9 @@ def _default_game_layout_requirements() -> Dict[str, Any]:
         "anti_form_rule": "Do not make a plain web form, static worksheet, or button-only quiz unless the user explicitly asks for a quiz/form.",
         "playfield": "Use a real game area with player movement, collectibles/hazards/targets, score/progress, and visible feedback.",
         "stage_rule": "The result page must include a visible root game stage with width:1920px and height:1080px. Center it in the page and scale it with transform: scale(...) from transform-origin: top left when the viewport is smaller.",
-        "safe_area": "Keep all text, buttons, sprites, score panels, and dialogs inside the 1920x1080 visible game frame.",
-        "overflow_policy": "No clipped text, horizontal scroll, overlapping cards, or elements outside their parent border.",
+        "safe_area": "Keep all text, buttons, sprites, score panels, dialogs, modals, tooltips, and windows inside x=40..1880 and y=40..1040 of the 1920x1080 stage.",
+        "overflow_policy": "No clipped text, page scrolling, horizontal scroll, overlapping cards, or elements outside their parent border. Use box-sizing:border-box globally and overflow:hidden on html, body, and the root stage.",
+        "positioning_policy": "Absolutely positioned panels/windows/widgets must use explicit left/top/width/height values that fit within the safe area including padding and borders. Do not use negative offsets, fixed-position overlays, viewport-sized panels, or transforms that push UI out of frame.",
         "typography": "Use readable font sizes and wrap long labels instead of shrinking below legibility.",
         "controls": "Support keyboard and mouse/touch. On-screen controls must remain reachable on desktop and mobile sizes.",
     }
@@ -269,7 +270,10 @@ def _default_game_review_checklist() -> Dict[str, Any]:
         ],
         "ui_layout": [
             "No element exceeds the viewport, card, panel, or border.",
+            "Every HUD, modal/window, widget, card, dialog, button, tooltip, label, and sprite stays inside x=40..1880 and y=40..1040 of the 1920x1080 stage.",
             "No text is clipped or hidden behind another element.",
+            "No page scrolling is possible; html/body/stage overflow is hidden and layout is contained.",
+            "No negative offsets, fixed-position overlays, viewport-sized panels, or transforms can push UI outside the stage.",
             "Buttons, score, progress, dialogs, and game objects have enough spacing.",
             "The layout works at common 16:9, 4:3, tablet, and mobile viewport sizes.",
         ],
@@ -643,8 +647,9 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                     "Complete self-contained playable game HTML. Must start with <!DOCTYPE html>, "
                     "include visible first-paint game DOM in <body> (game container/playfield, HUD or score/progress, "
                     "instructions, and controls), inline CSS/JS, closing </body></html>, and a fixed 1920x1080 logical "
-                    "game stage that scales as a whole to fit smaller viewports. Do not rely on JavaScript to create "
-                    "the only visible game DOM after load."
+                    "game stage that scales as a whole to fit smaller viewports. All windows/widgets/HUD/dialogs/buttons "
+                    "must stay inside x=40..1880 and y=40..1040; html/body/stage must not scroll; use box-sizing:border-box "
+                    "and overflow:hidden. Do not rely on JavaScript to create the only visible game DOM after load."
                 ),
             },
             "game_plan": {
@@ -695,7 +700,8 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                 "type": "object",
                 "description": (
                     "Responsive layout constraints. Must require no overflow, no clipped text, "
-                    "no overlap, readable labels, and all controls inside the game frame."
+                    "no overlap, readable labels, all controls inside the game frame, and every widget/window "
+                    "inside the 40px safe-area inset of the 1920x1080 stage."
                 ),
             },
             "review_checklist": {

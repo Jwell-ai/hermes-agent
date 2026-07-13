@@ -1390,7 +1390,9 @@ GAME CREATION RULES:
 - Do not ship fake gameplay: no static-only cards, placeholder TODO logic, decorative sprites that never affect state, stub handlers, fake progress, or instructions that describe controls/mechanics missing from the code.
 - The layout requirements must explicitly require all content, labels, controls, sprites, dialogs, score panels, and buttons to stay inside the visible frame and their parent borders.
 - The game result page must keep a fixed 1920x1080 logical game window/stage. Include a visible root element such as #game-root or #game-stage with width:1920px and height:1080px, center it, and scale the whole stage with transform: scale(...) for smaller browser/iframe viewports. Do not reflow the game into arbitrary smaller dimensions.
-- Keep every sprite, row/column, HUD panel, dialog, button, and label inside the 1920x1080 stage safe area.
+- Keep every sprite, row/column, HUD panel, dialog, modal/window, widget, tooltip, button, and label inside the 1920x1080 stage safe area: x=40..1880 and y=40..1040. Include padding and borders in that budget.
+- Use global box-sizing:border-box and set html, body, and the root stage to overflow:hidden. Do not use negative offsets, fixed-position overlays, viewport-sized panels, or transforms that can push UI outside the stage.
+- Any absolutely positioned panel/window/widget must have explicit left/top/width/height values that fit inside the safe area at 1920x1080.
 - Review the result for content correctness, readable instructions, no clipped text, no overlapping elements, no overflow outside cards/frame/borders, usable controls, start/restart flow, win/fail state, and desktop/mobile fit.
 - Reject boring outputs: if it is only a static explanation, a button list, or a form-like quiz, redesign it as a playable pixel game before calling the tool.
 - Reject inaccurate outputs: if any educational statement is wrong, vague enough to mislead, or conflicts with the user's content, fix it before calling the tool.
