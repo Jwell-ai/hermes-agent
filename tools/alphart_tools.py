@@ -228,6 +228,7 @@ def _default_game_plan() -> Dict[str, Any]:
             "Choose a playable pixel-game pattern that fits the concept; avoid a static form or plain card quiz unless explicitly requested.",
             "Map learning content into player actions, hazards, collectibles, levels, feedback, and win/fail conditions.",
             "Design the screen layout with a pixel playfield, HUD, safe text panels, and responsive controls.",
+            "Implement and wire the controls, game state, update/render loop, scoring/progress, validation/collision logic, and reachable ending.",
             "Generate one complete self-contained HTML file with inline CSS/JS and no external assets.",
             "Review content accuracy, playability, layout overflow, sprite readability, and interaction states before finalizing.",
         ],
@@ -274,7 +275,9 @@ def _default_game_review_checklist() -> Dict[str, Any]:
         ],
         "interaction": [
             "Start/restart flow works.",
+            "Start/restart buttons have real event handlers, not placeholder UI.",
             "There is an actual play loop: move/choose/collect/avoid/solve, then receive immediate feedback.",
+            "Keyboard, mouse, touch, or button input mutates state and updates visible UI.",
             "Player can win, fail, or complete a level; the state is visible.",
             "Win/fail/completion state is visible.",
             "Keyboard, mouse, and touch interactions are not blocked.",
@@ -283,6 +286,10 @@ def _default_game_review_checklist() -> Dict[str, Any]:
             "Not just a form or static card.",
             "At least one sprite/player/object moves or changes in response to input.",
             "Challenge has pacing: timer, level, score target, hazards, or progression.",
+            "Score, progress, timer, level, selected answer, or player position changes through gameplay.",
+            "Collision, answer checking, target validation, or equivalent challenge logic is implemented.",
+            "Win/fail/completion can be reached by playing the game.",
+            "No TODO placeholders, stub handlers, fake buttons, or comments replacing core game logic.",
         ],
     }
 
