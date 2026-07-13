@@ -298,10 +298,45 @@ def _game_html_feedback(html: str) -> str:
     body_open_end = lower.find(">", body_start)
     if body_start < 0 or body_end <= body_start or body_open_end < 0:
         return "game HTML must include a valid <body> element"
-    body = value[body_start + body_open_end + 1 : body_end].strip().lower()
-    if not any(tag in body for tag in ("<div", "<main", "<section", "<canvas", "<button")):
+    body = value[body_start + body_open_end + 1 : body_end].strip()
+    visible_body = _strip_invisible_game_html(body)
+    if not visible_body.strip():
         return "game HTML body must include visible game DOM content"
+    if not re.search(r"<(main|section|article|div|canvas|svg|button|input|label|h[1-6]|p|span)\b", visible_body, re.I | re.S):
+        return "game HTML body must include visible game DOM content"
+    if not re.search(r"\b(game|board|canvas|play|start|score|level|timer|hud|player|sprite|challenge|mission|restart|win|lose|control|controls)\b", visible_body, re.I | re.S):
+        return "game HTML body must include visible game DOM content such as a playfield, HUD/score, instructions, or controls"
     return ""
+
+
+def _strip_invisible_game_html(body: str) -> str:
+    value = re.sub(
+        r"<!--.*?-->|<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>|<template\b[^>]*>.*?</template>|<noscript\b[^>]*>.*?</noscript>|<meta\b[^>]*>|<link\b[^>]*>",
+        " ",
+        body,
+        flags=re.I | re.S,
+    )
+    return _strip_hidden_game_html(value)
+
+
+def _strip_hidden_game_html(body: str) -> str:
+    current = body
+    previous = None
+    while current != previous:
+        previous = current
+        current = re.sub(
+            r"<([a-z][a-z0-9:-]*)\b[^>]*(?:\shidden(?:\s|=|>)|style\s*=\s*[\"'][^\"']*(?:display\s*:\s*none|visibility\s*:\s*hidden)[^\"']*[\"'])[^>]*>.*?</\1>",
+            " ",
+            current,
+            flags=re.I | re.S,
+        )
+        current = re.sub(
+            r"<[a-z][a-z0-9:-]*\b[^>]*(?:\shidden(?:\s|=|/?>)|style\s*=\s*[\"'][^\"']*(?:display\s*:\s*none|visibility\s*:\s*hidden)[^\"']*[\"'])[^>]*/?>",
+            " ",
+            current,
+            flags=re.I | re.S,
+        )
+    return current
 
 
 def _request_game_upload_target(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -587,7 +622,9 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Complete self-contained playable game HTML. Must start with <!DOCTYPE html>, "
-                    "include <body> visible DOM, inline CSS/JS, closing </body></html>, and responsive layout."
+                    "include visible first-paint game DOM in <body> (game container/playfield, HUD or score/progress, "
+                    "instructions, and controls), inline CSS/JS, closing </body></html>, and responsive layout. "
+                    "Do not rely on JavaScript to create the only visible game DOM after load."
                 ),
             },
             "game_plan": {

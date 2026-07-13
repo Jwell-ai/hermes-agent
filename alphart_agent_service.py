@@ -1344,6 +1344,7 @@ GAME CREATION RULES:
 - If the game result has any layout or content issue, do not present it as finished. Revise the prompt with concrete fixes and call the game tool again.
 - Do not use image/video generation tools for playable game requests unless the game plan explicitly needs a static asset first.
 - The game tool uploads the HTML from the agent. Never call the game tool with only a prompt. The html argument must be a full document beginning with <!DOCTYPE html> and ending with </html>.
+- The HTML body must include visible first-paint game DOM content directly in the markup: a root game container, playfield or canvas/SVG, HUD/score/progress, instructions, and start/restart or control elements. Do not rely on JavaScript to create the only visible game DOM after load.
 - Keep generated HTML compact enough for a tool argument, but complete. Do not omit <body>, script, controls, or closing tags.
 
 AUDIO INPUT RULES:
