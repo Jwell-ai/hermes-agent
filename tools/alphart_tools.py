@@ -614,10 +614,11 @@ CANVAS_GENERATE_GAME_SCHEMA = {
         "and story quest. Because this is for an education platform, preserve content "
         "precision: formulas, units, definitions, terminology, names, dates, and causal "
         "relationships must stay correct. Use this for 'make a game that teaches/explains ...' or "
-        "'create a quiz/game about ...' requests. Before calling, create a strict plan. "
+        "'create a quiz/game about ...' requests. Before calling, create a strict plan internally. "
         "After the tool returns, review content, UI layout, and interactions; if the result "
         "has clipped text, overflow, overlapping controls, or out-of-frame elements, revise "
-        "the prompt and regenerate instead of finalizing."
+        "the prompt and regenerate instead of finalizing. Keep optional planning fields concise; "
+        "the tool will apply the default plan, layout, and QA checklist when they are omitted."
     ),
     "parameters": {
         "type": "object",
@@ -649,7 +650,7 @@ CANVAS_GENERATE_GAME_SCHEMA = {
             "game_plan": {
                 "type": "object",
                 "description": (
-                    "Required planning payload: learning goal, audience, precise knowledge points, "
+                    "Optional concise planning payload: learning goal, audience, precise knowledge points, "
                     "selected game pattern, core loop, player controls, hazards/collectibles/targets, "
                     "rules, screen states, pixel-art style, layout grid/safe area, assets, and "
                     "success/failure states."
@@ -705,7 +706,7 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                 ),
             },
         },
-        "required": ["prompt", "html", "game_plan", "layout_requirements", "review_checklist"],
+        "required": ["prompt", "html"],
     },
 }
 

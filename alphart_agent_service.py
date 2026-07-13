@@ -609,6 +609,50 @@ def _media_intent(text: str, has_image_context: bool = False, has_video_context:
     return ""
 
 
+def _game_intent(text: str) -> bool:
+    value = (text or "").lower()
+    if not value.strip():
+        return False
+    return any(
+        word in value
+        for word in (
+            "game",
+            "playable",
+            "interactive demo",
+            "platformer",
+            "maze",
+            "arcade",
+            "boss challenge",
+            "storybook game",
+            "pokemon-style",
+            "pokémon-style",
+            "生成游戏",
+            "製作遊戲",
+            "制作游戏",
+            "互动游戏",
+            "互動遊戲",
+            "闯关",
+            "闖關",
+            "小游戏",
+            "小遊戲",
+            "crear juego",
+        )
+    )
+
+
+def _agent_max_tokens(config: Dict[str, Any], *, is_game: bool = False) -> Optional[int]:
+    configured = _int(config.get("max_tokens"), 0)
+    env_name = "ALPHART_AGENT_GAME_MAX_TOKENS" if is_game else "ALPHART_AGENT_MAX_TOKENS"
+    env_value = _int(os.getenv(env_name), 0)
+    if is_game:
+        return max(configured, env_value, 32768)
+    if configured > 0:
+        return configured
+    if env_value > 0:
+        return env_value
+    return None
+
+
 def _media_analysis_intent(value: str) -> bool:
     if not re.search(r"<input_(?:images|videos)\b", value) and not any(
         word in value
@@ -1331,7 +1375,7 @@ VIDEO CREATION RULES:
 
 GAME CREATION RULES:
 - Use canvas_generate_game or generate_game for requests like "make a game", "interactive demo", "quiz game", "platformer", "storybook game", "GBA/Pokemon-style educational battle", "create a playable teaching activity", and equivalent Chinese/Traditional Chinese/Spanish requests such as 生成游戏, 製作遊戲, 互动游戏, 互動遊戲, 闯关, 闖關, 小游戏, 小遊戲, crear juego.
-- Game generation must follow this pipeline: 1) write a concise plan, 2) create the complete self-contained game HTML yourself, 3) call the game tool with prompt, html, game_plan, layout_requirements, and review_checklist, 4) only finalize after the tool uploads and returns a result.
+- Game generation must follow this pipeline: 1) write a concise internal plan, 2) create the complete self-contained game HTML yourself, 3) call the game tool with prompt and html, adding only concise game_plan/layout_requirements/review_checklist fields if useful, 4) only finalize after the tool uploads and returns a result.
 - Default to a simple pixel-art game, not a plain web form. Use blocky sprites, tile/grid playfields, crisp edges, limited high-contrast palettes, HUD panels, and 8-bit inspired controls.
 - Prefer real playable patterns: pixel platformer, top-down maze/exploration, arcade matcher, drag-and-drop sorter, physics launcher, simulation sandbox, boss challenge, or story quest. Use a plain quiz/card/form only if the user explicitly asks for a quiz.
 - This is an education platform: preserve content precision over visual novelty. Formulas, units, definitions, names, dates, symbols, vocabulary, causal relationships, and domain constraints must be correct.
@@ -1354,7 +1398,7 @@ GAME CREATION RULES:
 - Do not use image/video generation tools for playable game requests unless the game plan explicitly needs a static asset first.
 - The game tool uploads the HTML from the agent. Never call the game tool with only a prompt. The html argument must be a full document beginning with <!DOCTYPE html> and ending with </html>.
 - The HTML body must include visible first-paint game DOM content directly in the markup: a 1920x1080 root game container, playfield or canvas/SVG, HUD/score/progress, instructions, and start/restart or control elements. Do not rely on JavaScript to create the only visible game DOM after load.
-- Keep generated HTML compact enough for a tool argument, but complete. Do not omit <body>, script, controls, or closing tags.
+- Keep generated HTML compact enough for a tool argument, but complete. Avoid comments, large inline data, verbose prose, unused CSS, and repeated plan/checklist JSON. Do not omit <body>, script, controls, or closing tags.
 
 AUDIO INPUT RULES:
 - Audio is input-only. There is no text-to-speech output.
@@ -1787,6 +1831,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         conversation_history = messages[:-1] if messages else []
     if not user_message:
         raise HTTPException(status_code=400, detail="user message is required")
+    is_game_request = _game_intent(user_message)
     input_images = _input_images_from_text(user_message)
     latest_generated_image = _latest_generated_image_ref(conversation_history)
     if not input_images and latest_generated_image and _media_intent(user_message, has_image_context=True) == "image":
@@ -1853,6 +1898,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     model=model,
                     enabled_toolsets=["alphart-edu"],
                     max_iterations=_agent_max_iterations(config),
+                    max_tokens=_agent_max_tokens(config, is_game=is_game_request),
                     quiet_mode=True,
                     session_id=req.session_id or None,
                     stream_delta_callback=on_delta,
