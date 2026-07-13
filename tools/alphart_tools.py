@@ -321,9 +321,17 @@ def _game_html_feedback(html: str) -> str:
     body = value[body_start + body_open_end + 1 : body_end].strip()
     visible_body = _strip_invisible_game_html(body)
     if not visible_body.strip():
-        return "game HTML body must include visible game DOM content"
+        return (
+            "game HTML body must include visible first-paint game DOM content. "
+            "Put the 1920x1080 root stage, HUD/score/progress, instructions, playfield/canvas/SVG, "
+            "and start/restart/control buttons directly in <body> before or outside <script>. "
+            "JavaScript may wire behavior, but must not create the only visible game DOM after load."
+        )
     if not re.search(r"<(main|section|article|div|canvas|svg|button|input|label|h[1-6]|p|span)\b", visible_body, re.I | re.S):
-        return "game HTML body must include visible game DOM content"
+        return (
+            "game HTML body must include visible game DOM elements directly in <body>, such as "
+            "<main id='game-root'>, HUD, playfield/canvas/SVG, instructions, and controls."
+        )
     if not re.search(r"\b(game|board|canvas|play|start|score|level|timer|hud|player|sprite|challenge|mission|restart|win|lose|control|controls)\b", visible_body, re.I | re.S):
         return "game HTML body must include visible game DOM content such as a playfield, HUD/score, instructions, or controls"
     if "1920" not in lower or "1080" not in lower:
@@ -645,11 +653,17 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Complete self-contained playable game HTML. Must start with <!DOCTYPE html>, "
-                    "include visible first-paint game DOM in <body> (game container/playfield, HUD or score/progress, "
-                    "instructions, and controls), inline CSS/JS, closing </body></html>, and a fixed 1920x1080 logical "
-                    "game stage that scales as a whole to fit smaller viewports. All windows/widgets/HUD/dialogs/buttons "
+                    "include visible first-paint game DOM directly in <body> before or outside <script>: "
+                    "<main id='game-root'> with HUD/score/progress, instructions, playfield/canvas/SVG, "
+                    "start/restart/control buttons, inline CSS/JS, closing </body></html>, and a fixed 1920x1080 logical "
+                    "stage. Minimum skeleton: <body><main id='game-root'><section id='hud'>score/progress</section>"
+                    "<section id='playfield'><canvas id='game-canvas' width='1600' height='760'></canvas></section>"
+                    "<section id='instructions'>goal and controls</section><button id='start-btn'>Start</button>"
+                    "<button id='restart-btn'>Restart</button></main><script>wire controls and game loop here</script></body>. "
+                    "You may adapt labels/layout, but visible game-root, HUD, playfield/canvas, instructions, and controls must exist directly in body. "
+                    "The game stage must scale as a whole to fit smaller viewports. All windows/widgets/HUD/dialogs/buttons "
                     "must stay inside x=40..1880 and y=40..1040; html/body/stage must not scroll; use box-sizing:border-box "
-                    "and overflow:hidden. Do not rely on JavaScript to create the only visible game DOM after load."
+                    "and overflow:hidden. JavaScript must wire behavior, but must not create the only visible game DOM after load."
                 ),
             },
             "game_plan": {

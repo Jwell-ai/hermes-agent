@@ -1400,7 +1400,9 @@ GAME CREATION RULES:
 - Do not use image/video generation tools for playable game requests unless the game plan explicitly needs a static asset first.
 - The game tool uploads the HTML from the agent. Never call the game tool with only a prompt. The html argument must be a full document beginning with <!DOCTYPE html> and ending with </html>.
 - The HTML body must include visible first-paint game DOM content directly in the markup: a 1920x1080 root game container, playfield or canvas/SVG, HUD/score/progress, instructions, and start/restart or control elements. Do not rely on JavaScript to create the only visible game DOM after load.
+- Minimum body skeleton: <body><main id="game-root"><section id="hud">score/progress</section><section id="playfield"><canvas id="game-canvas" width="1600" height="760"></canvas></section><section id="instructions">goal and controls</section><button id="start-btn">Start</button><button id="restart-btn">Restart</button></main><script>wire controls and game loop here</script></body>. You may adapt labels/layout, but these visible elements must exist directly in body.
 - Keep generated HTML compact enough for a tool argument, but complete. Avoid comments, large inline data, verbose prose, unused CSS, and repeated plan/checklist JSON. Do not omit <body>, script, controls, or closing tags.
+- If canvas_generate_game returns a validation error such as missing visible DOM, overflow, clipped text, or layout issue, regenerate corrected HTML once using the error text as a hard requirement, then call canvas_generate_game again. This is the one allowed automatic retry exception for game validation.
 
 AUDIO INPUT RULES:
 - Audio is input-only. There is no text-to-speech output.
@@ -1412,6 +1414,7 @@ AUDIO INPUT RULES:
 ERROR HANDLING:
 - Read backend tool errors carefully.
 - Never retry the same failing tool call automatically.
+- Exception: for canvas_generate_game validation errors, one corrected retry is allowed as described in GAME CREATION RULES.
 - Never call the same tool with the same parameters again without user confirmation.
 - Explain the specific failure and suggest a safer alternative prompt or model.
 """.strip()
