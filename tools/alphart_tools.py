@@ -223,14 +223,14 @@ def _default_game_plan() -> Dict[str, Any]:
             "story quest with rooms, NPC prompts, and collectible facts",
         ],
         "steps": [
-            "Define the learning goal, audience, and winning objective.",
+            "Studio Design phase: define the learning goal, audience, player fantasy, target emotion, and winning objective.",
             "Extract a content_facts ledger: exact facts, formulas, definitions, vocabulary, units, correct answers, answer option groups, constraints, and misconceptions that must be preserved.",
             "Choose a playable pixel-game pattern that fits the concept; avoid a static form or plain card quiz unless explicitly requested.",
             "Map learning content into player actions, hazards, collectibles, levels, feedback, and win/fail conditions.",
-            "Design the screen layout with a pixel playfield, HUD, safe text panels, and responsive controls.",
-            "Implement and wire the controls, game state, update/render loop, scoring/progress, validation/collision logic, and reachable ending.",
+            "Studio Planning phase: turn the design into acceptance criteria for layout bounds, controls, core loop, scoring/progress, validation/collision, and completion states.",
+            "Studio Development phase: implement a bounded 1920x1080 pixel playfield, HUD, safe text panels, start/restart controls, and separated game state/update/render logic.",
             "Generate one complete self-contained HTML file with inline CSS/JS and no external assets.",
-            "Review content accuracy, playability, layout overflow, sprite readability, and interaction states before finalizing.",
+            "Studio QA phase: self-test that no widget/window overflows, controls mutate state, the loop runs, scoring/progress changes, and win/fail/completion is reachable before finalizing.",
         ],
     }
 
@@ -336,38 +336,42 @@ def _game_html_feedback(html: str) -> str:
         return "game HTML body must include visible game DOM content such as a playfield, HUD/score, instructions, or controls"
     if "1920" not in lower or "1080" not in lower:
         return "game result page must use a fixed 1920x1080 logical game window/stage and scale that stage to fit the viewport"
+    static_feedback = _game_static_playability_feedback(value, visible_body)
+    if static_feedback:
+        return static_feedback
     return ""
 
 
-_GAME_VISIBLE_SHELL = """
-<main id="game-root" aria-label="Alphart educational game">
-  <section id="hud"><span id="score-label">Score: 0</span><span id="progress-label">Progress: 0%</span></section>
-  <section id="playfield"><canvas id="game-canvas" width="1600" height="760"></canvas></section>
-  <section id="instructions">Press Start, then use the visible controls or keyboard to play.</section>
-  <button id="start-btn" type="button">Start</button>
-  <button id="restart-btn" type="button">Restart</button>
-</main>
-""".strip()
-
-
-def _ensure_game_visible_body_shell(html: str) -> str:
-    value = str(html or "").strip()
-    lower = value.lower()
-    body_start = lower.find("<body")
-    body_end = lower.rfind("</body>")
-    if body_start < 0 or body_end <= body_start:
-        return value
-    body_open_end = lower.find(">", body_start)
-    if body_open_end < 0 or body_open_end >= body_end:
-        return value
-    body = value[body_start + body_open_end + 1 : body_end]
-    visible_body = _strip_invisible_game_html(body).strip()
-    if re.search(r"<(main|section|article|div|canvas|svg|button|input|label|h[1-6]|p|span)\b", visible_body, re.I | re.S):
-        return value
-    script_match = re.search(r"<script\b", body, re.I)
-    insert_at = script_match.start() if script_match else 0
-    repaired_body = body[:insert_at] + "\n" + _GAME_VISIBLE_SHELL + "\n" + body[insert_at:]
-    return value[:body_start + body_open_end + 1] + repaired_body + value[body_end:]
+def _game_static_playability_feedback(html: str, visible_body: str) -> str:
+    lower = html.lower()
+    visible_lower = visible_body.lower()
+    if "id=\"game-root\"" not in lower and "id='game-root'" not in lower and "id=game-root" not in lower:
+        return "game HTML must include a visible root stage with id='game-root' directly in <body>."
+    if "id=\"playfield\"" not in lower and "id='playfield'" not in lower and "id=playfield" not in lower:
+        return "game HTML must include a visible playfield with id='playfield' directly in <body>."
+    if "id=\"start-btn\"" not in lower and "id='start-btn'" not in lower and "id=start-btn" not in lower:
+        return "game HTML must include a visible Start button with id='start-btn'."
+    if "id=\"restart-btn\"" not in lower and "id='restart-btn'" not in lower and "id=restart-btn" not in lower:
+        return "game HTML must include a visible Restart button with id='restart-btn'."
+    if "position:fixed" in lower or "position: fixed" in lower:
+        return "game HTML must not use fixed-position overlays; keep all UI inside #game-root."
+    if re.search(r"\b(?:left|top|right|bottom)\s*:\s*-\d", lower):
+        return "game HTML must not use negative offsets that can push widgets outside the 1920x1080 stage."
+    if not re.search(r"#game-root[^{}]*\{[^{}]*(?:width\s*:\s*1920px|width\s*:\s*100%)", lower, re.S):
+        return "game CSS must define #game-root with a bounded 1920px logical width or a 100% wrapper around a 1920px stage."
+    if not re.search(r"#game-root[^{}]*\{[^{}]*(?:height\s*:\s*1080px|height\s*:\s*100%)", lower, re.S):
+        return "game CSS must define #game-root with a bounded 1080px logical height or a 100% wrapper around a 1080px stage."
+    if not re.search(r"#game-root[^{}]*\{[^{}]*overflow\s*:\s*hidden", lower, re.S):
+        return "game CSS must set #game-root overflow:hidden so widgets cannot escape the game window."
+    if not re.search(r"(?:addEventListener\s*\(\s*['\"](?:click|keydown|keyup|pointer|pointerdown|mousedown|touchstart)|onclick\s*=|onkeydown\s*=)", html, re.I):
+        return "game JavaScript must wire real keyboard/mouse/touch/start controls with event handlers."
+    if not re.search(r"(?:requestAnimationFrame|setInterval|function\s+(?:update|render|gameLoop|loop)\b|const\s+(?:update|render|gameLoop|loop)\s*=)", html, re.I):
+        return "game JavaScript must include a real update/render/game loop, not only static click handlers."
+    if not re.search(r"(?:score|progress|level|timer|lives|health)", visible_lower) or not re.search(r"(?:score|progress|level|timer|lives|health).{0,80}(?:textContent|innerText|innerHTML|=|\\+\\+|--)", html, re.I | re.S):
+        return "game must expose and update visible score/progress/level/timer/lives/health state during play."
+    if not re.search(r"(?:win|lose|complete|gameover|game-over|victory|fail|success)", html, re.I):
+        return "game must implement a reachable win/fail/completion state."
+    return ""
 
 
 def _strip_invisible_game_html(body: str) -> str:
@@ -488,7 +492,6 @@ def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
     args.setdefault("layout_requirements", _default_game_layout_requirements())
     args.setdefault("review_checklist", _default_game_review_checklist())
     html = str(args.get("html") or args.get("index_html") or "").strip()
-    html = _ensure_game_visible_body_shell(html)
     feedback = _game_html_feedback(html)
     if feedback:
         return _tool_error(feedback)
