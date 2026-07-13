@@ -627,6 +627,8 @@ CANVAS_GENERATE_GAME_SCHEMA = {
         "precision: formulas, units, definitions, terminology, names, dates, and causal "
         "relationships must stay correct. Use this for 'make a game that teaches/explains ...' or "
         "'create a quiz/game about ...' requests. Before calling, create a strict plan internally. "
+        "Do not call file-writing/coding tools such as Write, Edit, MultiEdit, Bash, write_file, patch, "
+        "terminal, or process; put the complete HTML directly in this tool's html argument. "
         "After the tool returns, review content, UI layout, and interactions; if the result "
         "has clipped text, overflow, overlapping controls, or out-of-frame elements, revise "
         "the prompt and regenerate instead of finalizing. Keep optional planning fields concise; "

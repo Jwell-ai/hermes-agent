@@ -1375,6 +1375,7 @@ VIDEO CREATION RULES:
 
 GAME CREATION RULES:
 - Use canvas_generate_game or generate_game for requests like "make a game", "interactive demo", "quiz game", "platformer", "storybook game", "GBA/Pokemon-style educational battle", "create a playable teaching activity", and equivalent Chinese/Traditional Chinese/Spanish requests such as 生成游戏, 製作遊戲, 互动游戏, 互動遊戲, 闯关, 闖關, 小游戏, 小遊戲, crear juego.
+- Only call canvas_generate_game or generate_game for game artifacts. Do not call file-writing or coding tools such as Write, Edit, MultiEdit, Bash, write_file, patch, terminal, or process; they are unavailable in this service and will fail.
 - Game generation must follow this pipeline: 1) write a concise internal plan, 2) create the complete self-contained game HTML yourself, 3) call the game tool with prompt and html, adding only concise game_plan/layout_requirements/review_checklist fields if useful, 4) only finalize after the tool uploads and returns a result.
 - Default to a simple pixel-art game, not a plain web form. Use blocky sprites, tile/grid playfields, crisp edges, limited high-contrast palettes, HUD panels, and 8-bit inspired controls.
 - Prefer real playable patterns: pixel platformer, top-down maze/exploration, arcade matcher, drag-and-drop sorter, physics launcher, simulation sandbox, boss challenge, or story quest. Use a plain quiz/card/form only if the user explicitly asks for a quiz.
