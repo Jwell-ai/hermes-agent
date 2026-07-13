@@ -1278,6 +1278,39 @@ def _forced_media_tool_messages(
     ]
 
 
+ALPHART_GAME_HTML_SCAFFOLD = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#050816}
+    body{display:grid;place-items:center}
+    #viewport{position:relative;width:100vw;height:100vh;overflow:hidden;display:grid;place-items:center}
+    #game-root{position:absolute;width:1920px;height:1080px;overflow:hidden;transform-origin:top left;box-sizing:border-box}
+  </style>
+</head>
+<body>
+  <div id="viewport"><main id="game-root" role="application" aria-label="Educational game">visible HUD/playfield/instructions/controls go here</main></div>
+  <script>
+    const STAGE_W=1920, STAGE_H=1080, root=document.getElementById('game-root');
+    function fitStage(){
+      const s=Math.min(innerWidth/STAGE_W, innerHeight/STAGE_H);
+      root.style.transform='scale('+s+')';
+      root.style.left=((innerWidth-STAGE_W*s)/2)+'px';
+      root.style.top=((innerHeight-STAGE_H*s)/2)+'px';
+    }
+    addEventListener('resize', fitStage); fitStage();
+    addEventListener('message', function(e){
+      if(e.data && e.data.type==='mute'){
+        document.querySelectorAll('audio,video').forEach(function(el){ el.muted=!!e.data.muted; });
+      }
+    });
+  </script>
+</body>
+</html>"""
+
+
 def _alphart_agent_prompt(req: AlphartEduChatRequest) -> str:
     tool_lines = _selected_tool_lines(req.tool_list)
     selected_tools = "\n".join(tool_lines) if tool_lines else "- No image/video/audio model selected. Ask the user to select a model before generation."
@@ -1338,13 +1371,17 @@ GAME CREATION RULES:
 - Map correct knowledge into mechanics carefully: collectibles should represent correct facts, hazards should represent specific misconceptions, and feedback must explain why an answer/action is correct or wrong.
 - The game must have an actual loop: the player moves/chooses/collects/avoids/solves, receives immediate feedback, and advances toward score, timer, level, or completion.
 - The layout requirements must explicitly require all content, labels, controls, sprites, dialogs, score panels, and buttons to stay inside the visible frame and their parent borders.
+- The game result page must keep a fixed 1920x1080 logical game window/stage. Include a visible root element such as #game-root or #game-stage with width:1920px and height:1080px, center it, and scale the whole stage with transform: scale(...) for smaller browser/iframe viewports. Do not reflow the game into arbitrary smaller dimensions.
+- Keep every sprite, row/column, HUD panel, dialog, button, and label inside the 1920x1080 stage safe area.
+- Use a coding-agent scaffold instead of starting from a blank file. Required scaffold shape:
+{ALPHART_GAME_HTML_SCAFFOLD}
 - Review the result for content correctness, readable instructions, no clipped text, no overlapping elements, no overflow outside cards/frame/borders, usable controls, start/restart flow, win/fail state, and desktop/mobile fit.
 - Reject boring outputs: if it is only a static explanation, a button list, or a form-like quiz, redesign it as a playable pixel game before calling the tool.
 - Reject inaccurate outputs: if any educational statement is wrong, vague enough to mislead, or conflicts with the user's content, fix it before calling the tool.
 - If the game result has any layout or content issue, do not present it as finished. Revise the prompt with concrete fixes and call the game tool again.
 - Do not use image/video generation tools for playable game requests unless the game plan explicitly needs a static asset first.
 - The game tool uploads the HTML from the agent. Never call the game tool with only a prompt. The html argument must be a full document beginning with <!DOCTYPE html> and ending with </html>.
-- The HTML body must include visible first-paint game DOM content directly in the markup: a root game container, playfield or canvas/SVG, HUD/score/progress, instructions, and start/restart or control elements. Do not rely on JavaScript to create the only visible game DOM after load.
+- The HTML body must include visible first-paint game DOM content directly in the markup: a 1920x1080 root game container, playfield or canvas/SVG, HUD/score/progress, instructions, and start/restart or control elements. Do not rely on JavaScript to create the only visible game DOM after load.
 - Keep generated HTML compact enough for a tool argument, but complete. Do not omit <body>, script, controls, or closing tags.
 
 AUDIO INPUT RULES:

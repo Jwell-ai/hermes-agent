@@ -236,15 +236,51 @@ def _default_game_plan() -> Dict[str, Any]:
 
 def _default_game_layout_requirements() -> Dict[str, Any]:
     return {
-        "responsive": True,
+        "logical_width": 1920,
+        "logical_height": 1080,
+        "responsive": "The game must use a fixed 1920x1080 logical stage and may only scale that whole stage visually to fit smaller browser/iframe viewports.",
         "visual_style": "Default to a simple pixel-art game: blocky sprites, tile/grid playfield, crisp edges, limited high-contrast palette, 8-bit inspired UI.",
         "anti_form_rule": "Do not make a plain web form, static worksheet, or button-only quiz unless the user explicitly asks for a quiz/form.",
         "playfield": "Use a real game area with player movement, collectibles/hazards/targets, score/progress, and visible feedback.",
-        "safe_area": "Keep all text, buttons, sprites, score panels, and dialogs inside the visible game frame.",
+        "stage_rule": "The result page must include a visible root game stage with width:1920px and height:1080px. Center it in the page and scale it with transform: scale(...) from transform-origin: top left when the viewport is smaller.",
+        "safe_area": "Keep all text, buttons, sprites, score panels, and dialogs inside the 1920x1080 visible game frame.",
         "overflow_policy": "No clipped text, horizontal scroll, overlapping cards, or elements outside their parent border.",
         "typography": "Use readable font sizes and wrap long labels instead of shrinking below legibility.",
         "controls": "Support keyboard and mouse/touch. On-screen controls must remain reachable on desktop and mobile sizes.",
     }
+
+
+def _game_html_scaffold_contract() -> str:
+    return """Use this coding-agent scaffold shape and fill the TODO sections with the requested game:
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>...</title>
+  <style>
+    html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#050816}
+    body{display:grid;place-items:center}
+    #viewport{position:relative;width:100vw;height:100vh;overflow:hidden;display:grid;place-items:center}
+    #game-root{position:absolute;width:1920px;height:1080px;overflow:hidden;transform-origin:top left;box-sizing:border-box}
+    /* TODO: pixel-art HUD, 1920x1080 playfield, side panel, player, hazards, collectibles, dialogs */
+  </style>
+</head>
+<body>
+  <div id="viewport">
+    <main id="game-root" role="application" aria-label="Educational game">
+      <!-- TODO: visible first-paint HUD, playfield/canvas/SVG, instructions, controls, win/fail UI -->
+    </main>
+  </div>
+  <script>
+    const STAGE_W=1920, STAGE_H=1080, root=document.getElementById('game-root');
+    function fitStage(){const s=Math.min(innerWidth/STAGE_W,innerHeight/STAGE_H);root.style.transform=`scale(${s})`;root.style.left=`${(innerWidth-STAGE_W*s)/2}px`;root.style.top=`${(innerHeight-STAGE_H*s)/2}px`;}
+    addEventListener('resize',fitStage);fitStage();
+    addEventListener('message',function(e){if(e.data&&e.data.type==='mute'){document.querySelectorAll('audio,video').forEach(function(el){el.muted=!!e.data.muted;});}});
+    // TODO: game state, input, collision/answer checks, precise educational feedback, restart/win/fail flow
+  </script>
+</body>
+</html>"""
 
 
 def _default_game_review_checklist() -> Dict[str, Any]:
@@ -306,6 +342,8 @@ def _game_html_feedback(html: str) -> str:
         return "game HTML body must include visible game DOM content"
     if not re.search(r"\b(game|board|canvas|play|start|score|level|timer|hud|player|sprite|challenge|mission|restart|win|lose|control|controls)\b", visible_body, re.I | re.S):
         return "game HTML body must include visible game DOM content such as a playfield, HUD/score, instructions, or controls"
+    if "1920" not in lower or "1080" not in lower:
+        return "game result page must use a fixed 1920x1080 logical game window/stage and scale that stage to fit the viewport"
     return ""
 
 
@@ -426,6 +464,7 @@ def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
     args.setdefault("game_plan", _default_game_plan())
     args.setdefault("layout_requirements", _default_game_layout_requirements())
     args.setdefault("review_checklist", _default_game_review_checklist())
+    args.setdefault("html_scaffold", _game_html_scaffold_contract())
     html = str(args.get("html") or args.get("index_html") or "").strip()
     feedback = _game_html_feedback(html)
     if feedback:
@@ -444,8 +483,8 @@ def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
             "url": target.get("url"),
             "s3_object_name": target.get("s3_object_name"),
             "summary": args.get("prompt") or args.get("description") or "Generated game",
-            "width": int(args.get("width") or 800),
-            "height": int(args.get("height") or 600),
+            "width": 1920,
+            "height": 1080,
         },
     }
     return json.dumps(result, ensure_ascii=False)
@@ -623,8 +662,9 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                 "description": (
                     "Complete self-contained playable game HTML. Must start with <!DOCTYPE html>, "
                     "include visible first-paint game DOM in <body> (game container/playfield, HUD or score/progress, "
-                    "instructions, and controls), inline CSS/JS, closing </body></html>, and responsive layout. "
-                    "Do not rely on JavaScript to create the only visible game DOM after load."
+                    "instructions, and controls), inline CSS/JS, closing </body></html>, and a fixed 1920x1080 logical "
+                    "game stage that scales as a whole to fit smaller viewports. Do not rely on JavaScript to create "
+                    "the only visible game DOM after load."
                 ),
             },
             "game_plan": {
@@ -674,6 +714,10 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                     "QA checklist used after generation. Include content accuracy, layout/frame "
                     "fit, border overflow, text clipping, interaction states, and mobile/desktop fit."
                 ),
+            },
+            "html_scaffold": {
+                "type": "string",
+                "description": "Coding-agent scaffold that the generated HTML should follow: fixed 1920x1080 stage, viewport scaler, visible first-paint DOM, and mute listener.",
             },
         },
         "required": ["prompt", "html", "game_plan", "layout_requirements", "review_checklist"],
