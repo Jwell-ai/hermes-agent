@@ -466,6 +466,11 @@ def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
     args.setdefault("review_checklist", _default_game_review_checklist())
     args.setdefault("html_scaffold", _game_html_scaffold_contract())
     html = str(args.get("html") or args.get("index_html") or "").strip()
+    if not html:
+        # Avoid asking the chat model to serialize a full HTML document into a
+        # function-call JSON argument. The Go backend can generate, review, and
+        # upload the game from the compact prompt safely.
+        return _call_backend_tool("canvas_generate_game", args, confirm=False)
     feedback = _game_html_feedback(html)
     if feedback:
         return _tool_error(feedback)

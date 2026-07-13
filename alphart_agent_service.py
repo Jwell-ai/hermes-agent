@@ -22,6 +22,7 @@ import requests
 
 from run_agent import AIAgent
 from tools.alphart_tools import (
+    _handle_alphart_generate_game,
     _handle_alphart_generate_image,
     _handle_alphart_generate_video,
     _handle_alphart_transcribe_audio,
@@ -519,6 +520,8 @@ def _media_intent(text: str, has_image_context: bool = False, has_video_context:
         "design",
         "render",
         "produce",
+        "crea",
+        "crear",
         "paint",
         "sketch",
         "illustrate",
@@ -589,10 +592,35 @@ def _media_intent(text: str, has_image_context: bool = False, has_video_context:
         "动画",
         "短片",
     )
+    game_words = (
+        "game",
+        "playable",
+        "interactive demo",
+        "interactive activity",
+        "quiz game",
+        "platformer",
+        "boss challenge",
+        "maze",
+        "arcade",
+        "juego",
+        "juegos",
+        "小游戏",
+        "小遊戲",
+        "游戏",
+        "遊戲",
+        "互动游戏",
+        "互動遊戲",
+        "闯关",
+        "闖關",
+        "关卡",
+        "關卡",
+    )
     has_creation = any(word in value for word in creation_words)
     has_regeneration = _regeneration_intent(value)
     if not has_creation and not (has_regeneration and (has_image_context or has_video_context)):
         return ""
+    if any(word in value for word in game_words):
+        return "game"
     if any(word in value for word in video_words):
         return "video"
     if any(word in value for word in image_words):
@@ -1233,6 +1261,48 @@ def _forced_media_tool_messages(
         messages.append({"role": "assistant", "content": final_text})
         return messages
 
+    if intent == "game":
+        call_id = str(uuid.uuid4())
+        args = {
+            "prompt": user_message,
+            "tool_call_id": call_id,
+        }
+        print(
+            "[alphart-agent] forcing game generation session_intent=game",
+            flush=True,
+        )
+        result = _handle_alphart_generate_game(args)
+        tool_name = "canvas_generate_game"
+        final_text = (
+            "Game generation has been submitted."
+            if _tool_result_success(result)
+            else "generate fail"
+        )
+        return [
+            {"role": "assistant", "content": plan_text},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": json.dumps(args, ensure_ascii=False),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "name": tool_name,
+                "content": result,
+            },
+            {"role": "assistant", "content": final_text},
+        ]
+
     call_id = str(uuid.uuid4())
     args = {
         "prompt": user_message,
@@ -1480,6 +1550,50 @@ def _has_visible_agent_output(messages: List[Any], final_response: str) -> bool:
         if role == "tool" and _tool_result_success(msg.get("content")):
             return True
     return False
+
+
+def _chat_response_from_forced_messages(
+    req: AlphartEduChatRequest,
+    response_messages: List[Dict[str, Any]],
+    model: str = "",
+    provider: str = "",
+) -> Dict[str, Any]:
+    current_turn_messages = _messages_after_latest_user(response_messages)
+    current_tool_failed = _generation_tool_failed(current_turn_messages) or _game_tool_failed(current_turn_messages)
+    final_response = SYSTEM_BUSY_MESSAGE if current_tool_failed else _last_assistant_text(response_messages)
+    response_messages = _append_visible_generated_media(response_messages, current_turn_messages)
+    response_messages = _sanitize_assistant_media_url_text(response_messages)
+    final_response = _strip_media_urls_from_text(final_response)
+    if not _has_visible_agent_output(response_messages, final_response):
+        final_response = "generate fail"
+        response_messages.append({"role": "assistant", "content": final_response})
+        current_tool_failed = True
+    events = _events_from_messages(response_messages)
+    print(
+        "[alphart-agent] chat result "
+        f"session_id={req.session_id} raw_messages=0 "
+        f"public_messages={len(response_messages)} final_response_len={len(final_response)} "
+        f"failed={current_tool_failed} error={SYSTEM_BUSY_MESSAGE if current_tool_failed else ''}",
+        flush=True,
+    )
+    response = {
+        "status": "ok",
+        "final_response": final_response,
+        "messages": response_messages,
+        "events": events,
+        "model": model,
+        "provider": provider,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "interrupted": current_tool_failed,
+        "failed": current_tool_failed,
+        "error": SYSTEM_BUSY_MESSAGE if current_tool_failed else "",
+    }
+    _post_chat_result_callback(req, response)
+    return response
 
 
 def _callback_backend_url(req: AlphartEduChatRequest) -> str:
@@ -1836,6 +1950,23 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "tool_list": req.tool_list,
         "input_images": input_images,
     }
+
+    if _media_intent(user_message, has_image_context=bool(input_images)) == "game":
+        with alphart_context(context):
+            response_messages = _forced_media_tool_messages(
+                user_message,
+                [],
+                [],
+                has_image_context=bool(input_images),
+                input_images=input_images,
+            )
+        if response_messages:
+            return _chat_response_from_forced_messages(
+                req,
+                response_messages,
+                model=_string(primary_text_model.get("model")),
+                provider=_string(primary_text_model.get("provider")),
+            )
 
     events: List[Dict[str, Any]] = []
     result: Dict[str, Any] = {}
