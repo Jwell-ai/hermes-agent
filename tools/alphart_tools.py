@@ -339,6 +339,37 @@ def _game_html_feedback(html: str) -> str:
     return ""
 
 
+_GAME_VISIBLE_SHELL = """
+<main id="game-root" aria-label="Alphart educational game">
+  <section id="hud"><span id="score-label">Score: 0</span><span id="progress-label">Progress: 0%</span></section>
+  <section id="playfield"><canvas id="game-canvas" width="1600" height="760"></canvas></section>
+  <section id="instructions">Press Start, then use the visible controls or keyboard to play.</section>
+  <button id="start-btn" type="button">Start</button>
+  <button id="restart-btn" type="button">Restart</button>
+</main>
+""".strip()
+
+
+def _ensure_game_visible_body_shell(html: str) -> str:
+    value = str(html or "").strip()
+    lower = value.lower()
+    body_start = lower.find("<body")
+    body_end = lower.rfind("</body>")
+    if body_start < 0 or body_end <= body_start:
+        return value
+    body_open_end = lower.find(">", body_start)
+    if body_open_end < 0 or body_open_end >= body_end:
+        return value
+    body = value[body_start + body_open_end + 1 : body_end]
+    visible_body = _strip_invisible_game_html(body).strip()
+    if re.search(r"<(main|section|article|div|canvas|svg|button|input|label|h[1-6]|p|span)\b", visible_body, re.I | re.S):
+        return value
+    script_match = re.search(r"<script\b", body, re.I)
+    insert_at = script_match.start() if script_match else 0
+    repaired_body = body[:insert_at] + "\n" + _GAME_VISIBLE_SHELL + "\n" + body[insert_at:]
+    return value[:body_start + body_open_end + 1] + repaired_body + value[body_end:]
+
+
 def _strip_invisible_game_html(body: str) -> str:
     value = re.sub(
         r"<!--.*?-->|<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>|<template\b[^>]*>.*?</template>|<noscript\b[^>]*>.*?</noscript>|<meta\b[^>]*>|<link\b[^>]*>",
@@ -457,6 +488,7 @@ def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
     args.setdefault("layout_requirements", _default_game_layout_requirements())
     args.setdefault("review_checklist", _default_game_review_checklist())
     html = str(args.get("html") or args.get("index_html") or "").strip()
+    html = _ensure_game_visible_body_shell(html)
     feedback = _game_html_feedback(html)
     if feedback:
         return _tool_error(feedback)
