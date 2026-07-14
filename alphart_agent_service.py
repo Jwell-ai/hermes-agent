@@ -10,7 +10,7 @@ import re
 import uuid
 import base64
 from urllib.parse import quote
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s [%(name)s] %(message)s")
 logger = logging.getLogger("alphart_agent")
@@ -1898,6 +1898,31 @@ def _provider_format(provider: str, endpoint: str, model: str = "") -> str:
     return "openai"
 
 
+def _model_wire_format(provider: str, model: str) -> str:
+    p = provider.lower()
+    m = model.lower()
+    if "claude" in p or "anthropic" in p or m.startswith("claude") or m.startswith("anthropic."):
+        return "anthropic"
+    if (
+        "gemini" in p
+        or "vertex" in p
+        or "google" in p
+        or m.startswith("gemini")
+        or m.startswith("models/gemini")
+    ):
+        return "gemini"
+    if (
+        "openai" in p
+        or m.startswith("gpt-")
+        or m.startswith("o1")
+        or m.startswith("o3")
+        or m.startswith("o4")
+        or m.startswith("o5")
+    ):
+        return "openai"
+    return ""
+
+
 def _endpoint_wire_format(endpoint: str) -> str:
     """Infer wire format from endpoint shape.
 
@@ -1920,10 +1945,14 @@ def _endpoint_wire_format(endpoint: str) -> str:
 def _text_model_wire_format(provider: str, model: str, config: Dict[str, Any]) -> str:
     """Return the API wire format for a text model.
 
-    Prefer explicit model config over model-name heuristics. A Claude/Gemini
-    model can still be served by an OpenAI-compatible gateway, and that should
-    use OpenAI chat-completions semantics.
+    Model/provider names are the primary signal for Alphart's internal relay:
+    Claude-named models use Anthropic Messages, Gemini-named models use Gemini,
+    and GPT/O-named models use OpenAI-compatible chat completions.
     """
+    model_format = _model_wire_format(provider, model)
+    if model_format:
+        return model_format
+
     explicit = _string(
         config.get("wire_format")
         or config.get("provider_format")
@@ -1959,6 +1988,14 @@ def _text_model_wire_format(provider: str, model: str, config: Dict[str, Any]) -
         return endpoint_format
 
     return _provider_format(provider, endpoint, model)
+
+
+def _agent_provider_mode_for_wire_format(provider_format: str) -> Tuple[str, str]:
+    if provider_format == "anthropic":
+        return "anthropic", "anthropic_messages"
+    if provider_format == "gemini":
+        return "gemini", "chat_completions"
+    return "openai", "chat_completions"
 
 
 def _generate_title_anthropic(endpoint: str, api_key: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -2149,10 +2186,14 @@ def _generate_title_relay(req: AlphartEduTitleRequest, provider: str, model: str
 
 
 def _generate_title_agent(req: AlphartEduTitleRequest, provider: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    agent_provider = provider
+    api_mode = _string(config.get("api_mode")) or "chat_completions"
     if _use_internal_relay(req):
         endpoint = _internal_relay_base_url(req)
         api_key = _internal_relay_api_key()
         request_overrides = {"extra_headers": _internal_relay_headers(req)}
+        provider_format = _text_model_wire_format(provider, model, config)
+        agent_provider, api_mode = _agent_provider_mode_for_wire_format(provider_format)
     else:
         endpoint = _endpoint(config)
         api_key = _api_key(config)
@@ -2160,13 +2201,12 @@ def _generate_title_agent(req: AlphartEduTitleRequest, provider: str, model: str
     if not endpoint or not api_key:
         raise HTTPException(status_code=400, detail="title model endpoint/api key is not configured")
 
-    api_mode = _string(config.get("api_mode")) or "chat_completions"
-    if _provider_format(provider, endpoint, model) == "anthropic":
+    if not _use_internal_relay(req) and _provider_format(provider, endpoint, model) == "anthropic":
         api_mode = "chat_completions"
     agent = AIAgent(
         base_url=endpoint,
         api_key=api_key,
-        provider=provider,
+        provider=agent_provider,
         api_mode=api_mode,
         model=model,
         enabled_toolsets=[],
@@ -2331,11 +2371,10 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
             endpoint = _internal_relay_base_url(req)
             api_key = _internal_relay_api_key()
             relay_headers = _internal_relay_headers(req)
-            agent_provider = "custom"
-            agent_api_mode = "chat_completions"
+            agent_provider, agent_api_mode = _agent_provider_mode_for_wire_format(provider_format)
             print(
                 f"[alphart-agent] internal relay text model session_id={req.session_id} "
-                f"provider={provider} model={model} wire_format={provider_format} "
+                f"provider={provider} agent_provider={agent_provider} model={model} wire_format={provider_format} "
                 f"stream={provider_format == 'openai'}",
                 flush=True,
             )
@@ -2385,6 +2424,8 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     skip_context_files=True,
                     request_overrides={"extra_headers": relay_headers} if relay_headers else None,
                 )
+                if provider_format != "openai":
+                    agent._disable_streaming = True
                 try:
                     result = agent.run_conversation(
                         model_user_message,
