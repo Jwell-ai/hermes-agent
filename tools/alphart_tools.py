@@ -857,7 +857,8 @@ def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
     html = str(args.get("html") or args.get("index_html") or "").strip()
     artifact_path = str(args.get("artifact_dir") or args.get("artifact_path") or args.get("directory") or "").strip()
     files = args.get("files")
-    if not html and not artifact_path and not files:
+    has_files = isinstance(files, list) and len(files) > 0
+    if not html and not artifact_path and not has_files:
         return _tool_error("game tool requires html, artifact_dir/artifact_path, or files")
     try:
         target = _request_game_upload_target(args)
@@ -873,7 +874,7 @@ def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
                 _upload_game_html(target, html)
             else:
                 return _tool_error(f"game artifact path does not exist: {artifact_path}")
-        elif isinstance(files, list):
+        elif has_files:
             _upload_game_files(target, files)
         else:
             feedback = _game_html_feedback(html)
