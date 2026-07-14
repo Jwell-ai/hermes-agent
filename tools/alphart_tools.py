@@ -123,7 +123,7 @@ def _internal_relay_url(path: str) -> str:
     backend_url = _backend_url()
     if not backend_url:
         return ""
-    return f"{backend_url}/api/v1/internal/relay/{path.lstrip('/')}"
+    return f"{backend_url}/internal/api/v1/{path.lstrip('/')}"
 
 
 def _internal_api_url(path: str) -> str:

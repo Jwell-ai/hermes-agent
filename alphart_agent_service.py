@@ -302,7 +302,7 @@ def _backend_url_from_req(req: Any) -> str:
 
 
 def _internal_relay_base_url(req: Any) -> str:
-    return _backend_url_from_req(req) + "/api/v1/internal/relay"
+    return _backend_url_from_req(req) + "/internal"
 
 
 def _internal_relay_headers(req: Any) -> Dict[str, str]:
