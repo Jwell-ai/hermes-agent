@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import base64
 import json
+import mimetypes
 import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator
+from typing import Any, Dict, Iterable, Iterator, List, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -412,7 +414,9 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **_: Any) -> str:
         images = args.get("input_images")
         payload["image"] = images[0] if isinstance(images, list) and images else images
     print(
-        f"[alphart-agent] calling internal relay video session_id={_ctx().get('session_id')} url={relay_url}",
+        f"[alphart-agent] calling internal relay video session_id={_ctx().get('session_id')} "
+        f"provider={payload.get('provider') or '<backend-default>'} "
+        f"model={payload.get('model') or '<backend-default>'} url={relay_url}",
         flush=True,
     )
     try:
@@ -681,7 +685,7 @@ def _request_game_upload_target(args: Dict[str, Any]) -> Dict[str, Any]:
     return decoded
 
 
-def _upload_game_html(target: Dict[str, Any], html: str) -> None:
+def _game_s3_client(target: Dict[str, Any]) -> Tuple[Any, str, str]:
     try:
         import boto3  # type: ignore
     except ImportError as exc:
@@ -717,7 +721,33 @@ def _upload_game_html(target: Dict[str, Any], html: str) -> None:
         from botocore.config import Config  # type: ignore
 
         client_kwargs["config"] = Config(s3={"addressing_style": "path"})
-    s3 = boto3.client("s3", **client_kwargs)
+    return boto3.client("s3", **client_kwargs), bucket, key
+
+
+def _guess_content_type(path: str, fallback: str = "application/octet-stream") -> str:
+    if path.lower().endswith(".js"):
+        return "text/javascript; charset=utf-8"
+    if path.lower().endswith(".css"):
+        return "text/css; charset=utf-8"
+    if path.lower().endswith((".html", ".htm")):
+        return "text/html; charset=utf-8"
+    guessed, _ = mimetypes.guess_type(path)
+    return guessed or fallback
+
+
+def _upload_game_object(target: Dict[str, Any], key: str, body: bytes, content_type: str) -> None:
+    s3, bucket, _ = _game_s3_client(target)
+    s3.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=body,
+        ContentType=content_type,
+        ACL="public-read",
+    )
+
+
+def _upload_game_html(target: Dict[str, Any], html: str) -> None:
+    s3, bucket, key = _game_s3_client(target)
     s3.put_object(
         Bucket=bucket,
         Key=key,
@@ -727,18 +757,129 @@ def _upload_game_html(target: Dict[str, Any], html: str) -> None:
     )
 
 
+def _safe_game_rel_path(value: Any) -> str:
+    rel = str(value or "").strip().replace("\\", "/").lstrip("/")
+    parts = [part for part in rel.split("/") if part not in {"", "."}]
+    if not parts or any(part == ".." for part in parts):
+        raise RuntimeError(f"invalid game artifact path: {value!r}")
+    return "/".join(parts)
+
+
+def _game_object_prefix(target: Dict[str, Any]) -> str:
+    key = str(target.get("s3_object_name") or "").strip()
+    if not key or "/" not in key:
+        raise RuntimeError("game upload target missing index.html s3_object_name")
+    return key.rsplit("/", 1)[0]
+
+
+def _upload_game_directory(target: Dict[str, Any], artifact_dir: Path) -> str:
+    root = artifact_dir.expanduser().resolve()
+    if not root.is_dir():
+        raise RuntimeError(f"game artifact directory does not exist: {artifact_dir}")
+    index_path = root / "index.html"
+    if not index_path.is_file():
+        raise RuntimeError("game artifact directory must contain index.html")
+    html = index_path.read_text(encoding="utf-8")
+    feedback = _game_html_feedback(html)
+    if feedback:
+        raise RuntimeError(feedback)
+
+    s3, bucket, index_key = _game_s3_client(target)
+    prefix = _game_object_prefix(target)
+    uploaded = 0
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            continue
+        resolved = path.resolve()
+        if not resolved.is_file():
+            continue
+        rel = resolved.relative_to(root).as_posix()
+        key = f"{prefix}/{_safe_game_rel_path(rel)}"
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=resolved.read_bytes(),
+            ContentType=_guess_content_type(rel),
+            ACL="public-read",
+        )
+        uploaded += 1
+    if uploaded == 0:
+        raise RuntimeError("game artifact directory has no files to upload")
+    return index_key
+
+
+def _file_payload_bytes(item: Dict[str, Any]) -> bytes:
+    if item.get("base64"):
+        return base64.b64decode(str(item.get("base64") or ""), validate=True)
+    content = item.get("content")
+    if isinstance(content, bytes):
+        return content
+    return str(content or "").encode("utf-8")
+
+
+def _upload_game_files(target: Dict[str, Any], files: List[Any]) -> str:
+    if not files:
+        raise RuntimeError("game files list is empty")
+    prefix = _game_object_prefix(target)
+    index_html = ""
+    normalized: List[Tuple[str, bytes, str]] = []
+    for raw in files:
+        if not isinstance(raw, dict):
+            raise RuntimeError("game files entries must be objects")
+        rel = _safe_game_rel_path(raw.get("path") or raw.get("name") or raw.get("filename"))
+        body = _file_payload_bytes(raw)
+        content_type = str(raw.get("content_type") or raw.get("mime_type") or _guess_content_type(rel)).strip()
+        normalized.append((rel, body, content_type))
+        if rel == "index.html":
+            index_html = body.decode("utf-8", errors="replace")
+    if not index_html:
+        raise RuntimeError("game files list must contain index.html")
+    feedback = _game_html_feedback(index_html)
+    if feedback:
+        raise RuntimeError(feedback)
+    s3, bucket, _ = _game_s3_client(target)
+    for rel, body, content_type in normalized:
+        s3.put_object(
+            Bucket=bucket,
+            Key=f"{prefix}/{rel}",
+            Body=body,
+            ContentType=content_type,
+            ACL="public-read",
+        )
+    return str(target.get("s3_object_name") or "")
+
+
 def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
     args.setdefault("game_plan", _default_game_plan())
     args.setdefault("layout_requirements", _default_game_layout_requirements())
     args.setdefault("review_checklist", _default_game_review_checklist())
     html = str(args.get("html") or args.get("index_html") or "").strip()
-    feedback = _game_html_feedback(html)
-    if feedback:
-        return _tool_error(feedback)
+    artifact_path = str(args.get("artifact_dir") or args.get("artifact_path") or args.get("directory") or "").strip()
+    files = args.get("files")
+    if not html and not artifact_path and not files:
+        return _tool_error("game tool requires html, artifact_dir/artifact_path, or files")
     try:
         target = _request_game_upload_target(args)
-        _upload_game_html(target, html)
+        if artifact_path:
+            path = Path(artifact_path).expanduser()
+            if path.is_dir():
+                _upload_game_directory(target, path)
+            elif path.is_file():
+                html = path.read_text(encoding="utf-8")
+                feedback = _game_html_feedback(html)
+                if feedback:
+                    return _tool_error(feedback)
+                _upload_game_html(target, html)
+            else:
+                return _tool_error(f"game artifact path does not exist: {artifact_path}")
+        elif isinstance(files, list):
+            _upload_game_files(target, files)
+        else:
+            feedback = _game_html_feedback(html)
+            if feedback:
+                return _tool_error(feedback)
+            _upload_game_html(target, html)
     except Exception as exc:
         return _tool_error(str(exc))
     result = {
@@ -1118,7 +1259,8 @@ CANVAS_GENERATE_GAME_SCHEMA = {
         "relationships must stay correct. Use this for 'make a game that teaches/explains ...' or "
         "'create a quiz/game about ...' requests. Before calling, create a strict plan internally. "
         "Do not call file-writing/coding tools such as Write, Edit, MultiEdit, Bash, write_file, patch, "
-        "terminal, or process; put the complete HTML directly in this tool's html argument. "
+        "terminal, or process; put the complete HTML directly in this tool's html argument, "
+        "or pass artifact_dir/artifact_path when a game skill produced a directory containing index.html and assets. "
         "After the tool returns, review content, UI layout, and interactions; if the result "
         "has clipped text, overflow, overlapping controls, or out-of-frame elements, revise "
         "the prompt and regenerate instead of finalizing. Keep optional planning fields concise; "
@@ -1157,6 +1299,37 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                     "must stay inside x=40..1880 and y=40..1040; html/body/stage must not scroll; use box-sizing:border-box "
                     "and overflow:hidden. JavaScript must wire behavior, but must not create the only visible game DOM after load."
                 ),
+            },
+            "artifact_dir": {
+                "type": "string",
+                "description": (
+                    "Optional local directory artifact containing index.html and any asset files. "
+                    "When provided, the tool uploads every file recursively under the same public game S3 prefix."
+                ),
+            },
+            "artifact_path": {
+                "type": "string",
+                "description": (
+                    "Optional local artifact path. If it is a directory, it must contain index.html and assets are uploaded recursively. "
+                    "If it is a file, it is treated as index.html."
+                ),
+            },
+            "files": {
+                "type": "array",
+                "description": (
+                    "Optional in-memory artifact files. Must include path='index.html'. "
+                    "Each file may provide content text or base64 bytes plus optional content_type."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                        "base64": {"type": "string"},
+                        "content_type": {"type": "string"},
+                    },
+                    "required": ["path"],
+                },
             },
             "game_plan": {
                 "type": "object",
@@ -1218,7 +1391,7 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                 ),
             },
         },
-        "required": ["prompt", "html"],
+        "required": ["prompt"],
     },
 }
 

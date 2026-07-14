@@ -1593,7 +1593,7 @@ def _forced_media_tool_messages(
 
 def _alphart_agent_prompt(req: AlphartEduChatRequest) -> str:
     tool_lines = _selected_tool_lines(req.tool_list)
-    selected_tools = "\n".join(tool_lines) if tool_lines else "- No image/video/audio model selected. Ask the user to select a model before generation."
+    selected_tools = "\n".join(tool_lines) if tool_lines else "- No explicit canvas media model selected. Call the generation tool anyway and let the backend choose the default model from app_config."
     return f"""
 {req.system_prompt.strip()}
 
@@ -1609,6 +1609,7 @@ PLANNER RULES:
 - If the user asks to explain, describe, analyze, summarize, caption, identify, or understand an attached image/video, answer with the text/chat model. Do not call image/video generation tools.
 - For obvious image/video generation or editing tasks, a generation tool call is mandatory.
 - For simple media requests, call canvas_generate_image/canvas_generate_video directly. Do not stop after a plan.
+- If no selected image/video tool is listed, do not ask the user to choose a model. Call the generation tool without provider/model and let the backend use the default app_config fallback.
 - For complex media requests, you may call write_plan first, but you must continue to the generation tool after the plan result.
 - Do not ask for approval before media generation unless the backend returns a confirmation request.
 - Do not call multiple tools in the same assistant turn. Always wait for one tool result before making another tool call.
@@ -1670,7 +1671,7 @@ GAME CREATION RULES:
 - Use canvas_generate_game or generate_game for requests like "make a game", "interactive demo", "quiz game", "platformer", "storybook game", "GBA/Pokemon-style educational battle", "create a playable teaching activity", and equivalent Chinese/Traditional Chinese/Spanish requests such as 生成游戏, 製作遊戲, 互动游戏, 互動遊戲, 闯关, 闖關, 小游戏, 小遊戲, crear juego.
 - Only call canvas_generate_game or generate_game for game artifacts. Do not call file-writing or coding tools such as Write, Edit, MultiEdit, Bash, write_file, patch, terminal, or process; they are unavailable in this service and will fail.
 - For game requests, first load the English game-studio skill with skill_view("game-studio"), then follow its studio workflow before calling canvas_generate_game/generate_game. Do not stop after skill_view and do not output only a markdown plan.
-- Game generation must follow a mini version of the game-studio flow: 1) Studio Design: define learning goal, player fantasy, game pattern, content_facts, controls, and win/fail state; 2) Studio Planning: create acceptance criteria for bounded layout, controls, loop, state changes, validation/collision, and completion; 3) Studio Development: write complete self-contained HTML/CSS/JS; 4) Studio QA: mentally playtest before calling the tool; 5) call canvas_generate_game/generate_game with prompt and html, adding only concise game_plan/layout_requirements/review_checklist fields if useful.
+- Game generation must follow a mini version of the game-studio flow: 1) Studio Design: define learning goal, player fantasy, game pattern, content_facts, controls, and win/fail state; 2) Studio Planning: create acceptance criteria for bounded layout, controls, loop, state changes, validation/collision, and completion; 3) Studio Development: create complete playable HTML/CSS/JS, either self-contained in html or as an artifact_dir/artifact_path containing index.html and assets; 4) Studio QA: mentally playtest before calling the tool; 5) call canvas_generate_game/generate_game with prompt plus html or artifact_dir/artifact_path, adding only concise game_plan/layout_requirements/review_checklist fields if useful.
 - Default to a simple pixel-art game, not a plain web form. Use blocky sprites, tile/grid playfields, crisp edges, limited high-contrast palettes, HUD panels, and 8-bit inspired controls.
 - Prefer real playable patterns: pixel platformer, top-down maze/exploration, arcade matcher, drag-and-drop sorter, physics launcher, simulation sandbox, boss challenge, or story quest. Use a plain quiz/card/form only if the user explicitly asks for a quiz.
 - This is an education platform: preserve content precision over visual novelty. Formulas, units, definitions, names, dates, symbols, vocabulary, causal relationships, and domain constraints must be correct.
