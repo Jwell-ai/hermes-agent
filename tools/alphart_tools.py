@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Alphart app tool bridge.
 
-The Hermes agent owns the reasoning loop. Canvas still owns auth, credit
-billing, S3 persistence, and Seedance polling, so these tools call the Go
-backend's normal `/api/v1/tools/execute` endpoint.
+Hermes owns the reasoning loop and creative orchestration. Alphart Edu exposes
+boring internal APIs for relay, persistence, S3, billing, and canvas/session
+metadata; this module turns agent decisions into those API calls without writing
+temporary local artifacts.
 """
 
 from __future__ import annotations
@@ -13,8 +14,10 @@ import contextvars
 import json
 import os
 import re
-import uuid
+import tempfile
+from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator
+from urllib.parse import urlparse
 
 import requests
 
@@ -116,74 +119,55 @@ def _service_token() -> str:
     ).strip()
 
 
-def _call_backend_tool(tool_name: str, args: Dict[str, Any], confirm: bool = False) -> str:
+def _internal_relay_url(path: str) -> str:
     backend_url = _backend_url()
     if not backend_url:
-        return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
-    token = _auth_token()
+        return ""
+    return f"{backend_url}/api/v1/internal/relay/{path.lstrip('/')}"
+
+
+def _internal_api_url(path: str) -> str:
+    backend_url = _backend_url()
+    if not backend_url:
+        return ""
+    return f"{backend_url}/api/v1/internal/{path.lstrip('/')}"
+
+
+def _internal_relay_headers() -> Dict[str, str]:
+    headers: Dict[str, str] = {"Authorization": "Bearer internal-relay"}
     service_token = _service_token()
-
-    merged_args = dict(args or {})
-    merged_args.setdefault("session_id", _ctx().get("session_id"))
-    merged_args.setdefault("user_uuid", _ctx().get("user_uuid"))
-    if _ctx().get("storage_prefix"):
-        merged_args.setdefault("storage_prefix", _ctx().get("storage_prefix"))
-        merged_args.setdefault("org_no", _ctx().get("storage_prefix"))
+    if service_token:
+        headers["X-Hermes-Agent-Token"] = service_token
+    if _ctx().get("user_id"):
+        headers["X-Internal-User-ID"] = str(_ctx().get("user_id"))
+    if _ctx().get("user_uuid"):
+        headers["X-Internal-User-UUID"] = str(_ctx().get("user_uuid"))
+    org_no = str(_ctx().get("org_no") or _ctx().get("storage_prefix") or "").strip()
+    if org_no:
+        headers["X-Org-No"] = org_no
+    if _ctx().get("session_id"):
+        headers["X-Session-ID"] = str(_ctx().get("session_id"))
     if _ctx().get("canvas_id"):
-        merged_args.setdefault("canvas_id", _ctx().get("canvas_id"))
-
-    payload = {
-        "tool_call_id": str(merged_args.get("tool_call_id") or uuid.uuid4()),
-        "session_id": str(_ctx().get("session_id") or merged_args.get("session_id") or ""),
-        "tool_name": tool_name,
-        "arguments": merged_args,
-        "confirm": bool(confirm),
-    }
-    print(
-        f"[alphart-agent] calling backend tool name={tool_name} session_id={payload['session_id']} backend_url={backend_url}",
-        flush=True,
-    )
-    try:
-        resp = requests.post(
-            f"{backend_url}/api/v1/tools/execute",
-            json=payload,
-            headers={
-                **({"Authorization": f"Bearer {token}"} if token else {}),
-                **({"X-Hermes-Agent-Token": service_token} if service_token else {}),
-            },
-            timeout=int(
-                os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
-                or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")
-            ),
-        )
-    except requests.RequestException as exc:
-        return _tool_error(f"Canvas backend request failed: {exc}")
-    try:
-        decoded = resp.json()
-    except ValueError:
-        decoded = {"raw": resp.text}
-    response_preview = (resp.text or "").replace("\n", " ")[:500]
-    print(
-        f"[alphart-agent] backend tool response name={tool_name} status={resp.status_code} bytes={len(resp.text)} body={response_preview}",
-        flush=True,
-    )
-    if resp.status_code < 200 or resp.status_code >= 300:
-        if tool_name in {
-            "canvas_create_storybook",
-            "create_storybook",
-            "canvas_update_storybook_page",
-            "update_storybook_page",
-        }:
-            message = ""
-            if isinstance(decoded, dict):
-                message = str(decoded.get("message") or decoded.get("error") or "").strip()
-            return _tool_error(message or "Storybook generation failed")
-        return _system_busy_tool_error()
-    return json.dumps(decoded, ensure_ascii=False)
+        headers["X-Canvas-ID"] = str(_ctx().get("canvas_id"))
+    return headers
 
 
 def _handle_write_plan(args: Dict[str, Any], **_: Any) -> str:
-    return _call_backend_tool("write_plan", args or {}, confirm=False)
+    steps = []
+    for item in (args or {}).get("steps") or []:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        description = str(item.get("description") or "").strip()
+        if title:
+            steps.append({"title": title, "description": description})
+    lines = []
+    for index, step in enumerate(steps, start=1):
+        line = f"{index}. {step['title']}"
+        if step.get("description"):
+            line += f" - {step['description']}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
@@ -203,14 +187,132 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
     args.setdefault("generate_images", True)
     if not args.get("input_images") and _ctx().get("input_images"):
         args["input_images"] = _ctx().get("input_images")
-    return _call_backend_tool("canvas_create_storybook", args, confirm=False)
+    create_url = _internal_api_url("storybooks")
+    if not create_url:
+        return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
+    payload = {
+        "title": args.get("title"),
+        "description": args.get("description"),
+        "topic": args.get("topic") or args.get("prompt"),
+        "language": args.get("language"),
+        "age_range": args.get("age_range"),
+        "reading_level": args.get("reading_level"),
+        "style": args.get("style"),
+        "page_count": args.get("page_count") or 10,
+        "template_id": args.get("template_id"),
+        "canvas_id": _ctx().get("canvas_id") or args.get("canvas_id"),
+        "org_no": _ctx().get("org_no") or _ctx().get("storage_prefix") or args.get("org_no"),
+    }
+    timeout = int(os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS") or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900"))
+    try:
+        created_resp = requests.post(create_url, json=payload, headers=_internal_relay_headers(), timeout=timeout)
+        if created_resp.status_code < 200 or created_resp.status_code >= 300:
+            return _tool_error(f"Storybook creation failed: {created_resp.text[:300]}")
+        created = created_resp.json()
+        storybook_id = str(created.get("id") or created.get("ID") or "").strip()
+        if not storybook_id:
+            return _tool_error("Storybook creation failed: missing id")
+        plan_resp = requests.post(
+            _internal_api_url(f"storybooks/{storybook_id}/plan"),
+            json={
+                "topic": payload["topic"],
+                "language": payload["language"],
+                "age_range": payload["age_range"],
+                "reading_level": payload["reading_level"],
+                "style": payload["style"],
+                "page_count": payload["page_count"],
+                "pages": args.get("pages") or [],
+            },
+            headers=_internal_relay_headers(),
+            timeout=timeout,
+        )
+        if plan_resp.status_code < 200 or plan_resp.status_code >= 300:
+            return _tool_error(f"Storybook planning failed: {plan_resp.text[:300]}")
+        gen_resp = requests.post(
+            _internal_api_url(f"storybooks/{storybook_id}/generate"),
+            json={},
+            headers=_internal_relay_headers(),
+            timeout=timeout,
+        )
+        if gen_resp.status_code < 200 or gen_resp.status_code >= 300:
+            return _tool_error(f"Storybook image generation failed: {gen_resp.text[:300]}")
+        generated = gen_resp.json()
+    except requests.RequestException as exc:
+        return _tool_error(f"Storybook request failed: {exc}")
+    pages = generated.get("pages") if isinstance(generated, dict) else []
+    storybook = generated.get("storybook") if isinstance(generated, dict) else {}
+    result = {
+        "type": "storybook",
+        "presentation_mode": "flipbook",
+        "read_aloud": True,
+        "storybook_id": storybook_id,
+        "title": storybook.get("title") or created.get("title") or payload.get("title"),
+        "topic": storybook.get("topic") or created.get("topic") or payload.get("topic"),
+        "page_count": len(pages or []),
+        "canvas_id": payload.get("canvas_id"),
+        "org_no": payload.get("org_no"),
+        "pages": pages or [],
+        "image_generation": generated.get("image_generation") if isinstance(generated, dict) else None,
+        "canvas_element": {
+            "type": "embeddable",
+            "link": f"alphart-storybook://{storybook_id}",
+            "customData": {
+                "kind": "storybook",
+                "storybook_id": storybook_id,
+                "title": storybook.get("title") or created.get("title") or payload.get("title"),
+                "page_count": len(pages or []),
+                "read_aloud": True,
+                "mode": "flipbook",
+                "pages": pages or [],
+            },
+        },
+    }
+    return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
 
 
 def _handle_alphart_update_storybook_page(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
     if not args.get("input_images") and _ctx().get("input_images"):
         args["input_images"] = _ctx().get("input_images")
-    return _call_backend_tool("canvas_update_storybook_page", args, confirm=False)
+    storybook_id = str(args.get("storybook_id") or args.get("id") or "").strip()
+    if not storybook_id:
+        return _tool_error("storybook_id is required")
+    timeout = int(os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS") or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900"))
+    page_id = str(args.get("page_id") or "").strip()
+    if not page_id:
+        try:
+            resp = requests.get(_internal_api_url(f"storybooks/{storybook_id}"), headers=_internal_relay_headers(), timeout=timeout)
+            if resp.status_code < 200 or resp.status_code >= 300:
+                return _tool_error(f"Storybook page lookup failed: {resp.text[:300]}")
+            pages = resp.json().get("pages") or []
+            target_index = int(args.get("page_index") or ((int(args.get("page_number") or 1)) - 1))
+            for page in pages:
+                if isinstance(page, dict) and int(page.get("page_index") or -1) == target_index:
+                    page_id = str(page.get("id") or "")
+                    break
+        except Exception as exc:
+            return _tool_error(f"Storybook page lookup failed: {exc}")
+    if not page_id:
+        return _tool_error("storybook page not found")
+    patch_payload = {
+        "title": args.get("title"),
+        "narration": args.get("narration"),
+        "image_prompt": args.get("image_prompt") or args.get("instructions") or args.get("prompt"),
+        "layout": args.get("layout"),
+        "page_type": args.get("page_type"),
+    }
+    patch_payload = {k: v for k, v in patch_payload.items() if v is not None}
+    try:
+        resp = requests.patch(_internal_api_url(f"storybooks/{storybook_id}/pages/{page_id}"), json=patch_payload, headers=_internal_relay_headers(), timeout=timeout)
+        if resp.status_code < 200 or resp.status_code >= 300:
+            return _tool_error(f"Storybook page update failed: {resp.text[:300]}")
+        regen = requests.post(_internal_api_url(f"storybooks/{storybook_id}/pages/{page_id}/regenerate"), json={}, headers=_internal_relay_headers(), timeout=timeout)
+        if regen.status_code < 200 or regen.status_code >= 300:
+            return _tool_error(f"Storybook page image regeneration failed: {regen.text[:300]}")
+        payload = regen.json()
+    except requests.RequestException as exc:
+        return _tool_error(f"Storybook page update failed: {exc}")
+    return json.dumps({"status": "success", "result": {"type": "storybook_page_update", "storybook_id": storybook_id, **payload}}, ensure_ascii=False)
 
 
 def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
@@ -222,10 +324,63 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
     tool = _pick_tool("image", args)
     args.setdefault("provider", tool.get("provider"))
     args.setdefault("model", tool.get("model") or tool.get("name") or tool.get("key"))
-    tool_name = str(tool.get("id") or "").strip()
-    if not tool_name:
-        tool_name = f"generate_image_by_{_slug(args.get('provider'))}_{_slug(args.get('model'))}"
-    return _call_backend_tool(tool_name, args, confirm=bool(tool.get("requires_confirmation")))
+    relay_url = _internal_relay_url("images/edits" if args.get("input_images") else "images/generations")
+    if not relay_url:
+        return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
+    payload = {
+        "model": args.get("model"),
+        "provider": args.get("provider"),
+        "prompt": args.get("prompt"),
+        "aspect_ratio": args.get("aspect_ratio"),
+        "session_id": _ctx().get("session_id"),
+        "canvas_id": _ctx().get("canvas_id"),
+    }
+    if args.get("quantity"):
+        payload["n"] = args.get("quantity")
+    if args.get("input_images"):
+        payload["images"] = args.get("input_images")
+    print(
+        f"[alphart-agent] calling internal relay image session_id={_ctx().get('session_id')} url={relay_url}",
+        flush=True,
+    )
+    try:
+        resp = requests.post(
+            relay_url,
+            json=payload,
+            headers=_internal_relay_headers(),
+            timeout=int(
+                os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
+                or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")
+            ),
+        )
+    except requests.RequestException as exc:
+        return _tool_error(f"Alphart relay request failed: {exc}")
+    try:
+        decoded = resp.json()
+    except ValueError:
+        decoded = {"raw": resp.text}
+    response_preview = (resp.text or "").replace("\n", " ")[:500]
+    print(
+        f"[alphart-agent] internal relay image response status={resp.status_code} bytes={len(resp.text)} body={response_preview}",
+        flush=True,
+    )
+    if resp.status_code < 200 or resp.status_code >= 300:
+        return _system_busy_tool_error()
+    data = decoded.get("data") if isinstance(decoded, dict) else None
+    asset = data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else {}
+    result = {
+        "type": "image",
+        "provider": asset.get("provider") or args.get("provider"),
+        "model": asset.get("model") or args.get("model"),
+        "url": asset.get("url"),
+        "mime_type": asset.get("mime_type"),
+        "width": asset.get("width"),
+        "height": asset.get("height"),
+        "filename": asset.get("filename"),
+        "s3_object_name": asset.get("s3_object_name"),
+        "usage": asset.get("usage"),
+    }
+    return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
 
 
 def _handle_alphart_generate_video(args: Dict[str, Any], **_: Any) -> str:
@@ -240,10 +395,59 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **_: Any) -> str:
     args.setdefault("provider", tool.get("provider"))
     args.setdefault("model", tool.get("model") or tool.get("name") or tool.get("key"))
     args.setdefault("wait", False)
-    tool_name = str(tool.get("id") or "").strip()
-    if not tool_name:
-        tool_name = f"generate_video_by_{_slug(args.get('provider'))}_{_slug(args.get('model'))}"
-    return _call_backend_tool(tool_name, args, confirm=bool(tool.get("requires_confirmation")))
+    relay_url = _internal_relay_url("videos")
+    if not relay_url:
+        return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
+    payload = {
+        "model": args.get("model"),
+        "provider": args.get("provider"),
+        "prompt": args.get("prompt"),
+        "aspect_ratio": args.get("aspect_ratio"),
+        "resolution": args.get("resolution"),
+        "duration": args.get("duration"),
+        "session_id": _ctx().get("session_id"),
+        "canvas_id": _ctx().get("canvas_id"),
+    }
+    if args.get("input_images"):
+        images = args.get("input_images")
+        payload["image"] = images[0] if isinstance(images, list) and images else images
+    print(
+        f"[alphart-agent] calling internal relay video session_id={_ctx().get('session_id')} url={relay_url}",
+        flush=True,
+    )
+    try:
+        resp = requests.post(
+            relay_url,
+            json=payload,
+            headers=_internal_relay_headers(),
+            timeout=int(
+                os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
+                or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")
+            ),
+        )
+    except requests.RequestException as exc:
+        return _tool_error(f"Alphart relay request failed: {exc}")
+    try:
+        decoded = resp.json()
+    except ValueError:
+        decoded = {"raw": resp.text}
+    response_preview = (resp.text or "").replace("\n", " ")[:500]
+    print(
+        f"[alphart-agent] internal relay video response status={resp.status_code} bytes={len(resp.text)} body={response_preview}",
+        flush=True,
+    )
+    if resp.status_code < 200 or resp.status_code >= 300:
+        return _system_busy_tool_error()
+    result = {
+        "phase": "task",
+        "type": "generate_video_task",
+        "status": decoded.get("status") if isinstance(decoded, dict) else "queued",
+        "message": "Create generation task success",
+        "task_id": decoded.get("id") if isinstance(decoded, dict) else "",
+        "provider": decoded.get("provider") if isinstance(decoded, dict) else args.get("provider"),
+        "model": decoded.get("model") if isinstance(decoded, dict) else args.get("model"),
+    }
+    return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
 
 
 def _default_game_plan() -> Dict[str, Any]:
@@ -555,13 +759,34 @@ def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
 
 def _handle_alphart_transcribe_audio(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
-    tool = _pick_tool("audio", args)
-    args.setdefault("provider", tool.get("provider"))
-    args.setdefault("model", tool.get("model") or tool.get("name") or tool.get("key"))
-    tool_name = str(tool.get("id") or "").strip()
-    if not tool_name:
-        tool_name = f"transcribe_audio_by_{_slug(args.get('provider'))}_{_slug(args.get('model'))}"
-    return _call_backend_tool(tool_name, args, confirm=False)
+    audio_url = str(args.get("audio_url") or args.get("url") or "").strip()
+    if not audio_url:
+        return _tool_error("audio_url is required")
+    try:
+        from tools.transcription_tools import transcribe_audio  # type: ignore
+
+        suffix = Path(urlparse(audio_url).path).suffix or ".audio"
+        with requests.get(audio_url, stream=True, timeout=120) as resp:
+            if resp.status_code < 200 or resp.status_code >= 300:
+                return _tool_error(f"audio download failed: HTTP {resp.status_code}")
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp_path = tmp.name
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        tmp.write(chunk)
+        try:
+            result = transcribe_audio(tmp_path, model=str(args.get("model") or "") or None)
+        finally:
+            with contextlib.suppress(Exception):
+                os.unlink(tmp_path)
+    except Exception as exc:
+        return _tool_error(f"audio transcription failed: {exc}")
+    text = ""
+    if isinstance(result, dict):
+        text = str(result.get("text") or result.get("transcript") or "").strip()
+    else:
+        text = str(result or "").strip()
+    return json.dumps({"status": "success", "result": {"type": "transcription", "text": text, "raw": result}}, ensure_ascii=False)
 
 
 WRITE_PLAN_SCHEMA = {
@@ -728,6 +953,47 @@ CANVAS_CREATE_STORYBOOK_SCHEMA = {
                     },
                 },
                 "description": "Optional named protagonist notes for maintaining character consistency across pages.",
+            },
+            "pages": {
+                "type": "array",
+                "description": (
+                    "Agent-authored page plan. Use this for real storybook creation. "
+                    "Include a cover page, alternating image/narration story pages when appropriate, "
+                    "and a closing/back-cover page. Image pages must include 1:1 image_prompt. "
+                    "Narration pages should include narration/read-aloud text and may omit image_prompt."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "page_number": {"type": "integer", "description": "Human page number starting at 1."},
+                        "page_index": {"type": "integer", "description": "Zero-based page index."},
+                        "page_type": {
+                            "type": "string",
+                            "description": "cover, image, narration, story, closing, or back-cover.",
+                        },
+                        "layout": {
+                            "type": "string",
+                            "description": "cover, flipbook-page, image, narration, back-cover, or another compact layout label.",
+                        },
+                        "title": {"type": "string"},
+                        "narration": {
+                            "type": "string",
+                            "description": "Short read-aloud text for this page. Keep age-appropriate and concise.",
+                        },
+                        "image_prompt": {
+                            "type": "string",
+                            "description": (
+                                "Strict 1:1 page illustration prompt. Repeat character anchors, style bible, "
+                                "visual evidence for the narration, and no text-in-image unless essential."
+                            ),
+                        },
+                        "metadata": {
+                            "type": "object",
+                            "description": "Optional skill metadata such as story_function, page_turn_hook, visual_evidence, character_anchors, safety_notes.",
+                        },
+                    },
+                    "required": ["page_number", "page_type", "title"],
+                },
             },
         },
         "required": ["topic"],

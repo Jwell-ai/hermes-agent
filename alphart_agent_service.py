@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 import requests
 
 from run_agent import AIAgent
+from tools.skills_sync import sync_skills
 from tools.alphart_tools import (
     _handle_alphart_generate_image,
     _handle_alphart_generate_video,
@@ -36,6 +37,7 @@ class AlphartEduChatRequest(BaseModel):
     user_id: str = ""
     user_uuid: str = ""
     storage_prefix: str = ""
+    org_no: str = ""
     auth_token: str = ""
     messages: List[Any] = Field(default_factory=list)
     text_model: Dict[str, Any] = Field(default_factory=dict)
@@ -48,6 +50,10 @@ class AlphartEduChatRequest(BaseModel):
 
 class AlphartEduTitleRequest(BaseModel):
     messages: List[Any] = Field(default_factory=list)
+    user_id: str = ""
+    auth_token: str = ""
+    org_no: str = ""
+    backend_url: str = ""
     text_model: Dict[str, Any] = Field(default_factory=dict)
     text_models: List[Dict[str, Any]] = Field(default_factory=list)
     model_configs: Dict[str, Any] = Field(default_factory=dict)
@@ -55,6 +61,20 @@ class AlphartEduTitleRequest(BaseModel):
 
 app = FastAPI(title="Alphart Hermes Agent", version="1.0.0")
 SYSTEM_BUSY_MESSAGE = "System busy, please try again later."
+
+
+def _sync_bundled_skills() -> None:
+    try:
+        result = sync_skills(quiet=True)
+        copied = len(result.get("copied") or [])
+        updated = len(result.get("updated") or [])
+        if copied or updated:
+            logger.info("synced bundled skills copied=%s updated=%s", copied, updated)
+    except Exception as exc:
+        logger.warning("failed to sync bundled skills: %s", exc)
+
+
+_sync_bundled_skills()
 
 
 def _service_token() -> str:
@@ -270,6 +290,50 @@ def _endpoint(config: Dict[str, Any]) -> str:
         if value:
             return value
     return ""
+
+
+def _backend_url_from_req(req: Any) -> str:
+    return (
+        _string(getattr(req, "backend_url", ""))
+        or os.getenv("ALPHART_EDU_BACKEND_URL")
+        or os.getenv("CANVAS_BACKEND_URL")
+        or "http://localhost:57988"
+    ).rstrip("/")
+
+
+def _internal_relay_base_url(req: Any) -> str:
+    return _backend_url_from_req(req) + "/api/v1/internal/relay"
+
+
+def _internal_relay_headers(req: Any) -> Dict[str, str]:
+    headers: Dict[str, str] = {}
+    service_token = _service_token()
+    if service_token:
+        headers["X-Hermes-Agent-Token"] = service_token
+    user_id = _string(getattr(req, "user_id", ""))
+    if user_id:
+        headers["X-Internal-User-ID"] = user_id
+    user_uuid = _string(getattr(req, "user_uuid", ""))
+    if user_uuid:
+        headers["X-Internal-User-UUID"] = user_uuid
+    session_id = _string(getattr(req, "session_id", ""))
+    if session_id:
+        headers["X-Session-ID"] = session_id
+    canvas_id = _string(getattr(req, "canvas_id", ""))
+    if canvas_id:
+        headers["X-Canvas-ID"] = canvas_id
+    org_no = _string(getattr(req, "org_no", "")) or _string(getattr(req, "storage_prefix", ""))
+    if org_no:
+        headers["X-Org-No"] = org_no
+    return headers
+
+
+def _use_internal_relay(req: Any) -> bool:
+    return bool(_string(getattr(req, "user_id", "")))
+
+
+def _internal_relay_api_key() -> str:
+    return _service_token() or "internal-relay"
 
 
 def _selected_tool_lines(tools: List[Any]) -> List[str]:
@@ -854,6 +918,20 @@ def _game_tool_failed(messages: List[Any]) -> bool:
     return False
 
 
+def _storybook_tool_attempted(messages: List[Any]) -> bool:
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant":
+            for tool_call in msg.get("tool_calls") or []:
+                name = _tool_call_name(tool_call).lower()
+                if "storybook" in name:
+                    return True
+        if msg.get("role") == "tool" and "storybook" in _string(msg.get("name")).lower():
+            return True
+    return False
+
+
 def _xml_tag_text(text: str, tag: str) -> str:
     match = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", text or "", flags=re.IGNORECASE | re.DOTALL)
     return _string(match.group(1)) if match else ""
@@ -1230,6 +1308,158 @@ def _forced_audio_to_media_pipeline(
     ]
 
 
+def _forced_storybook_tool_messages(
+	user_message: str,
+	input_images: Optional[List[Any]] = None,
+) -> List[Dict[str, Any]]:
+    if not _storybook_intent(user_message):
+        return []
+
+    call_id = str(uuid.uuid4())
+    args: Dict[str, Any] = {
+        "topic": user_message,
+        "prompt": user_message,
+        "tool_call_id": call_id,
+        "page_count": 10,
+		"read_aloud": True,
+		"generate_images": True,
+		"aspect_ratio": "1:1",
+		"pages": _fallback_storybook_pages(user_message),
+	}
+    if input_images:
+        args["input_images"] = input_images
+
+    print(
+        f"[alphart-agent] forcing storybook creation session_intent=storybook input_images={len(input_images or [])}",
+        flush=True,
+    )
+    result = _handle_alphart_create_storybook(args)
+    final_text = "Storybook created." if _tool_result_success(result) else "generate fail"
+    return [
+        {
+            "role": "assistant",
+            "content": "Plan:\n1. Create a canvas-native flipbook storybook artifact.\n2. Generate strict 1:1 storybook image pages through the backend.\n3. Return the storybook result in chat and canvas.",
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "canvas_create_storybook",
+                        "arguments": json.dumps(args, ensure_ascii=False),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "name": "canvas_create_storybook",
+            "content": result,
+        },
+        {"role": "assistant", "content": final_text},
+	]
+
+
+def _fallback_storybook_pages(user_message: str) -> List[Dict[str, Any]]:
+	topic = _string(user_message)[:180] or "a learning adventure"
+	return [
+		{
+			"page_number": 1,
+			"page_type": "cover",
+			"layout": "cover",
+			"title": "Learning Adventure",
+			"narration": f"Open the book and meet a story about {topic}.",
+			"image_prompt": f"Square 1:1 warm educational storybook cover about {topic}, child-safe, inviting, no body text, clear main character and learning clue.",
+			"metadata": {"story_function": "cover", "visual_evidence": "main character, learning clue, safe setting"},
+		},
+		{
+			"page_number": 2,
+			"page_type": "image",
+			"layout": "image",
+			"title": "A Question Appears",
+			"narration": "",
+			"image_prompt": f"Square 1:1 storybook illustration: a curious protagonist notices a concrete question about {topic}; include visible evidence for the question, consistent character, no text.",
+			"metadata": {"story_function": "inciting question", "page_turn_hook": "What will the protagonist discover?"},
+		},
+		{
+			"page_number": 3,
+			"page_type": "narration",
+			"layout": "narration",
+			"title": "The First Clue",
+			"narration": f"The protagonist looks closely and finds the first clue about {topic}.",
+			"image_prompt": "",
+			"metadata": {"story_function": "read-aloud narration"},
+		},
+		{
+			"page_number": 4,
+			"page_type": "image",
+			"layout": "image",
+			"title": "Try It",
+			"narration": "",
+			"image_prompt": f"Square 1:1 storybook illustration: the protagonist tries a safe hands-on example about {topic}; show the key objects/actions mentioned by the lesson, no text.",
+			"metadata": {"story_function": "practice", "visual_evidence": "hands-on example and key objects"},
+		},
+		{
+			"page_number": 5,
+			"page_type": "narration",
+			"layout": "narration",
+			"title": "What Changed?",
+			"narration": f"Something changes, and the protagonist compares what happened before and after.",
+			"image_prompt": "",
+			"metadata": {"story_function": "cause and effect narration"},
+		},
+		{
+			"page_number": 6,
+			"page_type": "image",
+			"layout": "image",
+			"title": "The Idea Clicks",
+			"narration": "",
+			"image_prompt": f"Square 1:1 storybook illustration: a joyful aha moment where the key idea about {topic} becomes visible through concrete classroom-safe symbols, no text.",
+			"metadata": {"story_function": "aha moment", "visual_evidence": "clear concrete symbols"},
+		},
+		{
+			"page_number": 7,
+			"page_type": "narration",
+			"layout": "narration",
+			"title": "Say It Back",
+			"narration": f"Now the protagonist can explain the idea in simple words and invites the reader to try.",
+			"image_prompt": "",
+			"metadata": {"story_function": "reader reflection"},
+		},
+		{
+			"page_number": 8,
+			"page_type": "image",
+			"layout": "image",
+			"title": "Use It",
+			"narration": "",
+			"image_prompt": f"Square 1:1 storybook illustration: the protagonist uses the lesson about {topic} in a new real-world situation, consistent character, warm ending, no text.",
+			"metadata": {"story_function": "transfer", "page_turn_hook": "Can the reader find it too?"},
+		},
+		{
+			"page_number": 9,
+			"page_type": "image",
+			"layout": "image",
+			"title": "Share the Discovery",
+			"narration": f"The protagonist shares the discovery and celebrates learning with friends.",
+			"image_prompt": f"Square 1:1 closing storybook illustration: protagonist shares the discovery about {topic} with friends in a warm child-safe scene, no text.",
+			"metadata": {"story_function": "emotional close"},
+		},
+		{
+			"page_number": 10,
+			"page_type": "closing",
+			"layout": "back-cover",
+			"title": "The End",
+			"narration": f"The reader can open the book again and notice {topic} in the world.",
+			"image_prompt": f"Square 1:1 back-cover style storybook illustration for {topic}, quiet warm closing image, no body text, consistent style.",
+			"metadata": {"story_function": "back cover"},
+		},
+	]
+
+
 def _forced_media_tool_messages(
     user_message: str,
     response_messages: List[Any],
@@ -1413,7 +1643,19 @@ VIDEO CREATION RULES:
 STORYBOOK CREATION RULES:
 - Use canvas_create_storybook or create_storybook for requests like "make a storybook", "create a flip-book lesson", "storybook about ...", "page-by-page children's book", and equivalent Chinese/Traditional Chinese requests such as 绘本, 繪本, 故事书, 故事書, 童书, 童書, 翻页故事, 翻頁故事.
 - A storybook is a Gemini-style Edu-native canvas/chat artifact: a complete illustrated flipbook with short page text and read-aloud narration, not a draft, planning document, or mirrored alphart-book API.
-- For storybook requests, call the storybook tool directly and treat it as the final storybook artifact only if the tool succeeds with generated image pages. Default to 10 pages, read_aloud=true, generate_images=true, and aspect_ratio="1:1" unless the user explicitly asks for another length.
+- Never create storybooks as HTML files, local files, documents, code projects, or /tmp outputs. Do not call Write, write_file, patch, terminal, process, Bash, or any file/coding tool for storybook requests.
+- The only valid tool path for creating a storybook is canvas_create_storybook/create_storybook. The only valid tool path for revising one page is canvas_update_storybook_page/update_storybook_page.
+- For storybook requests, first load the English storybook-generator skill with skill_view("storybook-generator"), then call the storybook tool and treat it as the final storybook artifact only if the tool succeeds with generated image pages. Default to 10 pages, read_aloud=true, generate_images=true, and aspect_ratio="1:1" unless the user explicitly asks for another length.
+- For storybook page planning, read the skill references story-structure.md, character-continuity.md, prompt-workflow.md, and qa-checklist.md with skill_view("storybook-generator", "references/<file>"). Read layout-and-pinyin.md only for text layout/export requests, and read commercial-publishing-workflow.md only for KDP/commercial publishing requests.
+- After loading the skill guidance, apply its compact workflow: 1) story architecture, 2) character/style bible, 3) page-by-page causality and page-turn hooks, 4) visual evidence contract, 5) page image prompts, 6) child-safety and factual QA. Do not stop after skill_view and do not output only a markdown plan.
+- Pass an explicit pages array to canvas_create_storybook/create_storybook. Do not rely on backend filler pages when the user gave a real story premise. Each page should include page_number, page_type, layout, title, narration, image_prompt for visual pages, and metadata with story_function/page_turn_hook/visual_evidence when useful.
+- For Gemini-style page rhythm, use square 1:1 pages. If the user asks for a book layout, prefer: cover image, then alternating image page / narration page pairs, then final image and back-cover/closing image. If a shorter page count is requested, keep the same rhythm compactly.
+- Every storybook must have a causal chain: previous page state -> current trigger/action/discovery -> next page hook. Avoid disconnected pretty pictures.
+- Every visible noun/action mentioned in narration must have matching visual evidence in the image_prompt, and every image_prompt must support the narration. Do not add unsupported facts or visuals.
+- Build character continuity into every page prompt: fixed protagonist appearance, clothing/accessory anchors, expression baseline, scene/world anchors, and reference image roles when present.
+- If reference images are provided with @file or <input_images>, use them as protagonist/background/object references according to the user's label, preserve s3_object_name, and do not convert them to base64.
+- Do not ask the image model to render normal body text inside illustrations. Use no-text illustrations except short signs/labels essential to the scene. Cover title text may be requested only when short and must be checked.
+- Keep page narration short, age-appropriate, safe, and educational. Maintain requested language, bilingual/trilingual intent, reading level, and factual precision.
 - Storybook physical pages and generated illustrations must be strict square 1:1 pages for printer compatibility. Do not use 4:3, 3:4, or widescreen storybook pages.
 - If the user selects or names a template, pass compact template fields such as template_slug, template_name, category, age_range, page_count, style, and read_aloud to canvas_create_storybook/create_storybook instead of hiding them inside prose.
 - If the user attaches images while asking for a storybook, treat those images as protagonist/character references. Pass them to canvas_create_storybook/create_storybook as input_images and preserve s3_object_name values. Do not call image generation merely because reference images are attached.
@@ -1427,7 +1669,8 @@ STORYBOOK CREATION RULES:
 GAME CREATION RULES:
 - Use canvas_generate_game or generate_game for requests like "make a game", "interactive demo", "quiz game", "platformer", "storybook game", "GBA/Pokemon-style educational battle", "create a playable teaching activity", and equivalent Chinese/Traditional Chinese/Spanish requests such as 生成游戏, 製作遊戲, 互动游戏, 互動遊戲, 闯关, 闖關, 小游戏, 小遊戲, crear juego.
 - Only call canvas_generate_game or generate_game for game artifacts. Do not call file-writing or coding tools such as Write, Edit, MultiEdit, Bash, write_file, patch, terminal, or process; they are unavailable in this service and will fail.
-- Game generation must follow a mini version of skills/gaming studio flow: 1) Studio Design: define learning goal, player fantasy, game pattern, content_facts, controls, and win/fail state; 2) Studio Planning: create acceptance criteria for bounded layout, controls, loop, state changes, validation/collision, and completion; 3) Studio Development: write complete self-contained HTML/CSS/JS; 4) Studio QA: mentally playtest before calling the tool; 5) call canvas_generate_game/generate_game with prompt and html, adding only concise game_plan/layout_requirements/review_checklist fields if useful.
+- For game requests, first load the English game-studio skill with skill_view("game-studio"), then follow its studio workflow before calling canvas_generate_game/generate_game. Do not stop after skill_view and do not output only a markdown plan.
+- Game generation must follow a mini version of the game-studio flow: 1) Studio Design: define learning goal, player fantasy, game pattern, content_facts, controls, and win/fail state; 2) Studio Planning: create acceptance criteria for bounded layout, controls, loop, state changes, validation/collision, and completion; 3) Studio Development: write complete self-contained HTML/CSS/JS; 4) Studio QA: mentally playtest before calling the tool; 5) call canvas_generate_game/generate_game with prompt and html, adding only concise game_plan/layout_requirements/review_checklist fields if useful.
 - Default to a simple pixel-art game, not a plain web form. Use blocky sprites, tile/grid playfields, crisp edges, limited high-contrast palettes, HUD panels, and 8-bit inspired controls.
 - Prefer real playable patterns: pixel platformer, top-down maze/exploration, arcade matcher, drag-and-drop sorter, physics launcher, simulation sandbox, boss challenge, or story quest. Use a plain quiz/card/form only if the user explicitly asks for a quiz.
 - This is an education platform: preserve content precision over visual novelty. Formulas, units, definitions, names, dates, symbols, vocabulary, causal relationships, and domain constraints must be correct.
@@ -1802,6 +2045,100 @@ def _generate_title_direct(provider: str, endpoint: str, api_key: str, model: st
     }
 
 
+def _generate_title_relay(req: AlphartEduTitleRequest, provider: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    timeout = int(config.get("timeout") or config.get("timeout_seconds") or 60)
+    endpoint = _internal_relay_base_url(req)
+    headers = _internal_relay_headers(req)
+    client = OpenAI(api_key=_internal_relay_api_key(), base_url=endpoint, timeout=timeout)
+    logger.info("title relay provider=%s model=%s endpoint=%s org_no=%s", provider, model, endpoint, headers.get("X-Org-No", ""))
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": _TITLE_SYSTEM},
+                {"role": "user", "content": _title_prompt(source)},
+            ],
+            max_tokens=32,
+            temperature=0.2,
+            extra_headers=headers,
+        )
+    except OpenAITimeoutError as exc:
+        logger.error("title relay read timeout endpoint=%s model=%s timeout=%s: %s", endpoint, model, timeout, exc)
+        raise HTTPException(status_code=504, detail=f"Title model timed out after {timeout}s") from exc
+    except OpenAIConnectionError as exc:
+        logger.error("title relay connection error endpoint=%s model=%s: %s", endpoint, model, exc)
+        raise HTTPException(status_code=502, detail=f"Title model connection error: {exc}") from exc
+    except OpenAIStatusError as exc:
+        logger.error("title relay status error endpoint=%s model=%s status=%s: %s", endpoint, model, exc.status_code, exc.message)
+        raise HTTPException(status_code=exc.status_code, detail=f"Title model error: {exc.message}") from exc
+    content = ""
+    if response.choices:
+        content = response.choices[0].message.content or ""
+    usage = getattr(response, "usage", None)
+    return {
+        "title": _strip_think_tags(content),
+        "model": model,
+        "provider": provider,
+        "prompt_tokens": _usage_value(usage, "prompt_tokens"),
+        "completion_tokens": _usage_value(usage, "completion_tokens"),
+        "total_tokens": _usage_value(usage, "total_tokens"),
+    }
+
+
+def _generate_title_agent(req: AlphartEduTitleRequest, provider: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    if _use_internal_relay(req):
+        endpoint = _internal_relay_base_url(req)
+        api_key = _internal_relay_api_key()
+        request_overrides = {"extra_headers": _internal_relay_headers(req)}
+    else:
+        endpoint = _endpoint(config)
+        api_key = _api_key(config)
+        request_overrides = None
+    if not endpoint or not api_key:
+        raise HTTPException(status_code=400, detail="title model endpoint/api key is not configured")
+
+    api_mode = _string(config.get("api_mode")) or "chat_completions"
+    if _provider_format(provider, endpoint, model) == "anthropic":
+        api_mode = "chat_completions"
+    agent = AIAgent(
+        base_url=endpoint,
+        api_key=api_key,
+        provider=provider,
+        api_mode=api_mode,
+        model=model,
+        enabled_toolsets=[],
+        disabled_toolsets=["alphart-edu", "skills"],
+        max_iterations=1,
+        max_tokens=64,
+        quiet_mode=True,
+        session_id=None,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="alphart",
+        user_id=req.user_id or None,
+        request_overrides=request_overrides,
+    )
+    try:
+        result = agent.run_conversation(
+            _title_prompt(source),
+            system_message=_TITLE_SYSTEM,
+            conversation_history=[],
+            task_id=None,
+        )
+    except Exception as exc:
+        logger.warning("title agent error provider=%r model=%r: %s", provider, model, exc)
+        raise HTTPException(status_code=502, detail=f"Title agent error: {exc}") from exc
+
+    return {
+        "title": _strip_think_tags(_string(result.get("final_response"))),
+        "model": result.get("model") or model,
+        "provider": result.get("provider") or provider,
+        "prompt_tokens": int(result.get("prompt_tokens") or result.get("input_tokens") or 0),
+        "completion_tokens": int(result.get("completion_tokens") or result.get("output_tokens") or 0),
+        "total_tokens": int(result.get("total_tokens") or 0),
+    }
+
+
 def _agent_max_iterations(config: Dict[str, Any]) -> int:
     raw = config.get("max_iterations") or os.getenv("HERMES_AGENT_MAX_ITERATIONS") or 30
     try:
@@ -1906,8 +2243,9 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "user_id": req.user_id,
         "user_uuid": req.user_uuid,
         "storage_prefix": req.storage_prefix,
+        "org_no": req.org_no,
         "auth_token": req.auth_token,
-        "backend_url": req.backend_url or os.getenv("ALPHART_EDU_BACKEND_URL") or os.getenv("CANVAS_BACKEND_URL", "http://localhost:57988"),
+        "backend_url": _backend_url_from_req(req),
         "tool_list": req.tool_list,
         "input_images": input_images,
     }
@@ -1922,6 +2260,15 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         config = _provider_config_for(req.model_configs, candidate)
         endpoint = _endpoint(config)
         api_key = _api_key(config)
+        relay_headers: Dict[str, str] = {}
+        agent_provider = provider
+        agent_api_mode = _string(config.get("api_mode")) or "chat_completions"
+        if _use_internal_relay(req):
+            endpoint = _internal_relay_base_url(req)
+            api_key = _internal_relay_api_key()
+            relay_headers = _internal_relay_headers(req)
+            agent_provider = "custom"
+            agent_api_mode = "chat_completions"
         if not provider or not model or not endpoint or not api_key:
             print(
                 f"[alphart-agent] skipping unconfigured text model session_id={req.session_id} provider={provider} model={model}",
@@ -1951,10 +2298,10 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                 agent = AIAgent(
                     base_url=endpoint,
                     api_key=api_key,
-                    provider=provider,
-                    api_mode=_string(config.get("api_mode")) or "chat_completions",
+                    provider=agent_provider,
+                    api_mode=agent_api_mode,
                     model=model,
-                    enabled_toolsets=["alphart-edu"],
+                    enabled_toolsets=["alphart-edu", "skills"],
                     max_iterations=_agent_max_iterations(config),
                     max_tokens=_agent_max_tokens(config, is_game=is_game_request),
                     quiet_mode=True,
@@ -1966,6 +2313,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     chat_id=req.session_id or None,
                     skip_memory=True,
                     skip_context_files=True,
+                    request_overrides={"extra_headers": relay_headers} if relay_headers else None,
                 )
                 try:
                     result = agent.run_conversation(
@@ -2049,6 +2397,11 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                 user_message,
                 response_messages,
                 current_turn_messages,
+                input_images=input_images,
+            )
+        if not forced_messages and _storybook_intent(user_message) and not _storybook_tool_attempted(current_turn_messages):
+            forced_messages = _forced_storybook_tool_messages(
+                user_message,
                 input_images=input_images,
             )
         if not forced_messages and not current_media_attempted:
@@ -2149,10 +2502,12 @@ def title(req: AlphartEduTitleRequest, authorization: Optional[str] = Header(def
         cand_config = _provider_config_for(req.model_configs, candidate)
         cand_endpoint = _endpoint(cand_config)
         cand_key = _api_key(cand_config)
-        if not cand_provider or not cand_model or not cand_endpoint or not cand_key:
+        if not cand_provider or not cand_model:
             continue
         try:
-            result = _generate_title_direct(cand_provider, cand_endpoint, cand_key, cand_model, source, cand_config)
+            if not _use_internal_relay(req) and (not cand_endpoint or not cand_key):
+                continue
+            result = _generate_title_agent(req, cand_provider, cand_model, source, cand_config)
             break
         except HTTPException as exc:
             logger.warning("title failed provider=%r model=%r status=%s: %s", cand_provider, cand_model, exc.status_code, exc.detail)
