@@ -640,6 +640,33 @@ def _game_intent(text: str) -> bool:
     )
 
 
+def _storybook_intent(text: str) -> bool:
+    value = (text or "").lower()
+    if not value.strip():
+        return False
+    return any(
+        word in value
+        for word in (
+            "storybook",
+            "story book",
+            "flip-book",
+            "flip book",
+            "page-by-page",
+            "children's book",
+            "childrens book",
+            "picture book",
+            "绘本",
+            "繪本",
+            "故事书",
+            "故事書",
+            "童书",
+            "童書",
+            "翻页故事",
+            "翻頁故事",
+        )
+    )
+
+
 def _agent_max_tokens(config: Dict[str, Any], *, is_game: bool = False) -> Optional[int]:
     configured = _int(config.get("max_tokens"), 0)
     env_name = "ALPHART_AGENT_GAME_MAX_TOKENS" if is_game else "ALPHART_AGENT_MAX_TOKENS"
@@ -1203,6 +1230,8 @@ def _forced_media_tool_messages(
     has_video_context: bool = False,
     input_images: Optional[List[Any]] = None,
 ) -> List[Dict[str, Any]]:
+    if _storybook_intent(user_message):
+        return []
     if _media_analysis_intent(user_message.lower()):
         return []
     intent = _media_intent(user_message, has_image_context=has_image_context, has_video_context=has_video_context)
@@ -1372,6 +1401,16 @@ VIDEO CREATION RULES:
 - Respect duration, resolution, aspect ratio, camera movement, and shot references from XML tags.
 - Do not claim media was generated until the tool returns a backend result.
 - If the legacy prompt mentions generate_image, call generate_image or canvas_generate_image. If it mentions generate_video, call generate_video or canvas_generate_video.
+
+STORYBOOK CREATION RULES:
+- Use canvas_create_storybook or create_storybook for requests like "make a storybook", "create a flip-book lesson", "storybook about ...", "page-by-page children's book", and equivalent Chinese/Traditional Chinese requests such as 绘本, 繪本, 故事书, 故事書, 童书, 童書, 翻页故事, 翻頁故事.
+- A storybook is an Edu-native canvas/chat artifact, not a mirrored alphart-book API. Adapt the user's story/topic/prompt into editable page records for this canvas.
+- For storybook requests, call the storybook tool before image/video generation. The tool creates the page plan; page images can be generated later from those page prompts.
+- If the user selects or names a template, pass compact template fields such as template_slug, template_name, category, age_range, page_count, and style to canvas_create_storybook/create_storybook instead of hiding them inside prose.
+- If the user attaches images while asking for a storybook, treat those images as protagonist/character references. Pass them to canvas_create_storybook/create_storybook as input_images and preserve s3_object_name values. Do not call image generation merely because reference images are attached.
+- Use protagonist references to keep the main character visually consistent across pages. Include concise protagonist notes when useful.
+- Keep content age-appropriate and educational. Preserve factual accuracy, requested language, age range, reading level, page count, narration tone, and visual style.
+- Do not call canvas_generate_game just because the word "story" appears. Use game tools only when the user asks for playable interaction.
 
 GAME CREATION RULES:
 - Use canvas_generate_game or generate_game for requests like "make a game", "interactive demo", "quiz game", "platformer", "storybook game", "GBA/Pokemon-style educational battle", "create a playable teaching activity", and equivalent Chinese/Traditional Chinese/Spanish requests such as 生成游戏, 製作遊戲, 互动游戏, 互動遊戲, 闯关, 闖關, 小游戏, 小遊戲, crear juego.
@@ -1965,6 +2004,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
     reference_image_generation = (
         bool(input_images)
         and not current_media_attempted
+        and not _storybook_intent(user_message)
         and _media_intent(user_message, has_image_context=True) == "image"
     )
     if reference_image_generation:

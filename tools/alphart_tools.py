@@ -176,6 +176,17 @@ def _handle_write_plan(args: Dict[str, Any], **_: Any) -> str:
     return _call_backend_tool("write_plan", args or {}, confirm=False)
 
 
+def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
+    args = dict(args or {})
+    if not args.get("topic") and args.get("prompt"):
+        args["topic"] = args.get("prompt")
+    if not args.get("title") and args.get("topic"):
+        args["title"] = args.get("topic")
+    if not args.get("input_images") and _ctx().get("input_images"):
+        args["input_images"] = _ctx().get("input_images")
+    return _call_backend_tool("canvas_create_storybook", args, confirm=False)
+
+
 def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
     if args.get("image_quantity") and not args.get("quantity"):
@@ -614,12 +625,86 @@ CANVAS_GENERATE_VIDEO_SCHEMA = {
     },
 }
 
+CANVAS_CREATE_STORYBOOK_SCHEMA = {
+    "name": "canvas_create_storybook",
+    "description": (
+        "Create an editable educational storybook plan inside Alphart Edu's chat/canvas workflow. "
+        "Use this for requests like 'make a storybook', 'create a flip-book lesson', 'storybook of ...', "
+        "绘本, 故事书, 童书, 翻页故事, or Traditional Chinese equivalents. "
+        "This tool stores the storybook/pages in the Edu backend and returns a compact card payload. "
+        "Do not mirror external book APIs; adapt the story/topic/prompt into canvas-native pages."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Short title for the storybook."},
+            "template_id": {"type": "integer", "description": "Optional backend template id."},
+            "template_slug": {"type": "string", "description": "Optional template slug, e.g. science, hero, two-character."},
+            "template_name": {"type": "string", "description": "Human readable template name."},
+            "category": {"type": "string", "description": "Template/category label, e.g. science, math, personalized."},
+            "topic": {"type": "string", "description": "Learning topic or story premise."},
+            "prompt": {"type": "string", "description": "User-facing educational storybook brief."},
+            "description": {"type": "string", "description": "Optional one-paragraph description."},
+            "language": {"type": "string", "description": "Language code or name, e.g. en, zh-CN, zh-TW."},
+            "age_range": {"type": "string", "description": "Target learner age range, e.g. 6-9."},
+            "reading_level": {"type": "string", "description": "Target reading level."},
+            "style": {"type": "string", "description": "Visual style for later page image generation."},
+            "page_count": {"type": "integer", "description": "Number of pages, 2 to 16."},
+            "input_images": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "s3_object_name": {"type": "string"},
+                        "file_id": {"type": "string"},
+                        "filename": {"type": "string"},
+                        "mime_type": {"type": "string"},
+                        "width": {"type": "integer"},
+                        "height": {"type": "integer"},
+                    },
+                },
+                "description": (
+                    "Attached protagonist/character reference images. Prefer s3_object_name objects; "
+                    "do not pass presigned URLs unless no object key exists."
+                ),
+            },
+            "protagonists": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "reference_image": {"type": "string"},
+                    },
+                },
+                "description": "Optional named protagonist notes for maintaining character consistency across pages.",
+            },
+        },
+        "required": ["topic"],
+    },
+}
+
 
 registry.register(
     name="write_plan",
     toolset="alphart-edu",
     schema=WRITE_PLAN_SCHEMA,
     handler=_handle_write_plan,
+    is_async=False,
+)
+registry.register(
+    name="canvas_create_storybook",
+    toolset="alphart-edu",
+    schema=CANVAS_CREATE_STORYBOOK_SCHEMA,
+    handler=_handle_alphart_create_storybook,
+    is_async=False,
+)
+registry.register(
+    name="create_storybook",
+    toolset="alphart-edu",
+    schema={**CANVAS_CREATE_STORYBOOK_SCHEMA, "name": "create_storybook"},
+    handler=_handle_alphart_create_storybook,
     is_async=False,
 )
 registry.register(

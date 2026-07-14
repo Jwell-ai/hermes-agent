@@ -90,6 +90,8 @@ _ALPHART_TOOLS = [
     "canvas_generate_video",
     "canvas_generate_game",
     "generate_game",
+    "canvas_create_storybook",
+    "create_storybook",
 ]
 
 
