@@ -1898,6 +1898,69 @@ def _provider_format(provider: str, endpoint: str, model: str = "") -> str:
     return "openai"
 
 
+def _endpoint_wire_format(endpoint: str) -> str:
+    """Infer wire format from endpoint shape.
+
+    OpenAI-compatible gateways commonly expose a generic /v1 base URL while
+    serving Claude/Gemini-named models. In that case the endpoint, not the model
+    name, determines the request/streaming protocol.
+    """
+    u = endpoint.lower().rstrip("/")
+    if not u:
+        return ""
+    if "generativelanguage.googleapis.com" in u or ":generatecontent" in u:
+        return "gemini"
+    if "anthropic.com" in u or u.endswith("/messages"):
+        return "anthropic"
+    if u.endswith("/v1") or "/v1/" in u or u.endswith("/chat/completions"):
+        return "openai"
+    return ""
+
+
+def _text_model_wire_format(provider: str, model: str, config: Dict[str, Any]) -> str:
+    """Return the API wire format for a text model.
+
+    Prefer explicit model config over model-name heuristics. A Claude/Gemini
+    model can still be served by an OpenAI-compatible gateway, and that should
+    use OpenAI chat-completions semantics.
+    """
+    explicit = _string(
+        config.get("wire_format")
+        or config.get("provider_format")
+        or config.get("api_format")
+        or config.get("format")
+    ).lower()
+    explicit_aliases = {
+        "openai": "openai",
+        "openai_compatible": "openai",
+        "openai-compatible": "openai",
+        "chat_completions": "openai",
+        "chat-completions": "openai",
+        "anthropic": "anthropic",
+        "anthropic_messages": "anthropic",
+        "anthropic-messages": "anthropic",
+        "claude": "anthropic",
+        "gemini": "gemini",
+        "google": "gemini",
+        "vertex": "gemini",
+        "generate_content": "gemini",
+        "generate-content": "gemini",
+    }
+    if explicit in explicit_aliases:
+        return explicit_aliases[explicit]
+
+    api_mode = _string(config.get("api_mode")).lower()
+    if api_mode in explicit_aliases:
+        return explicit_aliases[api_mode]
+
+    endpoint = _endpoint(config)
+    endpoint_format = _endpoint_wire_format(endpoint)
+    if endpoint_format:
+        return endpoint_format
+
+    return _provider_format(provider, endpoint, model)
+
+
 def _generate_title_anthropic(endpoint: str, api_key: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
     timeout = int(config.get("timeout") or config.get("timeout_seconds") or 60)
     base = (endpoint or "https://api.anthropic.com/v1").rstrip("/")
@@ -2260,6 +2323,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         config = _provider_config_for(req.model_configs, candidate)
         endpoint = _endpoint(config)
         api_key = _api_key(config)
+        provider_format = _text_model_wire_format(provider, model, config)
         relay_headers: Dict[str, str] = {}
         agent_provider = provider
         agent_api_mode = _string(config.get("api_mode")) or "chat_completions"
@@ -2269,6 +2333,12 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
             relay_headers = _internal_relay_headers(req)
             agent_provider = "custom"
             agent_api_mode = "chat_completions"
+            print(
+                f"[alphart-agent] internal relay text model session_id={req.session_id} "
+                f"provider={provider} model={model} wire_format={provider_format} "
+                f"stream={provider_format == 'openai'}",
+                flush=True,
+            )
         if not provider or not model or not endpoint or not api_key:
             print(
                 f"[alphart-agent] skipping unconfigured text model session_id={req.session_id} provider={provider} model={model}",
@@ -2306,7 +2376,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     max_tokens=_agent_max_tokens(config, is_game=is_game_request),
                     quiet_mode=True,
                     session_id=req.session_id or None,
-                    stream_delta_callback=on_delta,
+                    stream_delta_callback=on_delta if provider_format == "openai" else None,
                     status_callback=on_status,
                     platform="alphart",
                     user_id=req.user_id or req.user_uuid or None,
