@@ -17,6 +17,8 @@ COPY pyproject.toml setup.py README.md ./
 COPY agent ./agent
 COPY acp_adapter ./acp_adapter
 COPY acp_registry ./acp_registry
+COPY cron ./cron
+COPY gateway ./gateway
 COPY hermes_cli ./hermes_cli
 COPY locales ./locales
 COPY optional-skills ./optional-skills
