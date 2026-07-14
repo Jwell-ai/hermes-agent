@@ -1405,7 +1405,8 @@ VIDEO CREATION RULES:
 STORYBOOK CREATION RULES:
 - Use canvas_create_storybook or create_storybook for requests like "make a storybook", "create a flip-book lesson", "storybook about ...", "page-by-page children's book", and equivalent Chinese/Traditional Chinese requests such as 绘本, 繪本, 故事书, 故事書, 童书, 童書, 翻页故事, 翻頁故事.
 - A storybook is a Gemini-style Edu-native canvas/chat artifact: a complete illustrated flipbook with short page text and read-aloud narration, not a draft, planning document, or mirrored alphart-book API.
-- For storybook requests, call the storybook tool directly and treat it as the final storybook artifact. Default to 10 pages and read_aloud=true unless the user explicitly asks for another length.
+- For storybook requests, call the storybook tool directly and treat it as the final storybook artifact only if the tool succeeds with generated image pages. Default to 10 pages, read_aloud=true, generate_images=true, and aspect_ratio="1:1" unless the user explicitly asks for another length.
+- Storybook physical pages and generated illustrations must be strict square 1:1 pages for printer compatibility. Do not use 4:3, 3:4, or widescreen storybook pages.
 - If the user selects or names a template, pass compact template fields such as template_slug, template_name, category, age_range, page_count, style, and read_aloud to canvas_create_storybook/create_storybook instead of hiding them inside prose.
 - If the user attaches images while asking for a storybook, treat those images as protagonist/character references. Pass them to canvas_create_storybook/create_storybook as input_images and preserve s3_object_name values. Do not call image generation merely because reference images are attached.
 - Use protagonist references to keep the main character visually consistent across pages. Include concise protagonist notes when useful.

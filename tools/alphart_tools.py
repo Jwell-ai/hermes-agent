@@ -639,8 +639,10 @@ CANVAS_CREATE_STORYBOOK_SCHEMA = {
         "Use this for requests like 'make a storybook', 'create a flip-book lesson', 'storybook of ...', "
         "绘本, 故事书, 童书, 翻页故事, or Traditional Chinese equivalents. "
         "This tool stores a complete illustrated/read-aloud flipbook structure in the Edu backend and "
-        "returns a compact card payload. Do not mirror external book APIs; adapt the story/topic/prompt "
-        "into a canvas-native 10-page storybook experience."
+        "generates the image pages before returning a compact card payload. Do not mirror external book APIs; "
+        "adapt the story/topic/prompt into a canvas-native 10-page storybook experience. A text-only page plan "
+        "is not a successful storybook result. Storybook physical pages and generated illustrations must be strict "
+        "1:1 square pages for printer compatibility."
     ),
     "parameters": {
         "type": "object",
@@ -659,6 +661,15 @@ CANVAS_CREATE_STORYBOOK_SCHEMA = {
             "style": {"type": "string", "description": "Visual style for later page image generation."},
             "page_count": {"type": "integer", "description": "Number of pages, 2 to 16. Default to 10 unless the user asks otherwise."},
             "read_aloud": {"type": "boolean", "description": "Whether to prepare read-aloud narration. Default true."},
+            "aspect_ratio": {
+                "type": "string",
+                "description": "Storybook image aspect ratio. Must be 1:1 for strict square printer pages.",
+                "enum": ["1:1"],
+            },
+            "generate_images": {
+                "type": "boolean",
+                "description": "Whether the backend must generate storybook page illustrations during this tool call. Default true; do not set false for normal storybook creation.",
+            },
             "input_images": {
                 "type": "array",
                 "items": {
