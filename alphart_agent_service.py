@@ -336,6 +336,57 @@ def _internal_relay_api_key() -> str:
     return _service_token() or "internal-relay"
 
 
+def _merge_extra_headers(kwargs: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    merged = dict(kwargs or {})
+    existing = merged.get("extra_headers")
+    extra: Dict[str, str] = {}
+    if isinstance(existing, dict):
+        extra.update({str(k): str(v) for k, v in existing.items()})
+    extra.update({str(k): str(v) for k, v in (headers or {}).items() if str(v)})
+    if extra:
+        merged["extra_headers"] = extra
+    return merged
+
+
+class _InternalRelayAnthropicMessages:
+    """Tiny wrapper around the official Anthropic SDK messages resource.
+
+    The SDK owns request/response parsing. This wrapper only injects Alphart's
+    internal relay headers because Anthropic-mode Hermes does not pass
+    request_overrides.extra_headers into messages.create/stream.
+    """
+
+    def __init__(self, messages: Any, headers: Dict[str, str]):
+        self._messages = messages
+        self._headers = dict(headers or {})
+
+    def create(self, **kwargs: Any) -> Any:
+        return self._messages.create(**_merge_extra_headers(kwargs, self._headers))
+
+    def stream(self, **kwargs: Any) -> Any:
+        return self._messages.stream(**_merge_extra_headers(kwargs, self._headers))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._messages, name)
+
+
+class _InternalRelayAnthropicClient:
+    """Derived client facade over the official Anthropic SDK client."""
+
+    def __init__(self, client: Any, headers: Dict[str, str]):
+        self._client = client
+        self.messages = _InternalRelayAnthropicMessages(client.messages, headers)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+
+def _install_internal_relay_anthropic_headers(agent: Any, headers: Dict[str, str]) -> None:
+    if not headers or getattr(agent, "_anthropic_client", None) is None:
+        return
+    agent._anthropic_client = _InternalRelayAnthropicClient(agent._anthropic_client, headers)
+
+
 def _selected_tool_lines(tools: List[Any]) -> List[str]:
     lines: List[str] = []
     for tool in tools:
@@ -2189,10 +2240,12 @@ def _generate_title_relay(req: AlphartEduTitleRequest, provider: str, model: str
 def _generate_title_agent(req: AlphartEduTitleRequest, provider: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
     agent_provider = provider
     api_mode = _string(config.get("api_mode")) or "chat_completions"
+    relay_headers: Dict[str, str] = {}
     if _use_internal_relay(req):
         endpoint = _internal_relay_base_url(req)
         api_key = _internal_relay_api_key()
-        request_overrides = {"extra_headers": _internal_relay_headers(req)}
+        relay_headers = _internal_relay_headers(req)
+        request_overrides = {"extra_headers": relay_headers}
         provider_format = _text_model_wire_format(provider, model, config)
         agent_provider, api_mode = _agent_provider_mode_for_wire_format(provider_format)
     else:
@@ -2222,6 +2275,8 @@ def _generate_title_agent(req: AlphartEduTitleRequest, provider: str, model: str
         user_id=req.user_id or None,
         request_overrides=request_overrides,
     )
+    if api_mode == "anthropic_messages":
+        _install_internal_relay_anthropic_headers(agent, relay_headers)
     try:
         result = agent.run_conversation(
             _title_prompt(source),
@@ -2425,6 +2480,8 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     skip_context_files=True,
                     request_overrides={"extra_headers": relay_headers} if relay_headers else None,
                 )
+                if agent_api_mode == "anthropic_messages":
+                    _install_internal_relay_anthropic_headers(agent, relay_headers)
                 if provider_format != "openai":
                     agent._disable_streaming = True
                 try:
