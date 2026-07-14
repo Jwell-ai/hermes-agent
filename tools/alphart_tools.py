@@ -168,6 +168,16 @@ def _call_backend_tool(tool_name: str, args: Dict[str, Any], confirm: bool = Fal
         flush=True,
     )
     if resp.status_code < 200 or resp.status_code >= 300:
+        if tool_name in {
+            "canvas_create_storybook",
+            "create_storybook",
+            "canvas_update_storybook_page",
+            "update_storybook_page",
+        }:
+            message = ""
+            if isinstance(decoded, dict):
+                message = str(decoded.get("message") or decoded.get("error") or "").strip()
+            return _tool_error(message or "Storybook generation failed")
         return _system_busy_tool_error()
     return json.dumps(decoded, ensure_ascii=False)
 
@@ -182,6 +192,15 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         args["topic"] = args.get("prompt")
     if not args.get("title") and args.get("topic"):
         args["title"] = args.get("topic")
+    image_tool = _pick_tool("image", args)
+    image_provider = str(image_tool.get("provider") or "").strip()
+    image_model = str(image_tool.get("model") or image_tool.get("name") or image_tool.get("key") or "").strip()
+    if image_provider:
+        args.setdefault("image_provider", image_provider)
+    if image_model:
+        args.setdefault("image_model", image_model)
+    args.setdefault("aspect_ratio", "1:1")
+    args.setdefault("generate_images", True)
     if not args.get("input_images") and _ctx().get("input_images"):
         args["input_images"] = _ctx().get("input_images")
     return _call_backend_tool("canvas_create_storybook", args, confirm=False)
