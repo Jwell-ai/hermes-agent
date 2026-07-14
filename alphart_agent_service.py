@@ -387,14 +387,17 @@ def _input_images_from_text(text: str) -> List[Any]:
     for ref in _input_image_refs_from_text(text):
         object_name = _string(ref.get("s3_object_name") or ref.get("object_name"))
         if object_name:
-            images.append(
-                {
-                    "s3_object_name": object_name,
-                    "file_id": _string(ref.get("file_id")),
-                    "width": _string(ref.get("width")),
-                    "height": _string(ref.get("height")),
-                }
-            )
+            image = {
+                "s3_object_name": object_name,
+                "file_id": _string(ref.get("file_id")),
+                "width": _string(ref.get("width")),
+                "height": _string(ref.get("height")),
+            }
+            for key in ("filename", "mime_type", "role", "reference_note"):
+                value = _string(ref.get(key))
+                if value:
+                    image[key] = value
+            images.append(image)
             continue
         file_id = _string(ref.get("file_id"))
         if file_id:
@@ -405,12 +408,17 @@ def _input_images_from_text(text: str) -> List[Any]:
 def _asset_input_image(asset: Dict[str, Any]) -> Any:
     object_name = _string(asset.get("s3_object_name") or asset.get("object_name") or asset.get("key"))
     if object_name:
-        return {
+        image = {
             "s3_object_name": object_name,
             "file_id": _string(asset.get("file_id") or asset.get("id")),
             "width": _string(asset.get("width")),
             "height": _string(asset.get("height")),
         }
+        for key in ("filename", "mime_type", "role", "reference_note"):
+            value = _string(asset.get(key))
+            if value:
+                image[key] = value
+        return image
     url = _string(asset.get("url") or asset.get("image_url"))
     return url
 
