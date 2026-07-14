@@ -187,6 +187,13 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
     return _call_backend_tool("canvas_create_storybook", args, confirm=False)
 
 
+def _handle_alphart_update_storybook_page(args: Dict[str, Any], **_: Any) -> str:
+    args = dict(args or {})
+    if not args.get("input_images") and _ctx().get("input_images"):
+        args["input_images"] = _ctx().get("input_images")
+    return _call_backend_tool("canvas_update_storybook_page", args, confirm=False)
+
+
 def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
     if args.get("image_quantity") and not args.get("quantity"):
@@ -628,11 +635,12 @@ CANVAS_GENERATE_VIDEO_SCHEMA = {
 CANVAS_CREATE_STORYBOOK_SCHEMA = {
     "name": "canvas_create_storybook",
     "description": (
-        "Create an editable educational storybook plan inside Alphart Edu's chat/canvas workflow. "
+        "Create a Gemini-style educational storybook artifact inside Alphart Edu's chat/canvas workflow. "
         "Use this for requests like 'make a storybook', 'create a flip-book lesson', 'storybook of ...', "
         "绘本, 故事书, 童书, 翻页故事, or Traditional Chinese equivalents. "
-        "This tool stores the storybook/pages in the Edu backend and returns a compact card payload. "
-        "Do not mirror external book APIs; adapt the story/topic/prompt into canvas-native pages."
+        "This tool stores a complete illustrated/read-aloud flipbook structure in the Edu backend and "
+        "returns a compact card payload. Do not mirror external book APIs; adapt the story/topic/prompt "
+        "into a canvas-native 10-page storybook experience."
     ),
     "parameters": {
         "type": "object",
@@ -649,7 +657,8 @@ CANVAS_CREATE_STORYBOOK_SCHEMA = {
             "age_range": {"type": "string", "description": "Target learner age range, e.g. 6-9."},
             "reading_level": {"type": "string", "description": "Target reading level."},
             "style": {"type": "string", "description": "Visual style for later page image generation."},
-            "page_count": {"type": "integer", "description": "Number of pages, 2 to 16."},
+            "page_count": {"type": "integer", "description": "Number of pages, 2 to 16. Default to 10 unless the user asks otherwise."},
+            "read_aloud": {"type": "boolean", "description": "Whether to prepare read-aloud narration. Default true."},
             "input_images": {
                 "type": "array",
                 "items": {
@@ -685,6 +694,45 @@ CANVAS_CREATE_STORYBOOK_SCHEMA = {
     },
 }
 
+CANVAS_UPDATE_STORYBOOK_PAGE_SCHEMA = {
+    "name": "canvas_update_storybook_page",
+    "description": (
+        "Revise a specific page in an existing Alphart Edu storybook. Use this when the user says "
+        "@page 1 image is wrong, @page 2 replace the protagonist, revise this storybook page, or "
+        "equivalent Chinese/Traditional Chinese. Read the latest storybook_id/page list from chat "
+        "history and pass page_number or page_index. Preserve s3_object_name reference images."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "storybook_id": {"type": "string", "description": "Existing storybook id from the previous storybook result."},
+            "page_id": {"type": "string", "description": "Optional page id."},
+            "page_number": {"type": "integer", "description": "Human page number, e.g. 1 for @page 1."},
+            "page_index": {"type": "integer", "description": "Zero-based page index."},
+            "title": {"type": "string", "description": "Optional replacement page title."},
+            "narration": {"type": "string", "description": "Optional replacement read-aloud narration."},
+            "image_prompt": {"type": "string", "description": "Optional replacement image prompt for this page."},
+            "instructions": {"type": "string", "description": "Concise user requested change for this page."},
+            "input_images": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "s3_object_name": {"type": "string"},
+                        "file_id": {"type": "string"},
+                        "filename": {"type": "string"},
+                        "mime_type": {"type": "string"},
+                        "width": {"type": "integer"},
+                        "height": {"type": "integer"},
+                    },
+                },
+                "description": "Reference/protagonist images for the page revision.",
+            },
+        },
+        "required": ["storybook_id"],
+    },
+}
+
 
 registry.register(
     name="write_plan",
@@ -705,6 +753,20 @@ registry.register(
     toolset="alphart-edu",
     schema={**CANVAS_CREATE_STORYBOOK_SCHEMA, "name": "create_storybook"},
     handler=_handle_alphart_create_storybook,
+    is_async=False,
+)
+registry.register(
+    name="canvas_update_storybook_page",
+    toolset="alphart-edu",
+    schema=CANVAS_UPDATE_STORYBOOK_PAGE_SCHEMA,
+    handler=_handle_alphart_update_storybook_page,
+    is_async=False,
+)
+registry.register(
+    name="update_storybook_page",
+    toolset="alphart-edu",
+    schema={**CANVAS_UPDATE_STORYBOOK_PAGE_SCHEMA, "name": "update_storybook_page"},
+    handler=_handle_alphart_update_storybook_page,
     is_async=False,
 )
 registry.register(

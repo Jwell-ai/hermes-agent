@@ -92,6 +92,8 @@ _ALPHART_TOOLS = [
     "generate_game",
     "canvas_create_storybook",
     "create_storybook",
+    "canvas_update_storybook_page",
+    "update_storybook_page",
 ]
 
 
