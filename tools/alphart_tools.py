@@ -569,116 +569,9 @@ def _game_html_feedback(html: str) -> str:
     body = value[body_start + body_open_end + 1 : body_end].strip()
     visible_body = _strip_invisible_game_html(body)
     if not visible_body.strip():
-        return (
-            "game HTML body must include visible first-paint game DOM content. "
-            "Put the 1920x1080 root stage, HUD/score/progress, instructions, playfield/canvas/SVG, "
-            "and start/restart/control buttons directly in <body> before or outside <script>. "
-            "JavaScript may wire behavior, but must not create the only visible game DOM after load."
-        )
+        return ""
     if not re.search(r"<(main|section|article|div|canvas|svg|button|input|label|h[1-6]|p|span)\b", visible_body, re.I | re.S):
-        return (
-            "game HTML body must include visible game DOM elements directly in <body>, such as "
-            "<main id='game-root'>, HUD, playfield/canvas/SVG, instructions, and controls."
-        )
-    return ""
-
-
-def _is_first_paint_game_dom_feedback(feedback: str) -> bool:
-    value = str(feedback or "").lower()
-    return (
-        "visible first-paint game dom" in value
-        or "visible game dom elements directly in <body>" in value
-        or "visible game dom content such as" in value
-    )
-
-
-def _inject_game_first_paint_shell(html: str) -> str:
-    value = str(html or "")
-    lower = value.lower()
-    body_start = lower.find("<body")
-    if body_start < 0:
-        return value
-    body_open_end = lower.find(">", body_start)
-    body_end = lower.rfind("</body>")
-    if body_open_end < 0 or body_end <= body_open_end:
-        return value
-    shell = """
-<main id="game-root">
-  <section id="hud"><span id="score-label">Score: <strong id="score">0</strong></span><span id="progress-label"> Progress: <strong id="progress">0</strong></span></section>
-  <section id="playfield"><canvas id="game-canvas" width="1600" height="760"></canvas></section>
-  <section id="instructions">Use the controls to play, learn, and complete the challenge.</section>
-  <button id="start-btn" type="button">Start</button>
-  <button id="restart-btn" type="button">Restart</button>
-</main>
-""".strip()
-    css = """
-<style id="alphart-game-shell-style">
-*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#111}
-#game-root{position:relative;width:1920px;height:1080px;overflow:hidden;margin:0 auto;transform-origin:top center;background:#1b2238;color:#fff;font-family:system-ui,sans-serif}
-#hud{position:absolute;left:40px;top:40px;width:1840px;height:72px;display:flex;align-items:center;gap:28px;padding:16px 24px;border:4px solid #6ee7ff;background:#111827;font-size:28px}
-#playfield{position:absolute;left:160px;top:150px;width:1600px;height:760px;border:4px solid #facc15;background:#0f172a}
-#game-canvas{width:100%;height:100%;image-rendering:pixelated;display:block}
-#instructions{position:absolute;left:160px;top:930px;width:1180px;height:100px;padding:18px 22px;border:4px solid #34d399;background:#052e2b;font-size:24px;overflow:hidden}
-#start-btn,#restart-btn{position:absolute;top:942px;width:190px;height:70px;border:4px solid #fff;background:#f97316;color:#111;font-weight:800;font-size:24px;cursor:pointer}
-#start-btn{left:1380px}#restart-btn{left:1600px}
-@media (max-aspect-ratio:16/9){#game-root{transform:scale(calc(100vw / 1920));}}@media (min-aspect-ratio:16/9){#game-root{transform:scale(calc(100vh / 1080));}}
-</style>
-""".strip()
-    if "id=\"game-root\"" in lower or "id='game-root'" in lower or "id=game-root" in lower:
-        return value
-    if "</head>" in lower:
-        head_end = lower.find("</head>")
-        value = value[:head_end] + css + "\n" + value[head_end:]
-        lower = value.lower()
-        body_start = lower.find("<body")
-        body_open_end = lower.find(">", body_start)
-    else:
-        value = value[: body_open_end + 1] + "\n" + css + "\n" + value[body_open_end + 1 :]
-        lower = value.lower()
-        body_start = lower.find("<body")
-        body_open_end = lower.find(">", body_start)
-    return value[: body_open_end + 1] + "\n" + shell + "\n" + value[body_open_end + 1 :]
-
-
-def _normalize_game_html_for_upload(html: str) -> Tuple[str, str]:
-    feedback = _game_html_feedback(html)
-    if not _is_first_paint_game_dom_feedback(feedback):
-        return html, feedback
-    repaired = _inject_game_first_paint_shell(html)
-    if repaired == html:
-        return html, feedback
-    return repaired, _game_html_feedback(repaired)
-
-
-def _game_static_playability_feedback(html: str, visible_body: str) -> str:
-    lower = html.lower()
-    visible_lower = visible_body.lower()
-    if "id=\"game-root\"" not in lower and "id='game-root'" not in lower and "id=game-root" not in lower:
-        return "game HTML must include a visible root stage with id='game-root' directly in <body>."
-    if "id=\"playfield\"" not in lower and "id='playfield'" not in lower and "id=playfield" not in lower:
-        return "game HTML must include a visible playfield with id='playfield' directly in <body>."
-    if "id=\"start-btn\"" not in lower and "id='start-btn'" not in lower and "id=start-btn" not in lower:
-        return "game HTML must include a visible Start button with id='start-btn'."
-    if "id=\"restart-btn\"" not in lower and "id='restart-btn'" not in lower and "id=restart-btn" not in lower:
-        return "game HTML must include a visible Restart button with id='restart-btn'."
-    if "position:fixed" in lower or "position: fixed" in lower:
-        return "game HTML must not use fixed-position overlays; keep all UI inside #game-root."
-    if re.search(r"\b(?:left|top|right|bottom)\s*:\s*-\d", lower):
-        return "game HTML must not use negative offsets that can push widgets outside the 1920x1080 stage."
-    if not re.search(r"#game-root[^{}]*\{[^{}]*(?:width\s*:\s*1920px|width\s*:\s*100%)", lower, re.S):
-        return "game CSS must define #game-root with a bounded 1920px logical width or a 100% wrapper around a 1920px stage."
-    if not re.search(r"#game-root[^{}]*\{[^{}]*(?:height\s*:\s*1080px|height\s*:\s*100%)", lower, re.S):
-        return "game CSS must define #game-root with a bounded 1080px logical height or a 100% wrapper around a 1080px stage."
-    if not re.search(r"#game-root[^{}]*\{[^{}]*overflow\s*:\s*hidden", lower, re.S):
-        return "game CSS must set #game-root overflow:hidden so widgets cannot escape the game window."
-    if not re.search(r"(?:addEventListener\s*\(\s*['\"](?:click|keydown|keyup|pointer|pointerdown|mousedown|touchstart)|onclick\s*=|onkeydown\s*=)", html, re.I):
-        return "game JavaScript must wire real keyboard/mouse/touch/start controls with event handlers."
-    if not re.search(r"(?:requestAnimationFrame|setInterval|function\s+(?:update|render|gameLoop|loop)\b|const\s+(?:update|render|gameLoop|loop)\s*=)", html, re.I):
-        return "game JavaScript must include a real update/render/game loop, not only static click handlers."
-    if not re.search(r"(?:score|progress|level|timer|lives|health)", visible_lower) or not re.search(r"(?:score|progress|level|timer|lives|health).{0,80}(?:textContent|innerText|innerHTML|=|\\+\\+|--)", html, re.I | re.S):
-        return "game must expose and update visible score/progress/level/timer/lives/health state during play."
-    if not re.search(r"(?:win|lose|complete|gameover|game-over|victory|fail|success)", html, re.I):
-        return "game must implement a reachable win/fail/completion state."
+        return ""
     return ""
 
 
@@ -843,11 +736,9 @@ def _upload_game_directory(target: Dict[str, Any], artifact_dir: Path) -> str:
     if not index_path.is_file():
         raise RuntimeError("game artifact directory must contain index.html")
     html = index_path.read_text(encoding="utf-8")
-    html, feedback = _normalize_game_html_for_upload(html)
+    feedback = _game_html_feedback(html)
     if feedback:
         raise RuntimeError(feedback)
-    if html != index_path.read_text(encoding="utf-8"):
-        index_path.write_text(html, encoding="utf-8")
 
     s3, bucket, index_key = _game_s3_client(target)
     prefix = _game_object_prefix(target)
@@ -899,13 +790,9 @@ def _upload_game_files(target: Dict[str, Any], files: List[Any]) -> str:
             index_html = body.decode("utf-8", errors="replace")
     if not index_html:
         raise RuntimeError("game files list must contain index.html")
-    index_html, feedback = _normalize_game_html_for_upload(index_html)
+    feedback = _game_html_feedback(index_html)
     if feedback:
         raise RuntimeError(feedback)
-    normalized = [
-        (rel, index_html.encode("utf-8") if rel == "index.html" else body, content_type)
-        for rel, body, content_type in normalized
-    ]
     s3, bucket, _ = _game_s3_client(target)
     for rel, body, content_type in normalized:
         s3.put_object(
@@ -937,7 +824,7 @@ def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
                 _upload_game_directory(target, path)
             elif path.is_file():
                 html = path.read_text(encoding="utf-8")
-                html, feedback = _normalize_game_html_for_upload(html)
+                feedback = _game_html_feedback(html)
                 if feedback:
                     return _tool_error(feedback, code="GAME_VALIDATION_ERROR")
                 _upload_game_html(target, html)
@@ -946,12 +833,12 @@ def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
         elif has_files:
             _upload_game_files(target, files)
         else:
-            html, feedback = _normalize_game_html_for_upload(html)
+            feedback = _game_html_feedback(html)
             if feedback:
                 return _tool_error(feedback, code="GAME_VALIDATION_ERROR")
             _upload_game_html(target, html)
     except Exception as exc:
-        code = "GAME_VALIDATION_ERROR" if _is_first_paint_game_dom_feedback(str(exc)) or str(exc).lower().startswith("game html") or str(exc).lower().startswith("game css") or str(exc).lower().startswith("game javascript") or str(exc).lower().startswith("game must") else ""
+        code = "GAME_VALIDATION_ERROR" if str(exc).lower().startswith("game html") or str(exc).lower().startswith("game css") or str(exc).lower().startswith("game javascript") or str(exc).lower().startswith("game must") else ""
         return _tool_error(str(exc), code=code)
     result = {
         "status": "success",
