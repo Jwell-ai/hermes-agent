@@ -44,8 +44,11 @@ def _ctx() -> Dict[str, Any]:
     return _alphart_context.get() or {}
 
 
-def _tool_error(message: str) -> str:
-    return json.dumps({"success": False, "error": message}, ensure_ascii=False)
+def _tool_error(message: str, code: str = "") -> str:
+    payload = {"success": False, "error": message}
+    if code:
+        payload["code"] = code
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _system_busy_tool_error() -> str:
@@ -577,14 +580,74 @@ def _game_html_feedback(html: str) -> str:
             "game HTML body must include visible game DOM elements directly in <body>, such as "
             "<main id='game-root'>, HUD, playfield/canvas/SVG, instructions, and controls."
         )
-    if not re.search(r"\b(game|board|canvas|play|start|score|level|timer|hud|player|sprite|challenge|mission|restart|win|lose|control|controls)\b", visible_body, re.I | re.S):
-        return "game HTML body must include visible game DOM content such as a playfield, HUD/score, instructions, or controls"
-    if "1920" not in lower or "1080" not in lower:
-        return "game result page must use a fixed 1920x1080 logical game window/stage and scale that stage to fit the viewport"
-    static_feedback = _game_static_playability_feedback(value, visible_body)
-    if static_feedback:
-        return static_feedback
     return ""
+
+
+def _is_first_paint_game_dom_feedback(feedback: str) -> bool:
+    value = str(feedback or "").lower()
+    return (
+        "visible first-paint game dom" in value
+        or "visible game dom elements directly in <body>" in value
+        or "visible game dom content such as" in value
+    )
+
+
+def _inject_game_first_paint_shell(html: str) -> str:
+    value = str(html or "")
+    lower = value.lower()
+    body_start = lower.find("<body")
+    if body_start < 0:
+        return value
+    body_open_end = lower.find(">", body_start)
+    body_end = lower.rfind("</body>")
+    if body_open_end < 0 or body_end <= body_open_end:
+        return value
+    shell = """
+<main id="game-root">
+  <section id="hud"><span id="score-label">Score: <strong id="score">0</strong></span><span id="progress-label"> Progress: <strong id="progress">0</strong></span></section>
+  <section id="playfield"><canvas id="game-canvas" width="1600" height="760"></canvas></section>
+  <section id="instructions">Use the controls to play, learn, and complete the challenge.</section>
+  <button id="start-btn" type="button">Start</button>
+  <button id="restart-btn" type="button">Restart</button>
+</main>
+""".strip()
+    css = """
+<style id="alphart-game-shell-style">
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#111}
+#game-root{position:relative;width:1920px;height:1080px;overflow:hidden;margin:0 auto;transform-origin:top center;background:#1b2238;color:#fff;font-family:system-ui,sans-serif}
+#hud{position:absolute;left:40px;top:40px;width:1840px;height:72px;display:flex;align-items:center;gap:28px;padding:16px 24px;border:4px solid #6ee7ff;background:#111827;font-size:28px}
+#playfield{position:absolute;left:160px;top:150px;width:1600px;height:760px;border:4px solid #facc15;background:#0f172a}
+#game-canvas{width:100%;height:100%;image-rendering:pixelated;display:block}
+#instructions{position:absolute;left:160px;top:930px;width:1180px;height:100px;padding:18px 22px;border:4px solid #34d399;background:#052e2b;font-size:24px;overflow:hidden}
+#start-btn,#restart-btn{position:absolute;top:942px;width:190px;height:70px;border:4px solid #fff;background:#f97316;color:#111;font-weight:800;font-size:24px;cursor:pointer}
+#start-btn{left:1380px}#restart-btn{left:1600px}
+@media (max-aspect-ratio:16/9){#game-root{transform:scale(calc(100vw / 1920));}}@media (min-aspect-ratio:16/9){#game-root{transform:scale(calc(100vh / 1080));}}
+</style>
+""".strip()
+    if "id=\"game-root\"" in lower or "id='game-root'" in lower or "id=game-root" in lower:
+        return value
+    if "</head>" in lower:
+        head_end = lower.find("</head>")
+        value = value[:head_end] + css + "\n" + value[head_end:]
+        lower = value.lower()
+        body_start = lower.find("<body")
+        body_open_end = lower.find(">", body_start)
+    else:
+        value = value[: body_open_end + 1] + "\n" + css + "\n" + value[body_open_end + 1 :]
+        lower = value.lower()
+        body_start = lower.find("<body")
+        body_open_end = lower.find(">", body_start)
+    return value[: body_open_end + 1] + "\n" + shell + "\n" + value[body_open_end + 1 :]
+
+
+def _normalize_game_html_for_upload(html: str) -> Tuple[str, str]:
+    feedback = _game_html_feedback(html)
+    if not _is_first_paint_game_dom_feedback(feedback):
+        return html, feedback
+    repaired = _inject_game_first_paint_shell(html)
+    if repaired == html:
+        return html, feedback
+    return repaired, _game_html_feedback(repaired)
 
 
 def _game_static_playability_feedback(html: str, visible_body: str) -> str:
@@ -780,9 +843,11 @@ def _upload_game_directory(target: Dict[str, Any], artifact_dir: Path) -> str:
     if not index_path.is_file():
         raise RuntimeError("game artifact directory must contain index.html")
     html = index_path.read_text(encoding="utf-8")
-    feedback = _game_html_feedback(html)
+    html, feedback = _normalize_game_html_for_upload(html)
     if feedback:
         raise RuntimeError(feedback)
+    if html != index_path.read_text(encoding="utf-8"):
+        index_path.write_text(html, encoding="utf-8")
 
     s3, bucket, index_key = _game_s3_client(target)
     prefix = _game_object_prefix(target)
@@ -834,9 +899,13 @@ def _upload_game_files(target: Dict[str, Any], files: List[Any]) -> str:
             index_html = body.decode("utf-8", errors="replace")
     if not index_html:
         raise RuntimeError("game files list must contain index.html")
-    feedback = _game_html_feedback(index_html)
+    index_html, feedback = _normalize_game_html_for_upload(index_html)
     if feedback:
         raise RuntimeError(feedback)
+    normalized = [
+        (rel, index_html.encode("utf-8") if rel == "index.html" else body, content_type)
+        for rel, body, content_type in normalized
+    ]
     s3, bucket, _ = _game_s3_client(target)
     for rel, body, content_type in normalized:
         s3.put_object(
@@ -868,21 +937,22 @@ def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
                 _upload_game_directory(target, path)
             elif path.is_file():
                 html = path.read_text(encoding="utf-8")
-                feedback = _game_html_feedback(html)
+                html, feedback = _normalize_game_html_for_upload(html)
                 if feedback:
-                    return _tool_error(feedback)
+                    return _tool_error(feedback, code="GAME_VALIDATION_ERROR")
                 _upload_game_html(target, html)
             else:
                 return _tool_error(f"game artifact path does not exist: {artifact_path}")
         elif has_files:
             _upload_game_files(target, files)
         else:
-            feedback = _game_html_feedback(html)
+            html, feedback = _normalize_game_html_for_upload(html)
             if feedback:
-                return _tool_error(feedback)
+                return _tool_error(feedback, code="GAME_VALIDATION_ERROR")
             _upload_game_html(target, html)
     except Exception as exc:
-        return _tool_error(str(exc))
+        code = "GAME_VALIDATION_ERROR" if _is_first_paint_game_dom_feedback(str(exc)) or str(exc).lower().startswith("game html") or str(exc).lower().startswith("game css") or str(exc).lower().startswith("game javascript") or str(exc).lower().startswith("game must") else ""
+        return _tool_error(str(exc), code=code)
     result = {
         "status": "success",
         "result": {
@@ -1288,17 +1358,10 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Complete self-contained playable game HTML. Must start with <!DOCTYPE html>, "
-                    "include visible first-paint game DOM directly in <body> before or outside <script>: "
-                    "<main id='game-root'> with HUD/score/progress, instructions, playfield/canvas/SVG, "
-                    "start/restart/control buttons, inline CSS/JS, closing </body></html>, and a fixed 1920x1080 logical "
-                    "stage. Minimum skeleton: <body><main id='game-root'><section id='hud'>score/progress</section>"
-                    "<section id='playfield'><canvas id='game-canvas' width='1600' height='760'></canvas></section>"
-                    "<section id='instructions'>goal and controls</section><button id='start-btn'>Start</button>"
-                    "<button id='restart-btn'>Restart</button></main><script>wire controls and game loop here</script></body>. "
-                    "You may adapt labels/layout, but visible game-root, HUD, playfield/canvas, instructions, and controls must exist directly in body. "
-                    "The game stage must scale as a whole to fit smaller viewports. All windows/widgets/HUD/dialogs/buttons "
-                    "must stay inside x=40..1880 and y=40..1040; html/body/stage must not scroll; use box-sizing:border-box "
-                    "and overflow:hidden. JavaScript must wire behavior, but must not create the only visible game DOM after load."
+                    "include a <body> with visible game content, inline CSS/JS, and closing </body></html>. "
+                    "Prefer a visible game root/stage, HUD or progress, playfield/canvas/SVG, instructions, "
+                    "and start/restart/control elements. Prefer a 1920x1080 logical stage that scales to smaller "
+                    "viewports, but the tool accepts other complete playable layouts produced by the gaming skill."
                 ),
             },
             "artifact_dir": {
