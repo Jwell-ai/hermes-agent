@@ -264,6 +264,17 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         return _tool_error(f"Storybook request failed: {exc}")
     pages = generated.get("pages") if isinstance(generated, dict) else []
     storybook = generated.get("storybook") if isinstance(generated, dict) else {}
+    image_report = generated.get("image_generation") if isinstance(generated, dict) else None
+    if isinstance(image_report, dict):
+        required = int(image_report.get("required") or 0)
+        missing = int(image_report.get("missing") or 0)
+        errors = image_report.get("errors") or []
+        if required > 0 and missing > 0:
+            return _tool_error(
+                "Storybook image generation failed: "
+                f"{required - missing}/{required} generated, {missing} missing. "
+                f"{'; '.join(str(item) for item in errors[:3])}"
+            )
     result = {
         "type": "storybook",
         "presentation_mode": "flipbook",
@@ -275,7 +286,7 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         "canvas_id": payload.get("canvas_id"),
         "org_no": payload.get("org_no"),
         "pages": pages or [],
-        "image_generation": generated.get("image_generation") if isinstance(generated, dict) else None,
+        "image_generation": image_report,
         "canvas_element": {
             "type": "embeddable",
             "link": f"alphart-storybook://{storybook_id}",

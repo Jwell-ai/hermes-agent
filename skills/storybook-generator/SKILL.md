@@ -23,6 +23,33 @@ Read only the references needed for the task:
 
 ## Workflow
 
+## Alphart Edu Tool Contract
+
+When this skill is used inside Alphart Edu, image generation is not performed
+with generic local image tools or file-writing workflows. Use this skill to
+prepare story structure, character continuity, visual evidence, QA, and
+page-level image prompts, then call `canvas_create_storybook` or
+`create_storybook`.
+
+Required Alphart Edu behavior:
+
+- Call `canvas_create_storybook` / `create_storybook` for storybook creation.
+- Pass `generate_images: true`.
+- Pass `aspect_ratio: "1:1"`.
+- Pass an explicit `pages` array.
+- For Alphart Edu physical pages, use this rhythm:
+  - cover page: image page with `image_prompt`
+  - back cover page: image page with `image_prompt`
+  - inner left / odd story pages: image pages with `image_prompt`
+  - inner right / even story pages: narration/text pages without `image_prompt`
+- Do not call `generate_image`, `canvas_generate_image`, Write, Bash, local
+  file tools, or HTML/export tools to create storybook images.
+- If reference images are present, pass their `s3_object_name` values in
+  `input_images`; do not convert them to base64.
+
+The Alphart Edu backend will use its configured image model to generate and
+store required storybook page images.
+
 ### 1. Decide The Delivery Mode
 
 - If the user asks to "generate", "make", "create", or "turn this into a storybook", produce the storybook plan and proceed to page image generation.
@@ -151,4 +178,3 @@ Planning output should be short but complete:
 - page-by-page plan
 
 Generation output should report generated pages, where results are stored, and which pages need review. Avoid long theory unless the user asks.
-
