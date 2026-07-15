@@ -1427,69 +1427,69 @@ def _fallback_storybook_pages(user_message: str) -> List[Dict[str, Any]]:
 			"image_prompt": f"Square 1:1 warm educational storybook cover about {topic}, child-safe, inviting, no body text, clear main character and learning clue.",
 			"metadata": {"story_function": "cover", "visual_evidence": "main character, learning clue, safe setting"},
 		},
-		{
-			"page_number": 2,
-			"page_type": "image",
-			"layout": "image",
-			"title": "A Question Appears",
-			"narration": "",
-			"image_prompt": f"Square 1:1 storybook illustration: a curious protagonist notices a concrete question about {topic}; include visible evidence for the question, consistent character, no text.",
-			"metadata": {"story_function": "inciting question", "page_turn_hook": "What will the protagonist discover?"},
-		},
-		{
-			"page_number": 3,
-			"page_type": "narration",
-			"layout": "narration",
-			"title": "The First Clue",
-			"narration": f"The protagonist looks closely and finds the first clue about {topic}.",
-			"image_prompt": "",
-			"metadata": {"story_function": "read-aloud narration"},
-		},
-		{
-			"page_number": 4,
-			"page_type": "image",
-			"layout": "image",
-			"title": "Try It",
-			"narration": "",
-			"image_prompt": f"Square 1:1 storybook illustration: the protagonist tries a safe hands-on example about {topic}; show the key objects/actions mentioned by the lesson, no text.",
-			"metadata": {"story_function": "practice", "visual_evidence": "hands-on example and key objects"},
-		},
-		{
-			"page_number": 5,
-			"page_type": "narration",
-			"layout": "narration",
-			"title": "What Changed?",
-			"narration": f"Something changes, and the protagonist compares what happened before and after.",
-			"image_prompt": "",
-			"metadata": {"story_function": "cause and effect narration"},
-		},
-		{
-			"page_number": 6,
-			"page_type": "image",
-			"layout": "image",
-			"title": "The Idea Clicks",
-			"narration": "",
-			"image_prompt": f"Square 1:1 storybook illustration: a joyful aha moment where the key idea about {topic} becomes visible through concrete classroom-safe symbols, no text.",
-			"metadata": {"story_function": "aha moment", "visual_evidence": "clear concrete symbols"},
-		},
-		{
-			"page_number": 7,
-			"page_type": "narration",
-			"layout": "narration",
-			"title": "Say It Back",
-			"narration": f"Now the protagonist can explain the idea in simple words and invites the reader to try.",
-			"image_prompt": "",
-			"metadata": {"story_function": "reader reflection"},
-		},
-		{
-			"page_number": 8,
-			"page_type": "image",
-			"layout": "image",
-			"title": "Use It",
-			"narration": "",
-			"image_prompt": f"Square 1:1 storybook illustration: the protagonist uses the lesson about {topic} in a new real-world situation, consistent character, warm ending, no text.",
-			"metadata": {"story_function": "transfer", "page_turn_hook": "Can the reader find it too?"},
-		},
+			{
+				"page_number": 2,
+				"page_type": "image",
+				"layout": "image-page",
+				"title": "A Question Appears",
+				"narration": "",
+				"image_prompt": f"Square 1:1 storybook illustration: a curious protagonist notices a concrete question about {topic}; include visible evidence for the question, consistent character, no text.",
+				"metadata": {"story_function": "inciting question", "page_turn_hook": "What will the protagonist discover?"},
+			},
+			{
+				"page_number": 3,
+				"page_type": "narration",
+				"layout": "text-page",
+				"title": "The First Clue",
+				"narration": f"The protagonist looks closely and finds the first clue about {topic}.",
+				"image_prompt": "",
+				"metadata": {"story_function": "read-aloud narration"},
+			},
+			{
+				"page_number": 4,
+				"page_type": "image",
+				"layout": "image-page",
+				"title": "Try It",
+				"narration": "",
+				"image_prompt": f"Square 1:1 storybook illustration: the protagonist tries a safe hands-on example about {topic}; show the key objects/actions mentioned by the lesson, no text.",
+				"metadata": {"story_function": "practice", "visual_evidence": "hands-on example and key objects"},
+			},
+			{
+				"page_number": 5,
+				"page_type": "narration",
+				"layout": "text-page",
+				"title": "What Changed?",
+				"narration": f"Something changes, and the protagonist compares what happened before and after.",
+				"image_prompt": "",
+				"metadata": {"story_function": "cause and effect narration"},
+			},
+			{
+				"page_number": 6,
+				"page_type": "image",
+				"layout": "image-page",
+				"title": "The Idea Clicks",
+				"narration": "",
+				"image_prompt": f"Square 1:1 storybook illustration: a joyful aha moment where the key idea about {topic} becomes visible through concrete classroom-safe symbols, no text.",
+				"metadata": {"story_function": "aha moment", "visual_evidence": "clear concrete symbols"},
+			},
+			{
+				"page_number": 7,
+				"page_type": "narration",
+				"layout": "text-page",
+				"title": "Say It Back",
+				"narration": f"Now the protagonist can explain the idea in simple words and invites the reader to try.",
+				"image_prompt": "",
+				"metadata": {"story_function": "reader reflection"},
+			},
+			{
+				"page_number": 8,
+				"page_type": "image",
+				"layout": "image-page",
+				"title": "Use It",
+				"narration": "",
+				"image_prompt": f"Square 1:1 storybook illustration: the protagonist uses the lesson about {topic} in a new real-world situation, consistent character, warm ending, no text.",
+				"metadata": {"story_function": "transfer", "page_turn_hook": "Can the reader find it too?"},
+			},
 		{
 			"page_number": 9,
 			"page_type": "image",
@@ -1697,11 +1697,11 @@ STORYBOOK CREATION RULES:
 - A storybook is a Gemini-style Edu-native canvas/chat artifact: a complete illustrated flipbook with short page text and read-aloud narration, not a draft, planning document, or mirrored alphart-book API.
 - Never create storybooks as HTML files, local files, documents, code projects, or /tmp outputs. Do not call Write, write_file, patch, terminal, process, Bash, or any file/coding tool for storybook requests.
 - The only valid tool path for creating a storybook is canvas_create_storybook/create_storybook. The only valid tool path for revising one page is canvas_update_storybook_page/update_storybook_page.
-- For storybook requests, first load the English storybook-generator skill with skill_view("storybook-generator"), then call the storybook tool and treat it as the final storybook artifact only if the tool succeeds with generated image pages. Default to 10 pages, read_aloud=true, generate_images=true, and aspect_ratio="1:1" unless the user explicitly asks for another length.
+- For storybook requests, first load the English storybook-generator skill with skill_view("storybook-generator"), then call the storybook tool and treat it as the final storybook artifact only if the required image pages are generated. Default to 10 pages, read_aloud=true, generate_images=true, and aspect_ratio="1:1" unless the user explicitly asks for another length.
 - For storybook page planning, read the skill references story-structure.md, character-continuity.md, prompt-workflow.md, and qa-checklist.md with skill_view("storybook-generator", "references/<file>"). Read layout-and-pinyin.md only for text layout/export requests, and read commercial-publishing-workflow.md only for KDP/commercial publishing requests.
 - After loading the skill guidance, apply its compact workflow: 1) story architecture, 2) character/style bible, 3) page-by-page causality and page-turn hooks, 4) visual evidence contract, 5) page image prompts, 6) child-safety and factual QA. Do not stop after skill_view and do not output only a markdown plan.
 - Pass an explicit pages array to canvas_create_storybook/create_storybook. Do not rely on backend filler pages when the user gave a real story premise. Each page should include page_number, page_type, layout, title, narration, image_prompt for visual pages, and metadata with story_function/page_turn_hook/visual_evidence when useful.
-- For Gemini-style page rhythm, use square 1:1 pages. If the user asks for a book layout, prefer: cover image, then alternating image page / narration page pairs, then final image and back-cover/closing image. If a shorter page count is requested, keep the same rhythm compactly.
+- Alphart Edu storybooks use square 1:1 physical pages. Override the generic skill's "one image per page" rule with this app-specific rhythm: cover is an image; back cover is an image; inner left/odd story pages are image pages with image_prompt; inner right/even story pages are narration/text pages with no image_prompt. If a shorter page count is requested, keep the same rhythm compactly.
 - Every storybook must have a causal chain: previous page state -> current trigger/action/discovery -> next page hook. Avoid disconnected pretty pictures.
 - Every visible noun/action mentioned in narration must have matching visual evidence in the image_prompt, and every image_prompt must support the narration. Do not add unsupported facts or visuals.
 - Build character continuity into every page prompt: fixed protagonist appearance, clothing/accessory anchors, expression baseline, scene/world anchors, and reference image roles when present.

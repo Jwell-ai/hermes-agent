@@ -246,9 +246,20 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
             headers=_internal_relay_headers(),
             timeout=timeout,
         )
+        try:
+            generated = gen_resp.json()
+        except ValueError:
+            generated = {"raw": gen_resp.text}
+        if isinstance(generated, dict):
+            print(
+                "[alphart-agent] storybook image generation report "
+                f"storybook_id={storybook_id} status={gen_resp.status_code} "
+                f"report={json.dumps(generated.get('image_generation'), ensure_ascii=False)}",
+                flush=True,
+            )
         if gen_resp.status_code < 200 or gen_resp.status_code >= 300:
-            return _tool_error(f"Storybook image generation failed: {gen_resp.text[:300]}")
-        generated = gen_resp.json()
+            if not isinstance(generated, dict) or not generated.get("pages"):
+                return _tool_error(f"Storybook image generation failed: {gen_resp.text[:300]}")
     except requests.RequestException as exc:
         return _tool_error(f"Storybook request failed: {exc}")
     pages = generated.get("pages") if isinstance(generated, dict) else []
