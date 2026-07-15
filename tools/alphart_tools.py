@@ -233,9 +233,16 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         )
         if plan_resp.status_code < 200 or plan_resp.status_code >= 300:
             return _tool_error(f"Storybook planning failed: {plan_resp.text[:300]}")
+        generate_payload = {
+            "generate_images": args.get("generate_images", True),
+            "aspect_ratio": args.get("aspect_ratio") or "1:1",
+            "image_provider": args.get("image_provider"),
+            "image_model": args.get("image_model"),
+            "input_images": args.get("input_images") or [],
+        }
         gen_resp = requests.post(
             _internal_api_url(f"storybooks/{storybook_id}/generate"),
-            json={},
+            json=generate_payload,
             headers=_internal_relay_headers(),
             timeout=timeout,
         )
