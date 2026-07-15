@@ -476,7 +476,7 @@ def _default_game_plan() -> Dict[str, Any]:
             "Choose a playable pixel-game pattern that fits the concept; avoid a static form or plain card quiz unless explicitly requested.",
             "Map learning content into player actions, hazards, collectibles, levels, feedback, and win/fail conditions.",
             "Studio Planning phase: turn the design into acceptance criteria for layout bounds, controls, core loop, scoring/progress, validation/collision, and completion states.",
-            "Studio Development phase: implement a bounded 1920x1080 pixel playfield, HUD, safe text panels, start/restart controls, and separated game state/update/render logic.",
+            "Studio Development phase: implement a bounded 1920x1080 logical playfield that scales to the iframe viewport, HUD, safe text panels, start/restart controls, and separated game state/update/render logic.",
             "Generate one complete self-contained HTML file with inline CSS/JS and no external assets.",
             "Studio QA phase: self-test that no widget/window overflows, controls mutate state, the loop runs, scoring/progress changes, and win/fail/completion is reachable before finalizing.",
         ],
@@ -487,14 +487,14 @@ def _default_game_layout_requirements() -> Dict[str, Any]:
     return {
         "logical_width": 1920,
         "logical_height": 1080,
-        "responsive": "The game must use a fixed 1920x1080 logical stage and may only scale that whole stage visually to fit smaller browser/iframe viewports.",
+        "responsive": "The game should use a fixed 1920x1080 logical stage and must scale the whole stage to fit smaller browser/iframe viewports without page scroll.",
         "visual_style": "Default to a simple pixel-art game: blocky sprites, tile/grid playfield, crisp edges, limited high-contrast palette, 8-bit inspired UI.",
         "anti_form_rule": "Do not make a plain web form, static worksheet, or button-only quiz unless the user explicitly asks for a quiz/form.",
         "playfield": "Use a real game area with player movement, collectibles/hazards/targets, score/progress, and visible feedback.",
-        "stage_rule": "The result page must include a visible root game stage with width:1920px and height:1080px. Center it in the page and scale it with transform: scale(...) from transform-origin: top left when the viewport is smaller.",
+        "stage_rule": "The result page must include one visible root game stage. Use a 16:9 stage that fits the iframe, for example width:min(100vw, calc(100vh * 16 / 9)); height:min(100vh, calc(100vw * 9 / 16)); aspect-ratio:16/9; overflow:hidden.",
         "safe_area": "Keep all text, buttons, sprites, score panels, dialogs, modals, tooltips, and windows inside x=40..1880 and y=40..1040 of the 1920x1080 stage.",
         "overflow_policy": "No clipped text, page scrolling, horizontal scroll, overlapping cards, or elements outside their parent border. Use box-sizing:border-box globally and overflow:hidden on html, body, and the root stage.",
-        "positioning_policy": "Absolutely positioned panels/windows/widgets must use explicit left/top/width/height values that fit within the safe area including padding and borders. Do not use negative offsets, fixed-position overlays, viewport-sized panels, or transforms that push UI out of frame.",
+        "positioning_policy": "Absolutely positioned panels/windows/widgets must use explicit left/top/width/height values that fit within the safe area including padding and borders. Do not use negative offsets, fixed-position overlays, oversized absolute dialogs, viewport-sized panels, or transforms that push UI out of frame.",
         "typography": "Use readable font sizes and wrap long labels instead of shrinking below legibility.",
         "controls": "Support keyboard and mouse/touch. On-screen controls must remain reachable on desktop and mobile sizes.",
     }
@@ -523,7 +523,7 @@ def _default_game_review_checklist() -> Dict[str, Any]:
             "No page scrolling is possible; html/body/stage overflow is hidden and layout is contained.",
             "No negative offsets, fixed-position overlays, viewport-sized panels, or transforms can push UI outside the stage.",
             "Buttons, score, progress, dialogs, and game objects have enough spacing.",
-            "The layout works at common 16:9, 4:3, tablet, and mobile viewport sizes.",
+            "The layout works at 1920x1080, 1366x768, 1024x768, and phone-sized iframe viewports without clipped controls, hidden text, overlap, or scroll.",
         ],
         "interaction": [
             "Start/restart flow works.",
@@ -573,6 +573,78 @@ def _game_html_feedback(html: str) -> str:
     if not re.search(r"<(main|section|article|div|canvas|svg|button|input|label|h[1-6]|p|span)\b", visible_body, re.I | re.S):
         return ""
     return ""
+
+
+def _prepare_game_html_for_upload(html: str) -> str:
+    value = str(html or "")
+    if "alphart-game-fit-stage" in value or "__ALPHART_GAME_FIT__" in value:
+        return value
+
+    style = """<style id="alphart-game-fit-style">
+html,body{margin:0!important;width:100%!important;height:100%!important;overflow:hidden!important;}
+body{background:#0b1020;display:block!important;}
+*,*::before,*::after{box-sizing:border-box;}
+#alphart-game-fit-stage{position:fixed;inset:0;display:grid;place-items:center;overflow:hidden;background:inherit;}
+#alphart-game-fit-content{position:relative;transform-origin:top left;overflow:hidden;max-width:none!important;max-height:none!important;will-change:transform;}
+</style>"""
+    script = """<script id="alphart-game-fit-script">
+(function(){
+  if(window.__ALPHART_GAME_FIT__)return;window.__ALPHART_GAME_FIT__=true;
+  function ready(fn){if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",fn,{once:true});}else{fn();}}
+  ready(function(){
+    if(document.getElementById("alphart-game-fit-stage"))return;
+    var stage=document.createElement("div");stage.id="alphart-game-fit-stage";
+    var content=document.createElement("div");content.id="alphart-game-fit-content";
+    var skip={SCRIPT:1,STYLE:1,LINK:1,META:1,TITLE:1};
+    Array.prototype.slice.call(document.body.children).forEach(function(el){
+      if(skip[el.tagName]||el.id==="alphart-game-fit-stage")return;
+      content.appendChild(el);
+    });
+    document.body.insertBefore(stage,document.body.firstChild);
+    stage.appendChild(content);
+    var observer=new MutationObserver(function(records){
+      records.forEach(function(record){
+        Array.prototype.slice.call(record.addedNodes).forEach(function(node){
+          if(node.nodeType!==1)return;
+          var el=node;
+          if(el===stage||el===content||skip[el.tagName]||el.id==="alphart-game-fit-stage")return;
+          if(el.parentNode===document.body)content.appendChild(el);
+        });
+      });
+    });
+    observer.observe(document.body,{childList:true});
+    function layout(){
+      content.style.transform="none";
+      content.style.width="";
+      content.style.height="";
+      var rect=content.getBoundingClientRect();
+      var logicalW=Math.max(1,content.scrollWidth,Math.ceil(rect.width),1920);
+      var logicalH=Math.max(1,content.scrollHeight,Math.ceil(rect.height),1080);
+      content.style.width=logicalW+"px";
+      content.style.height=logicalH+"px";
+      var scale=Math.min(window.innerWidth/logicalW,window.innerHeight/logicalH);
+      if(!isFinite(scale)||scale<=0)scale=1;
+      content.style.transform="scale("+scale+")";
+    }
+    window.addEventListener("resize",layout);
+    if("ResizeObserver" in window)new ResizeObserver(layout).observe(content);
+    requestAnimationFrame(layout);
+    setTimeout(layout,250);
+    setTimeout(layout,1000);
+  });
+})();
+</script>"""
+
+    if re.search(r"</head\s*>", value, re.I):
+        value = re.sub(r"</head\s*>", style + "\n</head>", value, count=1, flags=re.I)
+    elif re.search(r"<body\b", value, re.I):
+        value = re.sub(r"<body\b", style + "\n<body", value, count=1, flags=re.I)
+    else:
+        value = style + "\n" + value
+
+    if re.search(r"</body\s*>", value, re.I):
+        return re.sub(r"</body\s*>", script + "\n</body>", value, count=1, flags=re.I)
+    return value + "\n" + script
 
 
 def _strip_invisible_game_html(body: str) -> str:
@@ -704,6 +776,7 @@ def _upload_game_object(target: Dict[str, Any], key: str, body: bytes, content_t
 
 def _upload_game_html(target: Dict[str, Any], html: str) -> None:
     s3, bucket, key = _game_s3_client(target)
+    html = _prepare_game_html_for_upload(html)
     s3.put_object(
         Bucket=bucket,
         Key=key,
@@ -739,6 +812,7 @@ def _upload_game_directory(target: Dict[str, Any], artifact_dir: Path) -> str:
     feedback = _game_html_feedback(html)
     if feedback:
         raise RuntimeError(feedback)
+    prepared_index_html = _prepare_game_html_for_upload(html)
 
     s3, bucket, index_key = _game_s3_client(target)
     prefix = _game_object_prefix(target)
@@ -751,10 +825,11 @@ def _upload_game_directory(target: Dict[str, Any], artifact_dir: Path) -> str:
             continue
         rel = resolved.relative_to(root).as_posix()
         key = f"{prefix}/{_safe_game_rel_path(rel)}"
+        body = prepared_index_html.encode("utf-8") if rel == "index.html" else resolved.read_bytes()
         s3.put_object(
             Bucket=bucket,
             Key=key,
-            Body=resolved.read_bytes(),
+            Body=body,
             ContentType=_guess_content_type(rel),
             ACL="public-read",
         )
@@ -793,8 +868,11 @@ def _upload_game_files(target: Dict[str, Any], files: List[Any]) -> str:
     feedback = _game_html_feedback(index_html)
     if feedback:
         raise RuntimeError(feedback)
+    prepared_index_html = _prepare_game_html_for_upload(index_html)
     s3, bucket, _ = _game_s3_client(target)
     for rel, body, content_type in normalized:
+        if rel == "index.html":
+            body = prepared_index_html.encode("utf-8")
         s3.put_object(
             Bucket=bucket,
             Key=f"{prefix}/{rel}",
@@ -1247,8 +1325,8 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                     "Complete self-contained playable game HTML. Must start with <!DOCTYPE html>, "
                     "include a <body> with visible game content, inline CSS/JS, and closing </body></html>. "
                     "Prefer a visible game root/stage, HUD or progress, playfield/canvas/SVG, instructions, "
-                    "and start/restart/control elements. Prefer a 1920x1080 logical stage that scales to smaller "
-                    "viewports, but the tool accepts other complete playable layouts produced by the gaming skill."
+                    "and start/restart/control elements. Prefer a 1920x1080 logical stage that scales as a whole "
+                    "to the iframe viewport with no page scroll, clipped controls, or overlapping panels."
                 ),
             },
             "artifact_dir": {
@@ -1331,7 +1409,7 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                 "description": (
                     "Responsive layout constraints. Must require no overflow, no clipped text, "
                     "no overlap, readable labels, all controls inside the game frame, and every widget/window "
-                    "inside the 40px safe-area inset of the 1920x1080 stage."
+                    "inside the 40px safe-area inset of the 1920x1080 stage or equivalent scaled frame."
                 ),
             },
             "review_checklist": {

@@ -44,7 +44,16 @@ For larger requests, also load:
   exists and contains `index.html`.
 - Never pass `files: []`.
 - The generated game must be playable, accurate, classroom-safe, and bounded to
-  the fixed 1920x1080 game stage required by the Alphart prompt.
+  one visible game stage that fits inside its iframe without page scrolling.
+- Prefer a 1920x1080 logical stage, but scale the entire stage to the available
+  viewport. A good baseline is:
+  `html,body{margin:0;width:100%;height:100%;overflow:hidden}`
+  `*{box-sizing:border-box}`
+  `body{display:grid;place-items:center;background:#...}`
+  `.stage{position:relative;aspect-ratio:16/9;width:min(100vw,calc(100vh*16/9));height:min(100vh,calc(100vw*9/16));overflow:hidden}`
+- Keep HUD, buttons, dialogs, cards, sprites, labels, and tooltips inside the
+  stage safe area. Do not use negative offsets, fixed overlays, oversized
+  absolute panels, or transforms that move UI outside the stage.
 
 ## Minimum QA Before Calling The Tool
 
@@ -54,5 +63,8 @@ For larger requests, also load:
 - Score/progress/timer/level/lives/player position visibly changes through play.
 - Win/fail/completion can be reached by playing.
 - Text and widgets do not overflow or overlap.
+- The game fits at 1920x1080, 1366x768, 1024x768, and 390x844 iframe sizes
+  without clipped buttons, hidden text, horizontal/vertical page scroll, or
+  overlapping panels.
 - Every answer option group has a correct answer.
 - Educational facts are precise and age-appropriate.
