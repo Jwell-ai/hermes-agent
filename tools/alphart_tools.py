@@ -289,7 +289,7 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         "image_generation": image_report,
         "canvas_element": {
             "type": "embeddable",
-            "link": f"alphart-storybook://{storybook_id}",
+            "link": "",
             "customData": {
                 "kind": "storybook",
                 "storybook_id": storybook_id,
@@ -340,7 +340,16 @@ def _handle_alphart_update_storybook_page(args: Dict[str, Any], **_: Any) -> str
         resp = requests.patch(_internal_api_url(f"storybooks/{storybook_id}/pages/{page_id}"), json=patch_payload, headers=_internal_relay_headers(), timeout=timeout)
         if resp.status_code < 200 or resp.status_code >= 300:
             return _tool_error(f"Storybook page update failed: {resp.text[:300]}")
-        regen = requests.post(_internal_api_url(f"storybooks/{storybook_id}/pages/{page_id}/regenerate"), json={}, headers=_internal_relay_headers(), timeout=timeout)
+        regen_payload = {
+            "generate_images": True,
+            "aspect_ratio": args.get("aspect_ratio") or "1:1",
+            "input_images": args.get("input_images") or [],
+        }
+        if args.get("image_provider"):
+            regen_payload["image_provider"] = args.get("image_provider")
+        if args.get("image_model"):
+            regen_payload["image_model"] = args.get("image_model")
+        regen = requests.post(_internal_api_url(f"storybooks/{storybook_id}/pages/{page_id}/regenerate"), json=regen_payload, headers=_internal_relay_headers(), timeout=timeout)
         if regen.status_code < 200 or regen.status_code >= 300:
             return _tool_error(f"Storybook page image regeneration failed: {regen.text[:300]}")
         payload = regen.json()

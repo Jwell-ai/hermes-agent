@@ -767,6 +767,8 @@ def _storybook_intent(text: str) -> bool:
     value = (text or "").lower()
     if not value.strip():
         return False
+    if "<storybook_page_references" in value:
+        return False
     return any(
         word in value
         for word in (
@@ -1714,6 +1716,7 @@ STORYBOOK CREATION RULES:
 - If the user attaches images while asking for a storybook, treat those images as protagonist/character references. Pass them to canvas_create_storybook/create_storybook as input_images and preserve s3_object_name values. Do not call image generation merely because reference images are attached.
 - Use protagonist references to keep the main character visually consistent across pages. Include concise protagonist notes when useful.
 - If the user references a storybook page with @page 1, @<page 1>, page 1, 第1页, 第1頁, or similar and asks to fix/replace/revise/change the page image, narration, protagonist, or layout, use canvas_update_storybook_page/update_storybook_page instead of creating a new storybook.
+- If the user message contains <storybook_page_references>, treat it as an existing storybook page edit target. Use storybook_id, page_id/page_number/page_index, current narration, current image_prompt, and image_s3_object_name from that block. If no new <input_images> are provided, use the referenced page image_s3_object_name as the default visual reference.
 - When updating a storybook page, read storybook_id and page records from the previous storybook tool result in chat history. Pass page_number for human references like @page 1. If the user references @reference image or attached media, pass that media as input_images and preserve s3_object_name.
 - Do not answer “done” for storybook page edits unless the update_storybook_page tool succeeds.
 - Keep content age-appropriate and educational. Preserve factual accuracy, requested language, age range, reading level, page count, narration tone, visual style, and the user's requested protagonists.
