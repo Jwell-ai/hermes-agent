@@ -45,12 +45,12 @@ For larger requests, also load:
 - Never pass `files: []`.
 - The generated game must be playable, accurate, classroom-safe, and bounded to
   one visible game stage that fits inside its iframe without page scrolling.
-- Prefer a 1920x1080 logical stage, but scale the entire stage to the available
-  viewport. A good baseline is:
+- Use an exact 1920x1080 logical stage. Scale that exact stage to the available
+  viewport; do not create a larger scrollable page. A good baseline is:
   `html,body{margin:0;width:100%;height:100%;overflow:hidden}`
   `*{box-sizing:border-box}`
   `body{display:grid;place-items:center;background:#...}`
-  `.stage{position:relative;aspect-ratio:16/9;width:min(100vw,calc(100vh*16/9));height:min(100vh,calc(100vw*9/16));overflow:hidden}`
+  `.stage{position:relative;width:1920px;height:1080px;overflow:hidden;transform-origin:top left}`
 - Keep HUD, buttons, dialogs, cards, sprites, labels, and tooltips inside the
   stage safe area. Do not use negative offsets, fixed overlays, oversized
   absolute panels, or transforms that move UI outside the stage.

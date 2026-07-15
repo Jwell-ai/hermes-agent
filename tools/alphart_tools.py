@@ -476,7 +476,7 @@ def _default_game_plan() -> Dict[str, Any]:
             "Choose a playable pixel-game pattern that fits the concept; avoid a static form or plain card quiz unless explicitly requested.",
             "Map learning content into player actions, hazards, collectibles, levels, feedback, and win/fail conditions.",
             "Studio Planning phase: turn the design into acceptance criteria for layout bounds, controls, core loop, scoring/progress, validation/collision, and completion states.",
-            "Studio Development phase: implement a bounded 1920x1080 logical playfield that scales to the iframe viewport, HUD, safe text panels, start/restart controls, and separated game state/update/render logic.",
+            "Studio Development phase: implement an exact bounded 1920x1080 logical playfield that scales to the iframe viewport, HUD, safe text panels, start/restart controls, and separated game state/update/render logic.",
             "Generate one complete self-contained HTML file with inline CSS/JS and no external assets.",
             "Studio QA phase: self-test that no widget/window overflows, controls mutate state, the loop runs, scoring/progress changes, and win/fail/completion is reachable before finalizing.",
         ],
@@ -487,11 +487,11 @@ def _default_game_layout_requirements() -> Dict[str, Any]:
     return {
         "logical_width": 1920,
         "logical_height": 1080,
-        "responsive": "The game should use a fixed 1920x1080 logical stage and must scale the whole stage to fit smaller browser/iframe viewports without page scroll.",
+        "responsive": "The game must use an exact fixed 1920x1080 logical stage and scale that whole stage to fit smaller browser/iframe viewports without page scroll.",
         "visual_style": "Default to a simple pixel-art game: blocky sprites, tile/grid playfield, crisp edges, limited high-contrast palette, 8-bit inspired UI.",
         "anti_form_rule": "Do not make a plain web form, static worksheet, or button-only quiz unless the user explicitly asks for a quiz/form.",
         "playfield": "Use a real game area with player movement, collectibles/hazards/targets, score/progress, and visible feedback.",
-        "stage_rule": "The result page must include one visible root game stage. Use a 16:9 stage that fits the iframe, for example width:min(100vw, calc(100vh * 16 / 9)); height:min(100vh, calc(100vw * 9 / 16)); aspect-ratio:16/9; overflow:hidden.",
+        "stage_rule": "The result page must include one visible root game stage with width:1920px and height:1080px. Center and scale that exact stage to fit the viewport; do not make the document or stage larger than 1920x1080.",
         "safe_area": "Keep all text, buttons, sprites, score panels, dialogs, modals, tooltips, and windows inside x=40..1880 and y=40..1040 of the 1920x1080 stage.",
         "overflow_policy": "No clipped text, page scrolling, horizontal scroll, overlapping cards, or elements outside their parent border. Use box-sizing:border-box globally and overflow:hidden on html, body, and the root stage.",
         "positioning_policy": "Absolutely positioned panels/windows/widgets must use explicit left/top/width/height values that fit within the safe area including padding and borders. Do not use negative offsets, fixed-position overlays, oversized absolute dialogs, viewport-sized panels, or transforms that push UI out of frame.",
@@ -585,7 +585,7 @@ html,body{margin:0!important;width:100%!important;height:100%!important;overflow
 body{background:#0b1020;display:block!important;}
 *,*::before,*::after{box-sizing:border-box;}
 #alphart-game-fit-stage{position:fixed;inset:0;display:grid;place-items:center;overflow:hidden;background:inherit;}
-#alphart-game-fit-content{position:relative;transform-origin:top left;overflow:hidden;max-width:none!important;max-height:none!important;will-change:transform;}
+#alphart-game-fit-content{position:relative;width:1920px!important;height:1080px!important;transform-origin:top left;overflow:hidden;max-width:none!important;max-height:none!important;will-change:transform;}
 </style>"""
     script = """<script id="alphart-game-fit-script">
 (function(){
@@ -615,11 +615,8 @@ body{background:#0b1020;display:block!important;}
     observer.observe(document.body,{childList:true});
     function layout(){
       content.style.transform="none";
-      content.style.width="";
-      content.style.height="";
-      var rect=content.getBoundingClientRect();
-      var logicalW=Math.max(1,content.scrollWidth,Math.ceil(rect.width),1920);
-      var logicalH=Math.max(1,content.scrollHeight,Math.ceil(rect.height),1080);
+      var logicalW=1920;
+      var logicalH=1080;
       content.style.width=logicalW+"px";
       content.style.height=logicalH+"px";
       var scale=Math.min(window.innerWidth/logicalW,window.innerHeight/logicalH);
@@ -1325,7 +1322,7 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                     "Complete self-contained playable game HTML. Must start with <!DOCTYPE html>, "
                     "include a <body> with visible game content, inline CSS/JS, and closing </body></html>. "
                     "Prefer a visible game root/stage, HUD or progress, playfield/canvas/SVG, instructions, "
-                    "and start/restart/control elements. Prefer a 1920x1080 logical stage that scales as a whole "
+                    "and start/restart/control elements. Use an exact 1920x1080 logical stage that scales as a whole "
                     "to the iframe viewport with no page scroll, clipped controls, or overlapping panels."
                 ),
             },
