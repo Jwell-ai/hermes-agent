@@ -520,6 +520,41 @@ def _input_images_from_text(text: str) -> List[Any]:
     return images
 
 
+def _storybook_page_refs_from_text(text: str) -> List[Dict[str, Any]]:
+    refs: List[Dict[str, Any]] = []
+    for match in re.finditer(
+        r"<page\b(?P<attrs>[^>]*)>(?P<body>.*?)</page>",
+        text or "",
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        ref: Dict[str, Any] = {}
+        for key, value in re.findall(r'\b([a-zA-Z0-9_:-]+)="([^"]*)"', match.group("attrs") or ""):
+            if not value:
+                continue
+            if key in ("page_index", "page_number"):
+                try:
+                    ref[key] = int(value)
+                except ValueError:
+                    ref[key] = value
+            else:
+                ref[key] = value
+        body = match.group("body") or ""
+        narration = _xml_tag_text(body, "narration")
+        image_prompt = _xml_tag_text(body, "image_prompt")
+        if narration:
+            ref["current_narration"] = narration
+        if image_prompt:
+            ref["current_image_prompt"] = image_prompt
+        if ref.get("storybook_id"):
+            refs.append(ref)
+    return refs
+
+
+def _storybook_page_update_intent(text: str) -> bool:
+    value = (text or "").lower()
+    return "<storybook_page_references" in value
+
+
 def _asset_input_image(asset: Dict[str, Any]) -> Any:
     object_name = _string(asset.get("s3_object_name") or asset.get("object_name") or asset.get("key"))
     if object_name:
@@ -1417,6 +1452,79 @@ def _forced_storybook_tool_messages(
 	]
 
 
+def _forced_storybook_page_update_messages(
+    user_message: str,
+    input_images: Optional[List[Any]] = None,
+) -> List[Dict[str, Any]]:
+    refs = _storybook_page_refs_from_text(user_message)
+    if not refs:
+        return []
+    target = refs[0]
+    call_id = str(uuid.uuid4())
+    args: Dict[str, Any] = {
+        "storybook_id": target.get("storybook_id"),
+        "page_id": target.get("page_id"),
+        "page_number": target.get("page_number"),
+        "page_index": target.get("page_index"),
+        "instructions": user_message,
+        "tool_call_id": call_id,
+        "aspect_ratio": "1:1",
+    }
+    args = {key: value for key, value in args.items() if value not in (None, "")}
+    refs_for_images = input_images or []
+    if not refs_for_images and target.get("image_s3_object_name"):
+        refs_for_images = [
+            {
+                "s3_object_name": target.get("image_s3_object_name"),
+                "file_id": target.get("page_id") or f"storybook-page-{target.get('page_number') or target.get('page_index') or 1}",
+                "role": "current_storybook_page_reference",
+                "reference_note": f"Default reference image for page {target.get('page_number') or ''}".strip(),
+            }
+        ]
+    if refs_for_images:
+        args["input_images"] = refs_for_images
+
+    print(
+        "[alphart-agent] forcing storybook page update "
+        f"storybook_id={args.get('storybook_id')} page_number={args.get('page_number')} input_images={len(refs_for_images)}",
+        flush=True,
+    )
+    result = _handle_alphart_update_storybook_page(args)
+    final_text = "Storybook page updated." if _tool_result_success(result) else "generate fail"
+    return [
+        {
+            "role": "assistant",
+            "content": (
+                "Plan:\n"
+                "1. Use the referenced storybook page as the edit target.\n"
+                "2. Apply the requested change to that specific page only.\n"
+                "3. Regenerate the page illustration and update the canvas flipbook."
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "canvas_update_storybook_page",
+                        "arguments": json.dumps(args, ensure_ascii=False),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "name": "canvas_update_storybook_page",
+            "content": result,
+        },
+        {"role": "assistant", "content": final_text},
+    ]
+
+
 def _fallback_storybook_pages(user_message: str) -> List[Dict[str, Any]]:
 	topic = _string(user_message)[:180] or "a learning adventure"
 	return [
@@ -1522,6 +1630,8 @@ def _forced_media_tool_messages(
     input_images: Optional[List[Any]] = None,
 ) -> List[Dict[str, Any]]:
     if _storybook_intent(user_message):
+        return []
+    if _storybook_page_update_intent(user_message):
         return []
     if _media_analysis_intent(user_message.lower()):
         return []
@@ -1776,14 +1886,45 @@ def _system_prompt(req: AlphartEduChatRequest) -> str:
     return _alphart_agent_prompt(req)
 
 
+def _is_internal_tool_view_name(name: str) -> bool:
+    return _string(name).strip().lower() in {"skill_view", "tool_view", "tool_views"}
+
+
 def _public_messages(messages: List[Any]) -> List[Any]:
     out: List[Any] = []
+    hidden_tool_call_ids = {
+        _string(tool_call.get("id"))
+        for msg in messages or []
+        if isinstance(msg, dict)
+        and msg.get("role") == "assistant"
+        and isinstance(msg.get("tool_calls"), list)
+        for tool_call in msg.get("tool_calls") or []
+        if isinstance(tool_call, dict) and _is_internal_tool_view_name(_tool_call_name(tool_call))
+    }
+    hidden_tool_call_ids.discard("")
     for msg in messages or []:
         if not isinstance(msg, dict):
             continue
         if msg.get("role") == "system":
             continue
         cleaned = {k: v for k, v in msg.items() if not str(k).startswith("_")}
+        if cleaned.get("role") == "tool":
+            if _string(cleaned.get("tool_call_id")) in hidden_tool_call_ids:
+                continue
+            if _is_internal_tool_view_name(cleaned.get("name") or cleaned.get("tool_name")):
+                continue
+        if cleaned.get("role") == "assistant" and isinstance(cleaned.get("tool_calls"), list):
+            tool_calls = [
+                tool_call
+                for tool_call in cleaned.get("tool_calls") or []
+                if not _is_internal_tool_view_name(_tool_call_name(tool_call))
+            ]
+            if tool_calls:
+                cleaned["tool_calls"] = tool_calls
+            else:
+                cleaned.pop("tool_calls", None)
+                if not _string(cleaned.get("content")).strip():
+                    continue
         if "content" in cleaned:
             cleaned["content"] = _message_text(cleaned)
         out.append(cleaned)
@@ -2337,6 +2478,7 @@ def _tool_call_arguments(tool_call: Any) -> str:
 
 def _events_from_messages(messages: List[Any]) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
+    hidden_tool_call_ids = set()
     for msg in messages or []:
         if not isinstance(msg, dict):
             continue
@@ -2348,12 +2490,19 @@ def _events_from_messages(messages: List[Any]) -> List[Dict[str, Any]]:
                 tool_name = _tool_call_name(tool_call)
                 if not tool_call_id or not tool_name:
                     continue
+                if _is_internal_tool_view_name(tool_name):
+                    hidden_tool_call_ids.add(tool_call_id)
+                    continue
                 events.append({"type": "tool_call", "id": tool_call_id, "name": tool_name})
                 args = _tool_call_arguments(tool_call)
                 if args and args != "{}":
                     events.append({"type": "tool_call_arguments", "id": tool_call_id, "text": args})
         elif msg.get("role") == "tool":
             tool_call_id = _string(msg.get("tool_call_id"))
+            if tool_call_id in hidden_tool_call_ids:
+                continue
+            if _is_internal_tool_view_name(msg.get("name") or msg.get("tool_name")):
+                continue
             if tool_call_id:
                 events.append({"type": "tool_call_result", "id": tool_call_id, "message": msg})
     return events
@@ -2538,6 +2687,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         bool(input_images)
         and not current_media_attempted
         and not _storybook_intent(user_message)
+        and not _storybook_page_update_intent(user_message)
         and _media_intent(user_message, has_image_context=True) == "image"
     )
     if reference_image_generation:
@@ -2574,6 +2724,11 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
             )
         if not forced_messages and _storybook_intent(user_message) and not _storybook_tool_attempted(current_turn_messages):
             forced_messages = _forced_storybook_tool_messages(
+                user_message,
+                input_images=input_images,
+            )
+        if not forced_messages and _storybook_page_update_intent(user_message) and not _storybook_tool_attempted(current_turn_messages):
+            forced_messages = _forced_storybook_page_update_messages(
                 user_message,
                 input_images=input_images,
             )
