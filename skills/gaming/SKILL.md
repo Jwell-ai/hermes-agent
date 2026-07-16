@@ -51,9 +51,13 @@ For larger requests, also load:
   `*{box-sizing:border-box}`
   `body{display:grid;place-items:center;background:#...}`
   `.stage{position:relative;width:1920px;height:1080px;overflow:hidden;transform-origin:top left}`
+- The generated HTML itself must implement the scale-to-fit behavior, not rely
+  on the Canvas iframe wrapper. Opening the public game URL in a normal browser
+  tab must show the whole 1920x1080 stage without scrollbars.
 - Keep HUD, buttons, dialogs, cards, sprites, labels, and tooltips inside the
   stage safe area. Do not use negative offsets, fixed overlays, oversized
   absolute panels, or transforms that move UI outside the stage.
+- Do not use `position: fixed`; use absolute positioning inside the stage.
 
 ## Minimum QA Before Calling The Tool
 

@@ -1029,15 +1029,31 @@ def _game_html_feedback(html: str) -> str:
     body = value[body_start + body_open_end + 1 : body_end].strip()
     visible_body = _strip_invisible_game_html(body)
     if not visible_body.strip():
-        return ""
+        return "game HTML body must include visible game DOM content directly in <body>, such as a root stage, HUD, playfield/canvas/SVG, instructions, and controls"
     if not re.search(r"<(main|section|article|div|canvas|svg|button|input|label|h[1-6]|p|span)\b", visible_body, re.I | re.S):
-        return ""
+        return "game HTML body must include visible game DOM elements directly in <body>, such as a root stage, HUD, playfield/canvas/SVG, instructions, and controls"
+    if re.search(r"position\s*:\s*fixed", value, re.I):
+        return "game CSS must not use position:fixed because it can escape the 1920x1080 game stage; use absolute positioning inside the stage instead"
+    if re.search(r"(?:width|min-width|max-width)\s*:\s*(?:19[3-9]\d|[2-9]\d{3,})px", value, re.I):
+        return "game CSS has an element wider than the 1920px stage; keep every panel/widget inside the 1920x1080 safe area"
+    if re.search(r"(?:height|min-height|max-height)\s*:\s*(?:10[9]\d|1[1-9]\d{2}|[2-9]\d{3,})px", value, re.I):
+        return "game CSS has an element taller than the 1080px stage; keep every panel/widget inside the 1920x1080 safe area"
+    if not re.search(r"\b1920\b", value) or not re.search(r"\b1080\b", value):
+        return "game HTML must define an exact 1920x1080 logical stage and scale that whole stage to the viewport"
+    if not re.search(r"transform\s*:\s*scale|scale\s*\(", value, re.I):
+        return "game HTML must include scale-to-fit logic for the 1920x1080 stage so it shows completely in a new tab and iframe"
     return ""
 
 
 def _prepare_game_html_for_upload(html: str) -> str:
     value = str(html or "")
     if "alphart-game-fit-stage" in value or "__ALPHART_GAME_FIT__" in value:
+        return value
+    if (
+        re.search(r"\b1920\b", value)
+        and re.search(r"\b1080\b", value)
+        and re.search(r"transform\s*:\s*scale|scale\s*\(", value, re.I)
+    ):
         return value
 
     style = """<style id="alphart-game-fit-style">
@@ -1755,6 +1771,8 @@ CANVAS_GENERATE_GAME_SCHEMA = {
         "Do not call file-writing/coding tools such as Write, Edit, MultiEdit, Bash, write_file, patch, "
         "terminal, or process; put the complete HTML directly in this tool's html argument, "
         "or pass artifact_dir/artifact_path when a game skill produced a directory containing index.html and assets. "
+        "The HTML must implement its own exact 1920x1080 logical stage plus scale-to-fit logic so the public game URL "
+        "shows the whole game in a normal browser tab without scrollbars; do not rely on Canvas iframe wrapping. "
         "After the tool returns, review content, UI layout, and interactions; if the result "
         "has clipped text, overflow, overlapping controls, or out-of-frame elements, revise "
         "the prompt and regenerate instead of finalizing. Keep optional planning fields concise; "
@@ -1784,7 +1802,8 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                     "include a <body> with visible game content, inline CSS/JS, and closing </body></html>. "
                     "Prefer a visible game root/stage, HUD or progress, playfield/canvas/SVG, instructions, "
                     "and start/restart/control elements. Use an exact 1920x1080 logical stage that scales as a whole "
-                    "to the iframe viewport with no page scroll, clipped controls, or overlapping panels."
+                    "to the iframe/browser viewport with no page scroll, clipped controls, or overlapping panels. "
+                    "Do not use position:fixed; position every HUD/dialog/control inside the 1920x1080 stage."
                 ),
             },
             "artifact_dir": {

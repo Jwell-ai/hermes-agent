@@ -105,6 +105,8 @@ The generated HTML must:
 - Include `<main id="game-root">` directly in `<body>`.
 - Use a fixed 1920x1080 logical game stage.
 - Center and scale the stage for smaller viewport sizes.
+- Implement the scaling inside the generated HTML itself so the public game URL
+  shows the complete game in a new tab without depending on Canvas.
 - Use `overflow:hidden` on `html`, `body`, and the root stage.
 - Avoid `position: fixed`, negative offsets, viewport-sized overlays, and
   transforms that push UI outside the stage.
