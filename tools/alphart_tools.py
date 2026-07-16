@@ -498,7 +498,7 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
     pages = generated.get("pages") if isinstance(generated, dict) else []
     storybook = generated.get("storybook") if isinstance(generated, dict) else {}
     image_report = generated.get("image_generation") if isinstance(generated, dict) else None
-    generation_status = "completed"
+    generation_status = _storybook_result_status(image_report, pages)
     generation_warning = ""
     if isinstance(image_report, dict):
         required = int(image_report.get("required") or 0)
@@ -508,7 +508,6 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
             first_error = str(errors[0]) if errors else ""
             if len(first_error) > 180:
                 first_error = first_error[:180].rstrip() + "..."
-            generation_status = "partial"
             generation_warning = f"{required - missing}/{required} illustrations generated, {missing} still pending."
             if first_error:
                 generation_warning += f" {first_error}"
@@ -556,7 +555,7 @@ def _partial_storybook_result(
     image_report = generated.get("image_generation") if isinstance(generated, dict) else None
     return {
         "type": "storybook",
-        "status": "partial",
+        "status": _storybook_result_status(image_report, pages),
         "warning": warning,
         "presentation_mode": "flipbook",
         "read_aloud": True,
@@ -585,7 +584,7 @@ def _partial_storybook_result(
 
 
 def _generate_storybook_images_with_retries(storybook_id: str, payload: Dict[str, Any], timeout: int) -> Tuple[requests.Response, Dict[str, Any]]:
-    attempts = max(1, int(os.getenv("ALPHART_STORYBOOK_IMAGE_RETRY_ATTEMPTS", "3") or "3"))
+    attempts = max(1, int(os.getenv("ALPHART_STORYBOOK_IMAGE_RETRY_ATTEMPTS", "6") or "6"))
     last_resp: Optional[requests.Response] = None
     last_body: Dict[str, Any] = {}
     for attempt in range(1, attempts + 1):
@@ -616,8 +615,6 @@ def _generate_storybook_images_with_retries(storybook_id: str, payload: Dict[str
             f"report={json.dumps(report, ensure_ascii=False)}",
             flush=True,
         )
-        if _storybook_image_report_has_partial_success(report):
-            return resp, last_body
         if not _storybook_image_report_has_missing(report):
             return resp, last_body
         if attempt < attempts:
@@ -657,11 +654,16 @@ def _fetch_storybook_after_generation_error(storybook_id: str, error: str) -> Di
 
 
 def _storybook_image_report_from_pages(pages: Any) -> Dict[str, Any]:
-    report = {"required": 0, "generated": 0, "skipped": 0, "missing": 0}
+    report = {"required": 0, "generated": 0, "skipped": 0, "missing": 0, "planned_pages": 0, "text_pages": 0}
     if not isinstance(pages, list):
         return report
+    report["planned_pages"] = len(pages)
     for page in pages:
-        if not isinstance(page, dict) or not _storybook_page_requires_image(page):
+        if not isinstance(page, dict):
+            continue
+        if not _storybook_page_requires_image(page):
+            if _storybook_page_has_content(page):
+                report["text_pages"] += 1
             continue
         report["required"] += 1
         if str(page.get("image_s3_object_name") or page.get("image_url") or "").strip():
@@ -676,6 +678,30 @@ def _storybook_page_requires_image(page: Dict[str, Any]) -> bool:
         return False
     page_type = str(page.get("page_type") or "").strip().lower()
     return page_type not in {"narration", "text"}
+
+
+def _storybook_page_has_content(page: Dict[str, Any]) -> bool:
+    return bool(str(page.get("title") or "").strip() or str(page.get("narration") or "").strip())
+
+
+def _storybook_result_status(report: Any, pages: Any) -> str:
+    page_count = len(pages) if isinstance(pages, list) else 0
+    text_pages = 0
+    if isinstance(report, dict):
+        try:
+            required = int(report.get("required") or 0)
+            generated = int(report.get("generated") or 0)
+            missing = int(report.get("missing") or 0)
+            text_pages = int(report.get("text_pages") or 0)
+        except (TypeError, ValueError):
+            required = generated = missing = 0
+        if required > 0 and missing > 0:
+            return "partial_finished" if generated > 0 or text_pages > 0 or page_count > 0 else "failed"
+        if required > 0:
+            return "completed"
+    if page_count > 0:
+        return "partial_finished"
+    return "completed"
 
 
 def _storybook_image_report_has_missing(report: Any) -> bool:

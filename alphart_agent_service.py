@@ -9,6 +9,7 @@ import os
 import re
 import uuid
 import base64
+from datetime import datetime, timezone
 from urllib.parse import quote
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -2746,6 +2747,58 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     attempt_events.append(event)
                     _post_chat_event_callback(req, event)
 
+            def emit_live_event(event: Dict[str, Any]) -> None:
+                if not event:
+                    return
+                event["_live_sent"] = True
+                attempt_events.append(event)
+                _post_chat_event_callback(req, event)
+
+            def on_interim_assistant(text: str, **kwargs: Any) -> None:
+                if kwargs.get("already_streamed"):
+                    return
+                visible = _string(text).strip()
+                if not visible:
+                    return
+                emit_live_event({"type": "delta", "text": visible + "\n\n"})
+
+            def on_tool_start(tool_call_id: str, name: str, args: Any) -> None:
+                tool_call_id = _string(tool_call_id)
+                name = _string(name)
+                if not tool_call_id or not name or _is_internal_tool_view_name(name):
+                    return
+                emit_live_event({"type": "tool_call", "id": tool_call_id, "name": name})
+                if isinstance(args, str):
+                    args_text = args
+                else:
+                    try:
+                        args_text = json.dumps(args or {}, ensure_ascii=False)
+                    except TypeError:
+                        args_text = "{}"
+                if args_text and args_text != "{}":
+                    emit_live_event({"type": "tool_call_arguments", "id": tool_call_id, "text": args_text})
+
+            def on_tool_complete(tool_call_id: str, name: str, args: Any, result_text: Any) -> None:
+                tool_call_id = _string(tool_call_id)
+                name = _string(name)
+                if not tool_call_id or not name or _is_internal_tool_view_name(name):
+                    return
+                content = result_text if isinstance(result_text, str) else _string(result_text)
+                if not content:
+                    return
+                emit_live_event({
+                    "type": "tool_call_result",
+                    "id": tool_call_id,
+                    "message": {
+                        "role": "tool",
+                        "name": name,
+                        "tool_name": name,
+                        "tool_call_id": tool_call_id,
+                        "content": content,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                })
+
             with alphart_context(context):
                 agent = AIAgent(
                     base_url=endpoint,
@@ -2759,6 +2812,9 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     quiet_mode=True,
                     session_id=req.session_id or None,
                     stream_delta_callback=on_delta if provider_format == "openai" else None,
+                    interim_assistant_callback=on_interim_assistant,
+                    tool_start_callback=on_tool_start,
+                    tool_complete_callback=on_tool_complete,
                     status_callback=on_status,
                     platform="alphart",
                     user_id=req.user_id or req.user_uuid or None,
