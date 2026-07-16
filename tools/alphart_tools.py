@@ -259,18 +259,49 @@ def _loads_storybook_pages_text(raw: str) -> Any:
     if not text:
         return None
     for candidate in _storybook_json_candidates(text):
-        try:
-            return json.loads(candidate)
-        except (TypeError, ValueError):
-            pass
-        try:
-            return ast.literal_eval(candidate)
-        except (TypeError, ValueError, SyntaxError):
-            pass
+        value = _loads_storybook_jsonish(candidate)
+        if value is not None:
+            return value
     objects = _extract_storybook_json_objects(text)
     if objects:
         return objects
     return None
+
+
+def _loads_storybook_jsonish(raw: str, depth: int = 0) -> Any:
+    if depth > 3:
+        return None
+    text = _strip_json_fence(str(raw or "").strip())
+    if not text:
+        return None
+    for loader in (json.loads, ast.literal_eval):
+        try:
+            value = loader(text)
+        except (TypeError, ValueError, SyntaxError):
+            continue
+        if isinstance(value, str):
+            nested = _loads_storybook_jsonish(value, depth + 1)
+            if nested is not None:
+                return nested
+            continue
+        return value
+    unquoted = _unquote_storybook_json_string(text)
+    if unquoted and unquoted != text:
+        return _loads_storybook_jsonish(unquoted, depth + 1)
+    return None
+
+
+def _unquote_storybook_json_string(text: str) -> str:
+    text = text.strip()
+    if len(text) < 2 or text[0] not in {'"', "'"} or text[-1] != text[0]:
+        return text
+    inner = text[1:-1]
+    for encoding in ("utf-8",):
+        try:
+            return bytes(inner, encoding).decode("unicode_escape")
+        except UnicodeDecodeError:
+            continue
+    return inner
 
 
 def _strip_json_fence(text: str) -> str:
@@ -282,8 +313,13 @@ def _strip_json_fence(text: str) -> str:
 
 def _storybook_json_candidates(text: str) -> List[str]:
     candidates = [text]
+    unquoted = _unquote_storybook_json_string(text)
+    if unquoted != text:
+        candidates.append(unquoted)
     if "[" in text and "]" in text:
         candidates.append(text[text.find("[") : text.rfind("]") + 1])
+    if "[" in unquoted and "]" in unquoted:
+        candidates.append(unquoted[unquoted.find("[") : unquoted.rfind("]") + 1])
     repaired = []
     for candidate in candidates:
         fixed = re.sub(r",\s*([}\]])", r"\1", candidate)
@@ -391,9 +427,10 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
     raw_pages = args.get("pages")
     planned_pages = _normalize_storybook_pages(raw_pages)
     if raw_pages and not planned_pages:
-        return _tool_error("Storybook planning failed: malformed page plan; retry with a valid pages array.")
-    if not planned_pages:
-        return _tool_error("Storybook planning failed: missing enriched page plan; retry and call the tool with pages[].")
+        print(
+            "[alphart-agent] storybook page plan was not valid JSON after repair; using backend physical-page planner",
+            flush=True,
+        )
     timeout = int(os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS") or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900"))
     try:
         created_resp = requests.post(create_url, json=payload, headers=_internal_relay_headers(), timeout=timeout)
@@ -403,17 +440,19 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         storybook_id = str(created.get("id") or created.get("ID") or "").strip()
         if not storybook_id:
             return _tool_error("Storybook creation failed: missing id")
+        plan_payload = {
+            "topic": payload["topic"],
+            "language": payload["language"],
+            "age_range": payload["age_range"],
+            "reading_level": payload["reading_level"],
+            "style": payload["style"],
+            "page_count": payload["page_count"],
+        }
+        if planned_pages:
+            plan_payload["pages"] = planned_pages
         plan_resp = requests.post(
             _internal_api_url(f"storybooks/{storybook_id}/plan"),
-            json={
-                "topic": payload["topic"],
-                "language": payload["language"],
-                "age_range": payload["age_range"],
-                "reading_level": payload["reading_level"],
-                "style": payload["style"],
-                "page_count": payload["page_count"],
-                "pages": planned_pages,
-            },
+            json=plan_payload,
             headers=_internal_relay_headers(),
             timeout=timeout,
         )
