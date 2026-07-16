@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import ast
 import base64
 import json
 import mimetypes
@@ -18,7 +19,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -198,9 +199,8 @@ def _normalize_storybook_pages(value: Any) -> List[Dict[str, Any]]:
         raw = value.strip()
         if not raw:
             return []
-        try:
-            decoded = json.loads(raw)
-        except (TypeError, ValueError):
+        decoded = _loads_storybook_pages_text(raw)
+        if decoded is None:
             return []
         return _normalize_storybook_pages(decoded)
     if isinstance(value, dict):
@@ -250,6 +250,107 @@ def _normalize_storybook_pages(value: Any) -> List[Dict[str, Any]]:
             item["page_type"] = "image"
         pages.append(item)
     return pages
+
+
+def _loads_storybook_pages_text(raw: str) -> Any:
+    text = _strip_json_fence(raw.strip())
+    if not text:
+        return None
+    for candidate in _storybook_json_candidates(text):
+        try:
+            return json.loads(candidate)
+        except (TypeError, ValueError):
+            pass
+        try:
+            return ast.literal_eval(candidate)
+        except (TypeError, ValueError, SyntaxError):
+            pass
+    objects = _extract_storybook_json_objects(text)
+    if objects:
+        return objects
+    return None
+
+
+def _strip_json_fence(text: str) -> str:
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
+def _storybook_json_candidates(text: str) -> List[str]:
+    candidates = [text]
+    if "[" in text and "]" in text:
+        candidates.append(text[text.find("[") : text.rfind("]") + 1])
+    repaired = []
+    for candidate in candidates:
+        fixed = re.sub(r",\s*([}\]])", r"\1", candidate)
+        fixed = re.sub(r"}\s*{", "},{", fixed)
+        fixed = re.sub(r"}\s*\n\s*{", "},{", fixed)
+        fixed = re.sub(r"]\s*{", "],{", fixed)
+        fixed = re.sub(r'"\s*\n\s*"', '","', fixed)
+        fixed = re.sub(
+            r'("|\d|true|false|null|}|\])\s+(?=("[A-Za-z_][A-Za-z0-9_]*"\s*:))',
+            r"\1,",
+            fixed,
+        )
+        if fixed not in candidates and fixed not in repaired:
+            repaired.append(fixed)
+    return candidates + repaired
+
+
+def _extract_storybook_json_objects(text: str) -> List[Dict[str, Any]]:
+    array_start = text.find("[")
+    array_end = text.rfind("]")
+    if array_start >= 0 and array_end > array_start:
+        text = text[array_start + 1 : array_end]
+    objects: List[Dict[str, Any]] = []
+    start = -1
+    depth = 0
+    in_string = False
+    escape = False
+    quote = ""
+    for index, char in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == quote:
+                in_string = False
+            continue
+        if char in {'"', "'"}:
+            in_string = True
+            quote = char
+            continue
+        if char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+            continue
+        if char == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                raw_obj = text[start : index + 1]
+                parsed = _loads_storybook_object_text(raw_obj)
+                if parsed is not None:
+                    objects.append(parsed)
+                start = -1
+    return objects
+
+
+def _loads_storybook_object_text(raw: str) -> Optional[Dict[str, Any]]:
+    for candidate in _storybook_json_candidates(raw):
+        try:
+            value = json.loads(candidate)
+        except (TypeError, ValueError):
+            try:
+                value = ast.literal_eval(candidate)
+            except (TypeError, ValueError, SyntaxError):
+                continue
+        if isinstance(value, dict):
+            return value
+    return None
 
 
 def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
@@ -1252,10 +1353,11 @@ CANVAS_CREATE_STORYBOOK_SCHEMA = {
             "pages": {
                 "type": "array",
                 "description": (
-                    "Agent-authored page plan. Use this for real storybook creation. "
+                    "Agent-authored page plan. Must be a native array, not a JSON string or markdown. "
                     "Include a cover page, alternating image/narration story pages when appropriate, "
                     "and a closing/back-cover page. Image pages must include 1:1 image_prompt. "
-                    "Narration pages should include narration/read-aloud text and may omit image_prompt."
+                    "Narration pages should include narration/read-aloud text and may omit image_prompt. "
+                    "Keep each page object compact; do not include long metadata."
                 ),
                 "items": {
                     "type": "object",
@@ -1284,7 +1386,7 @@ CANVAS_CREATE_STORYBOOK_SCHEMA = {
                         },
                         "metadata": {
                             "type": "object",
-                            "description": "Optional skill metadata such as story_function, page_turn_hook, visual_evidence, character_anchors, safety_notes.",
+                            "description": "Optional compact metadata only. Omit unless truly needed.",
                         },
                     },
                     "required": ["page_number", "page_type", "title"],

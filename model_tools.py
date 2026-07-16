@@ -663,7 +663,7 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                         args[key] = value
                         logger.warning(
                             "coerce_tool_args: %s.%s contains malformed JSON array text; "
-                            "preserving it so the storybook tool can reject the malformed page plan.",
+                            "preserving it so the storybook tool can attempt page-plan repair.",
                             tool_name, key,
                         )
                         continue
