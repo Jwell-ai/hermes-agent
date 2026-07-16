@@ -1956,7 +1956,62 @@ def _public_messages(messages: List[Any]) -> List[Any]:
         if "content" in cleaned:
             cleaned["content"] = _message_text(cleaned)
         out.append(cleaned)
+    return _prefer_storybook_artifact_messages(out)
+
+
+def _prefer_storybook_artifact_messages(messages: List[Any]) -> List[Any]:
+    has_storybook_artifact = any(_is_successful_storybook_tool_message(msg) for msg in messages or [])
+    if not has_storybook_artifact:
+        return messages
+    out: List[Any] = []
+    for msg in messages or []:
+        if _is_failed_storybook_tool_message(msg):
+            continue
+        out.append(msg)
     return out
+
+
+def _is_storybook_tool_message(message: Any) -> bool:
+    if not isinstance(message, dict) or message.get("role") != "tool":
+        return False
+    name = _string(message.get("name") or message.get("tool_name")).lower()
+    return "storybook" in name
+
+
+def _storybook_tool_payload(message: Any) -> Dict[str, Any]:
+    if not isinstance(message, dict):
+        return {}
+    content = message.get("content")
+    if isinstance(content, dict):
+        return content
+    if not isinstance(content, str):
+        return {}
+    try:
+        decoded = json.loads(content)
+    except (TypeError, ValueError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _is_successful_storybook_tool_message(message: Any) -> bool:
+    if not _is_storybook_tool_message(message):
+        return False
+    payload = _storybook_tool_payload(message)
+    result = payload.get("result") if isinstance(payload, dict) else None
+    if not isinstance(result, dict):
+        return False
+    return _string(result.get("type")).lower() in {"storybook", "storybook_page_update"}
+
+
+def _is_failed_storybook_tool_message(message: Any) -> bool:
+    if not _is_storybook_tool_message(message):
+        return False
+    payload = _storybook_tool_payload(message)
+    if not payload:
+        return False
+    if payload.get("success") is False:
+        return True
+    return _string(payload.get("error")) != "" and not isinstance(payload.get("result"), dict)
 
 
 def _last_assistant_text(messages: List[Any]) -> str:
@@ -2029,7 +2084,12 @@ def _callback_backend_url(req: AlphartEduChatRequest) -> str:
 
 
 def _callback_service_token() -> str:
-    return _string(os.getenv("ALPHART_AGENT_TOKEN") or os.getenv("CANVAS_AGENT_TOKEN") or os.getenv("HERMES_AGENT_TOKEN"))
+    return _string(
+        os.getenv("ALPHART_EDU_AGENT_TOKEN")
+        or os.getenv("ALPHART_AGENT_TOKEN")
+        or os.getenv("CANVAS_AGENT_TOKEN")
+        or os.getenv("HERMES_AGENT_TOKEN")
+    )
 
 
 def _post_chat_result_callback(req: AlphartEduChatRequest, response: Dict[str, Any]) -> None:
@@ -2052,7 +2112,7 @@ def _post_chat_result_callback(req: AlphartEduChatRequest, response: Dict[str, A
     )
     try:
         resp = requests.post(
-            f"{backend_url}/api/v1/agent/chat-results",
+            f"{backend_url}/internal/api/v1/agent/chat-results",
             json=payload,
             headers={
                 **({"Authorization": f"Bearer {token}"} if token else {}),
@@ -2071,6 +2131,31 @@ def _post_chat_result_callback(req: AlphartEduChatRequest, response: Dict[str, A
         f"[alphart-agent] chat result callback response session_id={req.session_id} status={resp.status_code} bytes={len(resp.text)} body={preview}",
         flush=True,
     )
+
+
+def _post_chat_event_callback(req: AlphartEduChatRequest, event: Dict[str, Any]) -> None:
+    backend_url = _callback_backend_url(req)
+    if not backend_url or not req.session_id or not isinstance(event, dict):
+        return
+    token = _callback_service_token()
+    clean_event = dict(event)
+    clean_event.pop("_live_sent", None)
+    try:
+        requests.post(
+            f"{backend_url}/internal/api/v1/agent/events",
+            json={
+                "session_id": req.session_id,
+                "canvas_id": req.canvas_id,
+                "event": clean_event,
+            },
+            headers={
+                **({"Authorization": f"Bearer {token}"} if token else {}),
+                **({"X-Hermes-Agent-Token": token} if token else {}),
+            },
+            timeout=3,
+        )
+    except requests.RequestException:
+        return
 
 
 def _usage_value(usage: Any, name: str) -> int:
@@ -2650,12 +2735,16 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                 if not text:
                     text = _string(kwargs.get("delta") or kwargs.get("text"))
                 if text:
-                    attempt_events.append({"type": "delta", "text": text})
+                    event = {"type": "delta", "text": text, "_live_sent": True}
+                    attempt_events.append(event)
+                    _post_chat_event_callback(req, event)
 
             def on_status(*args: Any, **kwargs: Any) -> None:
                 message = _string(args[1] if len(args) > 1 else (args[0] if args else kwargs.get("message")))
                 if message:
-                    attempt_events.append({"type": "status", "message": message})
+                    event = {"type": "status", "message": message, "_live_sent": True}
+                    attempt_events.append(event)
+                    _post_chat_event_callback(req, event)
 
             with alphart_context(context):
                 agent = AIAgent(

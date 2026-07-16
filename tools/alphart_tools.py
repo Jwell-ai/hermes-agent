@@ -147,7 +147,7 @@ def _internal_api_url(path: str) -> str:
     backend_url = _backend_url()
     if not backend_url:
         return ""
-    return f"{backend_url}/api/v1/internal/{path.lstrip('/')}"
+    return f"{backend_url}/internal/api/v1/{path.lstrip('/')}"
 
 
 def _internal_relay_headers() -> Dict[str, str]:
@@ -435,6 +435,8 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
             flush=True,
         )
     timeout = int(os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS") or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900"))
+    storybook_id = ""
+    created: Dict[str, Any] = {}
     try:
         created_resp = requests.post(create_url, json=payload, headers=_internal_relay_headers(), timeout=timeout)
         if created_resp.status_code < 200 or created_resp.status_code >= 300:
@@ -470,10 +472,29 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         }
         gen_resp, generated = _generate_storybook_images_with_retries(storybook_id, generate_payload, timeout)
         if gen_resp.status_code < 200 or gen_resp.status_code >= 300:
-            if not isinstance(generated, dict) or not generated.get("pages"):
-                return _tool_error(f"Storybook image generation failed: {gen_resp.text[:300]}")
+            if not isinstance(generated, dict):
+                generated = {}
+            if not generated.get("pages"):
+                generated = _fetch_storybook_after_generation_error(
+                    storybook_id,
+                    f"Storybook image generation failed: {gen_resp.text[:300]}",
+                )
     except requests.RequestException as exc:
-        return _tool_error(f"Storybook request failed: {exc}")
+        if not storybook_id:
+            return _tool_error(f"Storybook request failed: {exc}")
+        return json.dumps(
+            {
+                "status": "success",
+                "result": _partial_storybook_result(
+                    storybook_id=storybook_id,
+                    created=created if isinstance(created, dict) else {},
+                    payload=payload,
+                    generated={},
+                    warning=f"Storybook request was interrupted after planning: {exc}",
+                ),
+            },
+            ensure_ascii=False,
+        )
     pages = generated.get("pages") if isinstance(generated, dict) else []
     storybook = generated.get("storybook") if isinstance(generated, dict) else {}
     image_report = generated.get("image_generation") if isinstance(generated, dict) else None
@@ -520,6 +541,47 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         },
     }
     return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
+
+
+def _partial_storybook_result(
+    *,
+    storybook_id: str,
+    created: Dict[str, Any],
+    payload: Dict[str, Any],
+    generated: Dict[str, Any],
+    warning: str,
+) -> Dict[str, Any]:
+    pages = generated.get("pages") if isinstance(generated, dict) else []
+    storybook = generated.get("storybook") if isinstance(generated, dict) else {}
+    image_report = generated.get("image_generation") if isinstance(generated, dict) else None
+    return {
+        "type": "storybook",
+        "status": "partial",
+        "warning": warning,
+        "presentation_mode": "flipbook",
+        "read_aloud": True,
+        "storybook_id": storybook_id,
+        "title": storybook.get("title") or created.get("title") or payload.get("title"),
+        "topic": storybook.get("topic") or created.get("topic") or payload.get("topic"),
+        "page_count": len(pages or []),
+        "canvas_id": payload.get("canvas_id"),
+        "org_no": payload.get("org_no"),
+        "pages": pages or [],
+        "image_generation": image_report,
+        "canvas_element": {
+            "type": "embeddable",
+            "link": "",
+            "customData": {
+                "kind": "storybook",
+                "storybook_id": storybook_id,
+                "title": storybook.get("title") or created.get("title") or payload.get("title"),
+                "page_count": len(pages or []),
+                "read_aloud": True,
+                "mode": "flipbook",
+                "pages": pages or [],
+            },
+        },
+    }
 
 
 def _generate_storybook_images_with_retries(storybook_id: str, payload: Dict[str, Any], timeout: int) -> Tuple[requests.Response, Dict[str, Any]]:
@@ -1062,7 +1124,7 @@ def _request_game_upload_target(args: Dict[str, Any]) -> Dict[str, Any]:
         "content_type": "text/html; charset=utf-8",
     }
     resp = requests.post(
-        f"{backend_url}/api/v1/agent/game-upload-target",
+        f"{backend_url}/internal/api/v1/agent/game-upload-target",
         json=payload,
         headers={
             **({"Authorization": f"Bearer {service_token or token}"} if (service_token or token) else {}),
