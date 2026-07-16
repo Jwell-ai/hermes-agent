@@ -55,6 +55,15 @@ def _system_busy_tool_error() -> str:
     return "generate fail"
 
 
+def _infer_storybook_language(text: Any) -> str:
+    value = str(text or "")
+    if re.search(r"[\u4e00-\u9fff]", value):
+        if re.search(r"[繪書頁學習兒童臺灣繁體]", value):
+            return "zh-TW"
+        return "zh-CN"
+    return "en"
+
+
 def _slug(value: Any) -> str:
     text = str(value or "").strip().lower()
     text = re.sub(r"[^a-z0-9]+", "_", text)
@@ -180,8 +189,8 @@ def _normalize_storybook_pages(value: Any) -> List[Dict[str, Any]]:
 
     Some models emit the pages array as a JSON string. Hermes' generic coercer
     may wrap a malformed string into a one-item list, which is still invalid for
-    the Edu backend. For storybooks, malformed pages should be ignored so the
-    backend can build its deterministic fallback page plan.
+    the Edu backend. For storybooks, malformed pages must fail planning rather
+    than silently falling back to generic backend filler pages.
     """
     if value is None:
         return []
@@ -267,7 +276,7 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         "title": args.get("title"),
         "description": args.get("description"),
         "topic": args.get("topic") or args.get("prompt"),
-        "language": args.get("language"),
+        "language": args.get("language") or _infer_storybook_language(args.get("topic") or args.get("prompt")),
         "age_range": args.get("age_range"),
         "reading_level": args.get("reading_level"),
         "style": args.get("style"),
@@ -276,6 +285,12 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         "canvas_id": _ctx().get("canvas_id") or args.get("canvas_id"),
         "org_no": _ctx().get("org_no") or _ctx().get("storage_prefix") or args.get("org_no"),
     }
+    raw_pages = args.get("pages")
+    planned_pages = _normalize_storybook_pages(raw_pages)
+    if raw_pages and not planned_pages:
+        return _tool_error("Storybook planning failed: malformed page plan; retry with a valid pages array.")
+    if not planned_pages:
+        return _tool_error("Storybook planning failed: missing enriched page plan; retry and call the tool with pages[].")
     timeout = int(os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS") or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900"))
     try:
         created_resp = requests.post(create_url, json=payload, headers=_internal_relay_headers(), timeout=timeout)
@@ -285,12 +300,6 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         storybook_id = str(created.get("id") or created.get("ID") or "").strip()
         if not storybook_id:
             return _tool_error("Storybook creation failed: missing id")
-        planned_pages = _normalize_storybook_pages(args.get("pages"))
-        if args.get("pages") and not planned_pages:
-            print(
-                "[alphart-agent] ignored malformed storybook pages; backend fallback plan will be used",
-                flush=True,
-            )
         plan_resp = requests.post(
             _internal_api_url(f"storybooks/{storybook_id}/plan"),
             json={

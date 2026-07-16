@@ -94,6 +94,15 @@ def _string(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _infer_storybook_language(text: str) -> str:
+    value = _string(text)
+    if re.search(r"[\u4e00-\u9fff]", value):
+        if re.search(r"[繪書頁學習兒童臺灣繁體]", value):
+            return "zh-TW"
+        return "zh-CN"
+    return "en"
+
+
 def _int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -1409,11 +1418,11 @@ def _forced_storybook_tool_messages(
         "prompt": user_message,
         "tool_call_id": call_id,
         "page_count": 10,
-		"read_aloud": True,
-		"generate_images": True,
-		"aspect_ratio": "1:1",
-		"pages": _fallback_storybook_pages(user_message),
-	}
+        "language": _infer_storybook_language(user_message),
+        "read_aloud": True,
+        "generate_images": True,
+        "aspect_ratio": "1:1",
+    }
     if input_images:
         args["input_images"] = input_images
 

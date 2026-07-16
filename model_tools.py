@@ -660,10 +660,10 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                         "canvas_create_storybook",
                         "create_storybook",
                     } and key == "pages":
-                        args[key] = []
+                        args[key] = value
                         logger.warning(
                             "coerce_tool_args: %s.%s contains malformed JSON array text; "
-                            "discarding it so the storybook backend can use its fallback page plan.",
+                            "preserving it so the storybook tool can reject the malformed page plan.",
                             tool_name, key,
                         )
                         continue
