@@ -291,6 +291,19 @@ def _text_model_candidates(req: Any) -> List[Dict[str, Any]]:
     return candidates
 
 
+def _openai_text_model_candidates(req: Any, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        provider = _string(candidate.get("provider"))
+        model = _string(candidate.get("model"))
+        config = _provider_config_for(req.model_configs, candidate)
+        if _text_model_wire_format(provider, model, config) == "openai":
+            out.append(candidate)
+    return out
+
+
 def _api_key(config: Dict[str, Any]) -> str:
     for key in ("api_key", "apiKey", "api key", "key"):
         value = _string(config.get(key))
@@ -2553,6 +2566,23 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         conversation_history = messages[:-1] if messages else []
     if not user_message:
         raise HTTPException(status_code=400, detail="user message is required")
+    is_storybook_request = _storybook_intent(user_message)
+    if is_storybook_request:
+        openai_candidates = _openai_text_model_candidates(req, candidates)
+        if not openai_candidates:
+            raise HTTPException(status_code=400, detail="storybook requires an active OpenAI text model")
+        if len(openai_candidates) != len(candidates):
+            skipped = [
+                f"{_string(item.get('provider'))}/{_string(item.get('model'))}"
+                for item in candidates
+                if item not in openai_candidates
+            ]
+            print(
+                f"[alphart-agent] storybook using OpenAI text model only; skipped={','.join(skipped)}",
+                flush=True,
+            )
+        candidates = openai_candidates
+        primary_text_model = candidates[0]
     is_game_request = _game_intent(user_message)
     input_images = _input_images_from_text(user_message)
     latest_generated_image = _latest_generated_image_ref(conversation_history)

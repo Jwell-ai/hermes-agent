@@ -400,6 +400,9 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
     image_tool = _pick_tool("image", args)
     image_provider = str(image_tool.get("provider") or "").strip()
     image_model = str(image_tool.get("model") or image_tool.get("name") or image_tool.get("key") or "").strip()
+    if image_provider.lower() != "openai" or "gpt-image" not in image_model.lower():
+        image_provider = ""
+        image_model = ""
     if image_provider:
         args.setdefault("image_provider", image_provider)
     if image_model:
