@@ -24,9 +24,11 @@ import requests
 from run_agent import AIAgent
 from tools.skills_sync import sync_skills
 from tools.alphart_tools import (
+    _handle_alphart_create_storybook,
     _handle_alphart_generate_image,
     _handle_alphart_generate_video,
     _handle_alphart_transcribe_audio,
+    _handle_alphart_update_storybook_page,
     _selected_tools,
     alphart_context,
 )
@@ -62,6 +64,7 @@ class AlphartEduTitleRequest(BaseModel):
 
 app = FastAPI(title="Alphart Hermes Agent", version="1.0.0")
 SYSTEM_BUSY_MESSAGE = "System busy, please try again later."
+INSUFFICIENT_CREDITS_MESSAGE = "Insufficient credits. Please top up or upgrade your plan."
 
 
 def _sync_bundled_skills() -> None:
@@ -115,6 +118,16 @@ def _int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _is_insufficient_credits_error(value: Any) -> bool:
+    text = _string(value).lower()
+    return (
+        "insufficient_credits" in text
+        or "insufficient credits" in text
+        or "http 402" in text
+        or "error code: 402" in text
+    )
 
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
@@ -2700,7 +2713,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         raise HTTPException(status_code=400, detail="user message is required")
     is_storybook_request = _storybook_intent(user_message)
     if is_storybook_request:
-        candidates = _require_openai_text_model_candidates(req, candidates, "storybook")
+        candidates = _require_openai_text_model_candidates(req, candidates, "storybook", exclude_small_models=True)
         primary_text_model = candidates[0]
     is_game_request = _game_intent(user_message)
     if is_game_request and not is_storybook_request:
@@ -2891,14 +2904,17 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         if not result.get("failed"):
             break
 
-    if result.get("failed"):
+    model_failed = bool(result.get("failed"))
+    model_error = _string(result.get("error"))
+    if model_failed:
+        visible_error = INSUFFICIENT_CREDITS_MESSAGE if _is_insufficient_credits_error(model_error) else SYSTEM_BUSY_MESSAGE
         result = {
-            "messages": [{"role": "assistant", "content": SYSTEM_BUSY_MESSAGE}],
-            "final_response": SYSTEM_BUSY_MESSAGE,
+            "messages": [{"role": "assistant", "content": visible_error}],
+            "final_response": visible_error,
             "model": result.get("model") or last_model,
             "provider": result.get("provider") or last_provider,
             "failed": True,
-            "error": SYSTEM_BUSY_MESSAGE,
+            "error": visible_error,
         }
 
     raw_result_messages = result.get("messages") or []
@@ -2937,36 +2953,37 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         else:
             final_response = _last_assistant_text(response_messages) or _last_assistant_text(raw_result_messages)
     user_audio_urls = _audio_urls_from_content(user_content)
-    with alphart_context(context):
-        current_turn_messages = _messages_after_latest_user(response_messages)
-        forced_messages = []
-        if user_audio_urls and not _generation_tool_attempted(current_turn_messages, "audio"):
-            forced_messages = _forced_audio_to_media_pipeline(
-                user_audio_urls,
-                user_message,
-                response_messages,
-                current_turn_messages,
-                input_images=input_images,
-            )
-        if not forced_messages and _storybook_intent(user_message) and not _storybook_tool_attempted(current_turn_messages):
-            forced_messages = _forced_storybook_tool_messages(
-                user_message,
-                input_images=input_images,
-            )
-        if not forced_messages and _storybook_page_update_intent(user_message) and not _storybook_tool_attempted(current_turn_messages):
-            forced_messages = _forced_storybook_page_update_messages(
-                user_message,
-                input_images=input_images,
-            )
-        if not forced_messages and not current_media_attempted:
-            forced_messages = _forced_media_tool_messages(
-                user_message,
-                response_messages,
-                current_turn_messages,
-                has_image_context=bool(input_images),
-                input_images=input_images,
-            )
-        response_messages.extend(forced_messages)
+    if not model_failed:
+        with alphart_context(context):
+            current_turn_messages = _messages_after_latest_user(response_messages)
+            forced_messages = []
+            if user_audio_urls and not _generation_tool_attempted(current_turn_messages, "audio"):
+                forced_messages = _forced_audio_to_media_pipeline(
+                    user_audio_urls,
+                    user_message,
+                    response_messages,
+                    current_turn_messages,
+                    input_images=input_images,
+                )
+            if not forced_messages and _storybook_intent(user_message) and not _storybook_tool_attempted(current_turn_messages):
+                forced_messages = _forced_storybook_tool_messages(
+                    user_message,
+                    input_images=input_images,
+                )
+            if not forced_messages and _storybook_page_update_intent(user_message) and not _storybook_tool_attempted(current_turn_messages):
+                forced_messages = _forced_storybook_page_update_messages(
+                    user_message,
+                    input_images=input_images,
+                )
+            if not forced_messages and not current_media_attempted:
+                forced_messages = _forced_media_tool_messages(
+                    user_message,
+                    response_messages,
+                    current_turn_messages,
+                    has_image_context=bool(input_images),
+                    input_images=input_images,
+                )
+            response_messages.extend(forced_messages)
     current_turn_messages = _messages_after_latest_user(response_messages)
     current_media_failed = current_media_failed or _generation_tool_failed(current_turn_messages)
     current_game_failed = current_game_failed or _game_tool_failed(current_turn_messages)
