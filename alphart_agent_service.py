@@ -2148,6 +2148,7 @@ def _post_chat_event_callback(req: AlphartEduChatRequest, event: Dict[str, Any])
             json={
                 "session_id": req.session_id,
                 "canvas_id": req.canvas_id,
+                "user_id": req.user_id,
                 "event": clean_event,
             },
             headers={
