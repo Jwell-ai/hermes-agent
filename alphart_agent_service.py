@@ -309,10 +309,31 @@ def _require_openai_text_model_candidates(
     req: Any,
     candidates: List[Dict[str, Any]],
     purpose: str,
+    *,
+    exclude_small_models: bool = False,
 ) -> List[Dict[str, Any]]:
     openai_candidates = _openai_text_model_candidates(req, candidates)
     if not openai_candidates:
         raise HTTPException(status_code=400, detail=f"{purpose} requires an active OpenAI/GPT text model")
+    if exclude_small_models:
+        strong_candidates = [
+            candidate
+            for candidate in openai_candidates
+            if not re.search(r"(?:^|[-_.:/])(?:mini|nano|small|lite)(?:$|[-_.:/])", _string(candidate.get("model")).lower())
+        ]
+        if not strong_candidates:
+            raise HTTPException(status_code=400, detail=f"{purpose} requires a non-mini OpenAI/GPT text model")
+        if len(strong_candidates) != len(openai_candidates):
+            skipped_small = [
+                f"{_string(item.get('provider'))}/{_string(item.get('model'))}"
+                for item in openai_candidates
+                if item not in strong_candidates
+            ]
+            print(
+                f"[alphart-agent] {purpose} skipping mini/small text models; skipped={','.join(skipped_small)}",
+                flush=True,
+            )
+        openai_candidates = strong_candidates
     if len(openai_candidates) != len(candidates):
         skipped = [
             f"{_string(item.get('provider'))}/{_string(item.get('model'))}"
@@ -2683,7 +2704,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         primary_text_model = candidates[0]
     is_game_request = _game_intent(user_message)
     if is_game_request and not is_storybook_request:
-        candidates = _require_openai_text_model_candidates(req, candidates, "game generation")
+        candidates = _require_openai_text_model_candidates(req, candidates, "game generation", exclude_small_models=True)
         primary_text_model = candidates[0]
     input_images = _input_images_from_text(user_message)
     latest_generated_image = _latest_generated_image_ref(conversation_history)
