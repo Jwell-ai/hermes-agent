@@ -1451,8 +1451,7 @@ def _forced_storybook_tool_messages(
         flush=True,
     )
     result = _handle_alphart_create_storybook(args)
-    final_text = "Storybook created." if _tool_result_success(result) else "generate fail"
-    return [
+    messages: List[Dict[str, Any]] = [
         {
             "role": "assistant",
             "content": "Plan:\n1. Create a canvas-native flipbook storybook artifact.\n2. Generate strict 1:1 storybook image pages through the backend.\n3. Return the storybook result in chat and canvas.",
@@ -1477,8 +1476,10 @@ def _forced_storybook_tool_messages(
             "name": "canvas_create_storybook",
             "content": result,
         },
-        {"role": "assistant", "content": final_text},
 	]
+    if not _tool_result_success(result):
+        messages.append({"role": "assistant", "content": "generate fail"})
+    return messages
 
 
 def _forced_storybook_page_update_messages(
