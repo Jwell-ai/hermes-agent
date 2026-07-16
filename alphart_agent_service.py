@@ -2571,13 +2571,14 @@ def _generate_title_relay(req: AlphartEduTitleRequest, provider: str, model: str
 def _generate_title_agent(req: AlphartEduTitleRequest, provider: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
     agent_provider = provider
     api_mode = _string(config.get("api_mode")) or "chat_completions"
+    stream_enabled = True
     relay_headers: Dict[str, str] = {}
     if _use_internal_relay(req):
         endpoint = _internal_relay_base_url(req)
         api_key = _internal_relay_api_key()
         relay_headers = _internal_relay_headers(req)
         request_overrides = {"extra_headers": relay_headers}
-        agent_provider, api_mode, provider_format, _ = _internal_relay_agent_mode(provider, model, config)
+        agent_provider, api_mode, provider_format, stream_enabled = _internal_relay_agent_mode(provider, model, config)
     else:
         endpoint = _endpoint(config)
         api_key = _api_key(config)
@@ -2607,6 +2608,8 @@ def _generate_title_agent(req: AlphartEduTitleRequest, provider: str, model: str
     )
     if api_mode == "anthropic_messages":
         _install_internal_relay_anthropic_headers(agent, relay_headers)
+    if not stream_enabled:
+        agent._disable_streaming = True
     try:
         result = agent.run_conversation(
             _title_prompt(source),
