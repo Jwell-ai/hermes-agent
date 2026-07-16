@@ -30,8 +30,9 @@ from utils import base_url_host_matches, normalize_proxy_env_vars
 # and the 3 usage sites (build_anthropic_client, build_anthropic_bedrock_client,
 # read_claude_code_credentials_from_keychain) are all on cold user-triggered
 # paths. Access via the `_get_anthropic_sdk()` accessor below, which caches
-# the module after the first call and returns None on ImportError.
-_anthropic_sdk: Any = ...  # sentinel — None means "tried and missing"
+# the module after a successful import. Missing imports are not cached because
+# the web service may lazy-install the package after the first failed request.
+_anthropic_sdk: Any = ...
 
 
 def _get_anthropic_sdk():
@@ -50,7 +51,7 @@ def _get_anthropic_sdk():
             import anthropic as _sdk
             _anthropic_sdk = _sdk
         except ImportError:
-            _anthropic_sdk = None
+            return None
     return _anthropic_sdk
 
 logger = logging.getLogger(__name__)

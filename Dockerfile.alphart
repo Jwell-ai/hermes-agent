@@ -30,7 +30,7 @@ COPY hermes_bootstrap.py utils.py hermes_constants.py hermes_logging.py hermes_s
 COPY alphart_agent_service.py run-alphart-agent.sh ./
 
 RUN pip install --upgrade pip setuptools wheel \
-    && pip install -e .[bedrock]
+    && pip install -e ".[anthropic,bedrock]"
 
 EXPOSE 58088
 

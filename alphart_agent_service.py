@@ -2849,34 +2849,34 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                 })
 
             with alphart_context(context):
-                agent = AIAgent(
-                    base_url=endpoint,
-                    api_key=api_key,
-                    provider=agent_provider,
-                    api_mode=agent_api_mode,
-                    model=model,
-                    enabled_toolsets=["alphart-edu", "skills"],
-                    max_iterations=_agent_max_iterations(config),
-                    max_tokens=_agent_max_tokens(config, is_game=is_game_request),
-                    quiet_mode=True,
-                    session_id=req.session_id or None,
-                    stream_delta_callback=on_delta if provider_format == "openai" else None,
-                    interim_assistant_callback=on_interim_assistant,
-                    tool_start_callback=on_tool_start,
-                    tool_complete_callback=on_tool_complete,
-                    status_callback=on_status,
-                    platform="alphart",
-                    user_id=req.user_id or req.user_uuid or None,
-                    chat_id=req.session_id or None,
-                    skip_memory=True,
-                    skip_context_files=True,
-                    request_overrides={"extra_headers": relay_headers} if relay_headers else None,
-                )
-                if agent_api_mode == "anthropic_messages":
-                    _install_internal_relay_anthropic_headers(agent, relay_headers)
-                if provider_format != "openai":
-                    agent._disable_streaming = True
                 try:
+                    agent = AIAgent(
+                        base_url=endpoint,
+                        api_key=api_key,
+                        provider=agent_provider,
+                        api_mode=agent_api_mode,
+                        model=model,
+                        enabled_toolsets=["alphart-edu", "skills"],
+                        max_iterations=_agent_max_iterations(config),
+                        max_tokens=_agent_max_tokens(config, is_game=is_game_request),
+                        quiet_mode=True,
+                        session_id=req.session_id or None,
+                        stream_delta_callback=on_delta if provider_format == "openai" else None,
+                        interim_assistant_callback=on_interim_assistant,
+                        tool_start_callback=on_tool_start,
+                        tool_complete_callback=on_tool_complete,
+                        status_callback=on_status,
+                        platform="alphart",
+                        user_id=req.user_id or req.user_uuid or None,
+                        chat_id=req.session_id or None,
+                        skip_memory=True,
+                        skip_context_files=True,
+                        request_overrides={"extra_headers": relay_headers} if relay_headers else None,
+                    )
+                    if agent_api_mode == "anthropic_messages":
+                        _install_internal_relay_anthropic_headers(agent, relay_headers)
+                    if provider_format != "openai":
+                        agent._disable_streaming = True
                     result = agent.run_conversation(
                         model_user_message,
                         system_message=_system_prompt(req),
