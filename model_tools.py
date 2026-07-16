@@ -650,12 +650,23 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 coerced = _coerce_value(value, expected, schema=prop_schema)
                 if coerced is not value:
                     # _coerce_value handled it (JSON-parsed list or
-                    # nullable "null" → None).
+                    # nullable "null" -> None).
                     args[key] = coerced
                     continue
                 # If the string looks like a JSON array but _coerce_value
                 # failed to parse it, warn clearly instead of silently wrapping.
                 if value.strip().startswith("["):
+                    if tool_name in {
+                        "canvas_create_storybook",
+                        "create_storybook",
+                    } and key == "pages":
+                        args[key] = []
+                        logger.warning(
+                            "coerce_tool_args: %s.%s contains malformed JSON array text; "
+                            "discarding it so the storybook backend can use its fallback page plan.",
+                            tool_name, key,
+                        )
+                        continue
                     logger.warning(
                         "coerce_tool_args: %s.%s looks like a JSON array string "
                         "but could not be parsed — model may have emitted a "

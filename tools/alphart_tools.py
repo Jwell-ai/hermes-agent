@@ -175,6 +175,74 @@ def _handle_write_plan(args: Dict[str, Any], **_: Any) -> str:
     return "\n".join(lines)
 
 
+def _normalize_storybook_pages(value: Any) -> List[Dict[str, Any]]:
+    """Return only valid page objects.
+
+    Some models emit the pages array as a JSON string. Hermes' generic coercer
+    may wrap a malformed string into a one-item list, which is still invalid for
+    the Edu backend. For storybooks, malformed pages should be ignored so the
+    backend can build its deterministic fallback page plan.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        return _normalize_storybook_pages(decoded)
+    if isinstance(value, dict):
+        return [value]
+    if not isinstance(value, list):
+        return []
+
+    pages: List[Dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, str):
+            raw = item.strip()
+            if not raw:
+                continue
+            try:
+                decoded = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(decoded, dict):
+                item = decoded
+            elif isinstance(decoded, list):
+                pages.extend(_normalize_storybook_pages(decoded))
+                continue
+            else:
+                continue
+        if not isinstance(item, dict):
+            continue
+        page_number = item.get("page_number")
+        page_index = item.get("page_index")
+        try:
+            if page_number is not None:
+                item["page_number"] = int(page_number)
+            if page_index is not None:
+                item["page_index"] = int(page_index)
+        except (TypeError, ValueError):
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        if item.get("page_number") is None and item.get("page_index") is not None:
+            item["page_number"] = int(item["page_index"]) + 1
+        if item.get("page_index") is None and item.get("page_number") is not None:
+            item["page_index"] = max(0, int(item["page_number"]) - 1)
+        if item.get("page_number") is None:
+            item["page_number"] = len(pages) + 1
+            item["page_index"] = len(pages)
+        if not str(item.get("page_type") or "").strip():
+            item["page_type"] = "image"
+        pages.append(item)
+    return pages
+
+
 def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
     if not args.get("topic") and args.get("prompt"):
@@ -217,6 +285,12 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         storybook_id = str(created.get("id") or created.get("ID") or "").strip()
         if not storybook_id:
             return _tool_error("Storybook creation failed: missing id")
+        planned_pages = _normalize_storybook_pages(args.get("pages"))
+        if args.get("pages") and not planned_pages:
+            print(
+                "[alphart-agent] ignored malformed storybook pages; backend fallback plan will be used",
+                flush=True,
+            )
         plan_resp = requests.post(
             _internal_api_url(f"storybooks/{storybook_id}/plan"),
             json={
@@ -226,7 +300,7 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
                 "reading_level": payload["reading_level"],
                 "style": payload["style"],
                 "page_count": payload["page_count"],
-                "pages": args.get("pages") or [],
+                "pages": planned_pages,
             },
             headers=_internal_relay_headers(),
             timeout=timeout,
