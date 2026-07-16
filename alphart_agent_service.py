@@ -2368,6 +2368,19 @@ def _agent_provider_mode_for_wire_format(provider_format: str) -> Tuple[str, str
     return "openai", "chat_completions"
 
 
+def _internal_relay_agent_mode(provider: str, model: str, config: Dict[str, Any]) -> Tuple[str, str, str, bool]:
+    """Return agent transport for Alphart's internal relay.
+
+    The internal relay exposes an OpenAI-compatible chat-completions surface and
+    translates to the upstream provider itself. Hermes should therefore use the
+    OpenAI client transport even for Claude/Gemini model names. Streaming stays
+    enabled only for models whose upstream wire format is OpenAI-compatible,
+    because the relay currently rejects streaming for translated providers.
+    """
+    upstream_format = _text_model_wire_format(provider, model, config) or "openai"
+    return "openai", "chat_completions", upstream_format, upstream_format == "openai"
+
+
 def _generate_title_anthropic(endpoint: str, api_key: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
     timeout = int(config.get("timeout") or config.get("timeout_seconds") or 60)
     base = (endpoint or "https://api.anthropic.com/v1").rstrip("/")
@@ -2564,8 +2577,7 @@ def _generate_title_agent(req: AlphartEduTitleRequest, provider: str, model: str
         api_key = _internal_relay_api_key()
         relay_headers = _internal_relay_headers(req)
         request_overrides = {"extra_headers": relay_headers}
-        provider_format = _text_model_wire_format(provider, model, config)
-        agent_provider, api_mode = _agent_provider_mode_for_wire_format(provider_format)
+        agent_provider, api_mode, provider_format, _ = _internal_relay_agent_mode(provider, model, config)
     else:
         endpoint = _endpoint(config)
         api_key = _api_key(config)
@@ -2753,6 +2765,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         endpoint = _endpoint(config)
         api_key = _api_key(config)
         provider_format = _text_model_wire_format(provider, model, config)
+        stream_enabled = provider_format == "openai"
         relay_headers: Dict[str, str] = {}
         agent_provider = provider
         agent_api_mode = _string(config.get("api_mode")) or "chat_completions"
@@ -2760,11 +2773,11 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
             endpoint = _internal_relay_base_url(req)
             api_key = _internal_relay_api_key()
             relay_headers = _internal_relay_headers(req)
-            agent_provider, agent_api_mode = _agent_provider_mode_for_wire_format(provider_format)
+            agent_provider, agent_api_mode, provider_format, stream_enabled = _internal_relay_agent_mode(provider, model, config)
             print(
                 f"[alphart-agent] internal relay text model session_id={req.session_id} "
                 f"provider={provider} agent_provider={agent_provider} model={model} wire_format={provider_format} "
-                f"stream={provider_format == 'openai'}",
+                f"stream={stream_enabled}",
                 flush=True,
             )
         if not provider or not model or not endpoint or not api_key:
@@ -2861,7 +2874,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                         max_tokens=_agent_max_tokens(config, is_game=is_game_request),
                         quiet_mode=True,
                         session_id=req.session_id or None,
-                        stream_delta_callback=on_delta if provider_format == "openai" else None,
+                        stream_delta_callback=on_delta if stream_enabled else None,
                         interim_assistant_callback=on_interim_assistant,
                         tool_start_callback=on_tool_start,
                         tool_complete_callback=on_tool_complete,
@@ -2875,7 +2888,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     )
                     if agent_api_mode == "anthropic_messages":
                         _install_internal_relay_anthropic_headers(agent, relay_headers)
-                    if provider_format != "openai":
+                    if not stream_enabled:
                         agent._disable_streaming = True
                     result = agent.run_conversation(
                         model_user_message,
