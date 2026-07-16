@@ -18,6 +18,7 @@ import mimetypes
 import os
 import re
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -424,23 +425,7 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
             "image_model": args.get("image_model"),
             "input_images": args.get("input_images") or [],
         }
-        gen_resp = requests.post(
-            _internal_api_url(f"storybooks/{storybook_id}/generate"),
-            json=generate_payload,
-            headers=_internal_relay_headers(),
-            timeout=timeout,
-        )
-        try:
-            generated = gen_resp.json()
-        except ValueError:
-            generated = {"raw": gen_resp.text}
-        if isinstance(generated, dict):
-            print(
-                "[alphart-agent] storybook image generation report "
-                f"storybook_id={storybook_id} status={gen_resp.status_code} "
-                f"report={json.dumps(generated.get('image_generation'), ensure_ascii=False)}",
-                flush=True,
-            )
+        gen_resp, generated = _generate_storybook_images_with_retries(storybook_id, generate_payload, timeout)
         if gen_resp.status_code < 200 or gen_resp.status_code >= 300:
             if not isinstance(generated, dict) or not generated.get("pages"):
                 return _tool_error(f"Storybook image generation failed: {gen_resp.text[:300]}")
@@ -454,10 +439,13 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         missing = int(image_report.get("missing") or 0)
         errors = image_report.get("errors") or []
         if required > 0 and missing > 0:
+            first_error = str(errors[0]) if errors else ""
+            if len(first_error) > 180:
+                first_error = first_error[:180].rstrip() + "..."
             return _tool_error(
                 "Storybook image generation failed: "
                 f"{required - missing}/{required} generated, {missing} missing. "
-                f"{'; '.join(str(item) for item in errors[:3])}"
+                f"{first_error}"
             )
     result = {
         "type": "storybook",
@@ -486,6 +474,48 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         },
     }
     return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
+
+
+def _generate_storybook_images_with_retries(storybook_id: str, payload: Dict[str, Any], timeout: int) -> Tuple[requests.Response, Dict[str, Any]]:
+    attempts = max(1, int(os.getenv("ALPHART_STORYBOOK_IMAGE_RETRY_ATTEMPTS", "3") or "3"))
+    last_resp: Optional[requests.Response] = None
+    last_body: Dict[str, Any] = {}
+    for attempt in range(1, attempts + 1):
+        resp = requests.post(
+            _internal_api_url(f"storybooks/{storybook_id}/generate"),
+            json=payload,
+            headers=_internal_relay_headers(),
+            timeout=timeout,
+        )
+        last_resp = resp
+        try:
+            body = resp.json()
+        except ValueError:
+            body = {"raw": resp.text}
+        last_body = body if isinstance(body, dict) else {"raw": body}
+        report = last_body.get("image_generation") if isinstance(last_body, dict) else None
+        print(
+            "[alphart-agent] storybook image generation report "
+            f"storybook_id={storybook_id} attempt={attempt}/{attempts} status={resp.status_code} "
+            f"report={json.dumps(report, ensure_ascii=False)}",
+            flush=True,
+        )
+        if not _storybook_image_report_has_missing(report):
+            return resp, last_body
+        if attempt < attempts:
+            time.sleep(min(2 * attempt, 5))
+    return last_resp, last_body
+
+
+def _storybook_image_report_has_missing(report: Any) -> bool:
+    if not isinstance(report, dict):
+        return False
+    try:
+        required = int(report.get("required") or 0)
+        missing = int(report.get("missing") or 0)
+    except (TypeError, ValueError):
+        return False
+    return required > 0 and missing > 0
 
 
 def _handle_alphart_update_storybook_page(args: Dict[str, Any], **_: Any) -> str:
