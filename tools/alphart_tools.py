@@ -477,6 +477,8 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
     pages = generated.get("pages") if isinstance(generated, dict) else []
     storybook = generated.get("storybook") if isinstance(generated, dict) else {}
     image_report = generated.get("image_generation") if isinstance(generated, dict) else None
+    generation_status = "completed"
+    generation_warning = ""
     if isinstance(image_report, dict):
         required = int(image_report.get("required") or 0)
         missing = int(image_report.get("missing") or 0)
@@ -485,13 +487,14 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
             first_error = str(errors[0]) if errors else ""
             if len(first_error) > 180:
                 first_error = first_error[:180].rstrip() + "..."
-            return _tool_error(
-                "Storybook image generation failed: "
-                f"{required - missing}/{required} generated, {missing} missing. "
-                f"{first_error}"
-            )
+            generation_status = "partial"
+            generation_warning = f"{required - missing}/{required} illustrations generated, {missing} still pending."
+            if first_error:
+                generation_warning += f" {first_error}"
     result = {
         "type": "storybook",
+        "status": generation_status,
+        "warning": generation_warning,
         "presentation_mode": "flipbook",
         "read_aloud": True,
         "storybook_id": storybook_id,
@@ -551,6 +554,8 @@ def _generate_storybook_images_with_retries(storybook_id: str, payload: Dict[str
             f"report={json.dumps(report, ensure_ascii=False)}",
             flush=True,
         )
+        if _storybook_image_report_has_partial_success(report):
+            return resp, last_body
         if not _storybook_image_report_has_missing(report):
             return resp, last_body
         if attempt < attempts:
@@ -620,6 +625,17 @@ def _storybook_image_report_has_missing(report: Any) -> bool:
     except (TypeError, ValueError):
         return False
     return required > 0 and missing > 0
+
+
+def _storybook_image_report_has_partial_success(report: Any) -> bool:
+    if not isinstance(report, dict):
+        return False
+    try:
+        generated = int(report.get("generated") or 0)
+        missing = int(report.get("missing") or 0)
+    except (TypeError, ValueError):
+        return False
+    return generated > 0 and missing > 0
 
 
 def _handle_alphart_update_storybook_page(args: Dict[str, Any], **_: Any) -> str:
