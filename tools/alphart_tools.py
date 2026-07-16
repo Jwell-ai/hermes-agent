@@ -128,7 +128,8 @@ def _auth_token() -> str:
 
 def _service_token() -> str:
     return str(
-        os.getenv("ALPHART_AGENT_TOKEN")
+        os.getenv("ALPHART_EDU_AGENT_TOKEN")
+        or os.getenv("ALPHART_AGENT_TOKEN")
         or os.getenv("CANVAS_AGENT_TOKEN")
         or os.getenv("HERMES_AGENT_TOKEN")
         or ""
@@ -481,12 +482,20 @@ def _generate_storybook_images_with_retries(storybook_id: str, payload: Dict[str
     last_resp: Optional[requests.Response] = None
     last_body: Dict[str, Any] = {}
     for attempt in range(1, attempts + 1):
-        resp = requests.post(
-            _internal_api_url(f"storybooks/{storybook_id}/generate"),
-            json=payload,
-            headers=_internal_relay_headers(),
-            timeout=timeout,
-        )
+        try:
+            resp = requests.post(
+                _internal_api_url(f"storybooks/{storybook_id}/generate"),
+                json=payload,
+                headers=_internal_relay_headers(),
+                timeout=timeout,
+            )
+        except requests.RequestException as exc:
+            last_body = _fetch_storybook_after_generation_error(storybook_id, str(exc))
+            last_resp = _synthetic_response(200 if not _storybook_image_report_has_missing(last_body.get("image_generation")) else 502, json.dumps(last_body, ensure_ascii=False))
+            if not _storybook_image_report_has_missing(last_body.get("image_generation")) or attempt >= attempts:
+                return last_resp, last_body
+            time.sleep(min(2 * attempt, 5))
+            continue
         last_resp = resp
         try:
             body = resp.json()
@@ -505,6 +514,59 @@ def _generate_storybook_images_with_retries(storybook_id: str, payload: Dict[str
         if attempt < attempts:
             time.sleep(min(2 * attempt, 5))
     return last_resp, last_body
+
+
+def _synthetic_response(status_code: int, text: str) -> requests.Response:
+    resp = requests.Response()
+    resp.status_code = status_code
+    resp._content = (text or "").encode("utf-8")
+    return resp
+
+
+def _fetch_storybook_after_generation_error(storybook_id: str, error: str) -> Dict[str, Any]:
+    body: Dict[str, Any] = {
+        "storybook": {"id": storybook_id},
+        "pages": [],
+        "image_generation": {"required": 0, "generated": 0, "skipped": 0, "missing": 0, "errors": [error]},
+    }
+    try:
+        resp = requests.get(_internal_api_url(f"storybooks/{storybook_id}"), headers=_internal_relay_headers(), timeout=30)
+        if resp.status_code < 200 or resp.status_code >= 300:
+            body["image_generation"] = {"required": 0, "generated": 0, "skipped": 0, "missing": 0, "errors": [f"{error}; fetch status={resp.status_code}"]}
+            return body
+        fetched = resp.json()
+    except (ValueError, requests.RequestException) as exc:
+        body["image_generation"] = {"required": 0, "generated": 0, "skipped": 0, "missing": 0, "errors": [f"{error}; fetch failed: {exc}"]}
+        return body
+    if isinstance(fetched, dict):
+        pages = fetched.get("pages") if isinstance(fetched.get("pages"), list) else []
+        report = _storybook_image_report_from_pages(pages)
+        if report.get("missing"):
+            report["errors"] = [error]
+        body = {"storybook": fetched.get("storybook") or fetched, "pages": pages, "image_generation": report}
+    return body
+
+
+def _storybook_image_report_from_pages(pages: Any) -> Dict[str, Any]:
+    report = {"required": 0, "generated": 0, "skipped": 0, "missing": 0}
+    if not isinstance(pages, list):
+        return report
+    for page in pages:
+        if not isinstance(page, dict) or not _storybook_page_requires_image(page):
+            continue
+        report["required"] += 1
+        if str(page.get("image_s3_object_name") or page.get("image_url") or "").strip():
+            report["generated"] += 1
+        else:
+            report["missing"] += 1
+    return report
+
+
+def _storybook_page_requires_image(page: Dict[str, Any]) -> bool:
+    if not str(page.get("image_prompt") or "").strip():
+        return False
+    page_type = str(page.get("page_type") or "").strip().lower()
+    return page_type not in {"narration", "text"}
 
 
 def _storybook_image_report_has_missing(report: Any) -> bool:

@@ -78,7 +78,13 @@ _sync_bundled_skills()
 
 
 def _service_token() -> str:
-    return os.getenv("HERMES_AGENT_TOKEN", "").strip()
+    return (
+        os.getenv("ALPHART_EDU_AGENT_TOKEN")
+        or os.getenv("ALPHART_AGENT_TOKEN")
+        or os.getenv("CANVAS_AGENT_TOKEN")
+        or os.getenv("HERMES_AGENT_TOKEN")
+        or ""
+    ).strip()
 
 
 def _check_auth(authorization: Optional[str]) -> None:
