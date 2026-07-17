@@ -25,6 +25,7 @@ from run_agent import AIAgent
 from tools.skills_sync import sync_skills
 from tools.alphart_tools import (
     _handle_alphart_create_storybook,
+    _handle_alphart_generate_audio,
     _handle_alphart_generate_image,
     _handle_alphart_generate_video,
     _handle_alphart_transcribe_audio,
@@ -49,6 +50,8 @@ class AlphartEduChatRequest(BaseModel):
     model_configs: Dict[str, Any] = Field(default_factory=dict)
     backend_url: str = ""
     system_prompt: str = ""
+    audio_language_type: str = ""
+    ui_language: str = ""
 
 
 class AlphartEduTitleRequest(BaseModel):
@@ -111,6 +114,61 @@ def _infer_storybook_language(text: str) -> str:
             return "zh-TW"
         return "zh-CN"
     return "en"
+
+
+def _explicit_storybook_cantonese_read_aloud(text: str) -> bool:
+    value = _string(text).lower()
+    has_cantonese = any(word in value for word in ("粤语", "粵語", "广东话", "廣東話", "cantonese", "yue"))
+    has_read_aloud = any(
+        word in value
+        for word in (
+            "朗读",
+            "朗讀",
+            "读",
+            "讀",
+            "配音",
+            "旁白",
+            "audio",
+            "speech",
+            "voice",
+            "voiceover",
+            "read aloud",
+            "narrate",
+            "tts",
+        )
+    )
+    return has_cantonese and has_read_aloud
+
+
+def _normalize_audio_language_type(value: Any) -> str:
+    normalized = _string(value).strip().lower()
+    if normalized in {"cantonese", "yue", "zh-hk", "zh_hk"} or any(
+        word in normalized for word in ("粤语", "粵語", "广东话", "廣東話")
+    ):
+        return "cantonese"
+    if normalized in {"mandarin", "zh", "zh-cn", "zh_cn", "zh-tw", "zh_tw", "chinese"} or any(
+        word in normalized for word in ("中文", "普通话", "普通話")
+    ):
+        return "mandarin"
+    if normalized in {"english", "en"} or any(word in normalized for word in ("english", "英文", "英语", "英語")):
+        return "english"
+    return ""
+
+
+def _ui_audio_language_type(ui_language: Any) -> str:
+    return "mandarin" if _string(ui_language).lower().startswith("zh") else "english"
+
+
+def _storybook_read_aloud_language(text: str, language: str = "", requested: str = "") -> str:
+    if _explicit_storybook_cantonese_read_aloud(text):
+        return "cantonese"
+    normalized_requested = _normalize_audio_language_type(requested)
+    if normalized_requested:
+        return normalized_requested
+    lang = _string(language).lower()
+    if any(token in lang for token in ("zh", "chinese", "中文")) or re.search(r"[\u4e00-\u9fff]", text or ""):
+        return "mandarin"
+    return "english"
 
 
 def _int(value: Any, default: int = 0) -> int:
@@ -833,10 +891,34 @@ def _media_intent(text: str, has_image_context: bool = False, has_video_context:
         "动画",
         "短片",
     )
+    audio_words = (
+        "audio",
+        "speech",
+        "voice",
+        "voiceover",
+        "voice-over",
+        "narration",
+        "tts",
+        "spoken",
+        "read aloud",
+        "音频",
+        "音訊",
+        "语音",
+        "語音",
+        "旁白",
+        "朗读",
+        "朗讀",
+        "粤语",
+        "粵語",
+        "广东话",
+        "廣東話",
+    )
     has_creation = any(word in value for word in creation_words)
     has_regeneration = _regeneration_intent(value)
     if not has_creation and not (has_regeneration and (has_image_context or has_video_context)):
         return ""
+    if any(word in value for word in audio_words):
+        return "audio"
     if any(word in value for word in video_words):
         return "video"
     if any(word in value for word in image_words):
@@ -849,6 +931,27 @@ def _media_intent(text: str, has_image_context: bool = False, has_video_context:
     if any(word in value for word in ("draw", "render", "paint", "sketch", "illustrate", "画", "绘制")):
         return "image"
     return ""
+
+
+def _audio_language_type_from_text(text: str) -> str:
+    plain_text = _strip_audio_preferences(text)
+    value = plain_text.lower()
+    if any(word in value for word in ("粤语", "粵語", "广东话", "廣東話", "cantonese", "yue")):
+        return "cantonese"
+    if any(word in value for word in ("english", "英文", "英语", "英語")):
+        return "english"
+    preference = re.search(r"<audio_preferences\b[^>]*\blanguage_type=[\"']([^\"']+)[\"']", text or "", re.I)
+    if preference:
+        preferred = preference.group(1).strip().lower()
+        if preferred in {"mandarin", "cantonese", "english"}:
+            return preferred
+    if re.search(r"[\u4e00-\u9fff]", plain_text):
+        return "mandarin"
+    return "english"
+
+
+def _strip_audio_preferences(text: str) -> str:
+    return re.sub(r"\n*\s*<audio_preferences\b[^>]*/>\s*", "\n", text or "", flags=re.I).strip()
 
 
 def _game_intent(text: str) -> bool:
@@ -1035,6 +1138,8 @@ def _generation_tool_attempted(messages: List[Any], media_type: str = "") -> boo
                     return True
                 if expected == "video" and ("generate_video" in name or "canvas_generate_video" in name):
                     return True
+                if expected == "audio" and ("generate_audio" in name or "canvas_generate_audio" in name):
+                    return True
                 if expected == "game" and ("generate_game" in name or "canvas_generate_game" in name):
                     return True
                 if not expected and (
@@ -1042,6 +1147,8 @@ def _generation_tool_attempted(messages: List[Any], media_type: str = "") -> boo
                     or "canvas_generate_image" in name
                     or "generate_video" in name
                     or "canvas_generate_video" in name
+                    or "generate_audio" in name
+                    or "canvas_generate_audio" in name
                     or "generate_game" in name
                     or "canvas_generate_game" in name
                 ):
@@ -1052,9 +1159,11 @@ def _generation_tool_attempted(messages: List[Any], media_type: str = "") -> boo
                 return True
             if expected == "video" and "video" in name:
                 return True
+            if expected == "audio" and "audio" in name:
+                return True
             if expected == "game" and "game" in name:
                 return True
-            if not expected and ("image" in name or "video" in name or "game" in name):
+            if not expected and ("image" in name or "video" in name or "audio" in name or "game" in name):
                 return True
     return False
 
@@ -1069,9 +1178,11 @@ def _generation_tool_failed(messages: List[Any], media_type: str = "") -> bool:
             continue
         if expected == "video" and "video" not in name:
             continue
+        if expected == "audio" and "audio" not in name:
+            continue
         if expected == "game" and "game" not in name:
             continue
-        if expected == "" and "image" not in name and "video" not in name and "game" not in name:
+        if expected == "" and "image" not in name and "video" not in name and "audio" not in name and "game" not in name:
             continue
         if not _tool_result_success(msg.get("content")):
             return True
@@ -1188,6 +1299,13 @@ def _asset_object_name(asset: Dict[str, Any], media_type: str) -> str:
             or asset.get("key")
             or asset.get("video_url_s3_object_name")
         )
+    if media_type == "audio":
+        return _string(
+            asset.get("s3_object_name")
+            or asset.get("object_name")
+            or asset.get("key")
+            or asset.get("audio_url_s3_object_name")
+        )
     return _string(
         asset.get("s3_object_name")
         or asset.get("object_name")
@@ -1213,6 +1331,8 @@ def _message_has_media_url(messages: List[Any], url: str) -> bool:
                 return True
             if _string(item.get("video_url")) == url:
                 return True
+            if _string(item.get("audio_url")) == url:
+                return True
     return False
 
 
@@ -1233,6 +1353,33 @@ def _append_visible_generated_media(messages: List[Any], scan_messages: Optional
                         "content": [
                             {"type": "image_url", "image_url": {"url": url}},
                             {"type": "text", "text": "Generated image."},
+                        ],
+                    }
+                )
+        elif "audio" in name:
+            for asset in _extract_generated_assets(msg.get("content"), "audio"):
+                url = _string(asset.get("url") or asset.get("audio_url"))
+                if not url or _message_has_media_url(out, url):
+                    continue
+                audio_part: Dict[str, Any] = {
+                    "type": "generate_audio_result",
+                    "audio_url": url,
+                }
+                object_name = _asset_object_name(asset, "audio")
+                if object_name:
+                    audio_part["s3_object_name"] = object_name
+                mime_type = _string(asset.get("mime_type") or asset.get("mimeType") or "audio/wav")
+                if mime_type:
+                    audio_part["mime_type"] = mime_type
+                duration = asset.get("duration_seconds") or asset.get("duration")
+                if duration:
+                    audio_part["duration_seconds"] = duration
+                out.append(
+                    {
+                        "role": "assistant",
+                        "content": [
+                            audio_part,
+                            {"type": "text", "text": "Generated audio."},
                         ],
                     }
                 )
@@ -1483,17 +1630,20 @@ def _forced_audio_to_media_pipeline(
 def _forced_storybook_tool_messages(
 	user_message: str,
 	input_images: Optional[List[Any]] = None,
+	audio_language_type: str = "",
 ) -> List[Dict[str, Any]]:
     if not _storybook_intent(user_message):
         return []
 
     call_id = str(uuid.uuid4())
+    language = _infer_storybook_language(user_message)
     args: Dict[str, Any] = {
         "topic": user_message,
         "prompt": user_message,
         "tool_call_id": call_id,
         "page_count": 10,
-        "language": _infer_storybook_language(user_message),
+        "language": language,
+        "read_aloud_language": _storybook_read_aloud_language(user_message, language, audio_language_type),
         "read_aloud": True,
         "generate_images": True,
         "aspect_ratio": "1:1",
@@ -1794,6 +1944,48 @@ def _forced_media_tool_messages(
         messages.append({"role": "assistant", "content": final_text})
         return messages
 
+    if intent == "audio":
+        call_id = str(uuid.uuid4())
+        script = _last_assistant_text(response_messages)
+        if not script or script.strip() == user_message.strip():
+            script = _strip_audio_preferences(user_message)
+        args = {
+            "input": script,
+            "tool_call_id": call_id,
+            "language_type": _audio_language_type_from_text(user_message),
+        }
+        print(
+            f"[alphart-agent] forcing audio generation session_intent={intent} tool_count={len(_selected_media_tools(intent))}",
+            flush=True,
+        )
+        result = _handle_alphart_generate_audio(args)
+        tool_name = "canvas_generate_audio"
+        final_text = "Audio generation has been submitted." if _tool_result_success(result) else "generate fail"
+        return [
+            {"role": "assistant", "content": plan_text},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": json.dumps(args, ensure_ascii=False),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "name": tool_name,
+                "content": result,
+            },
+            {"role": "assistant", "content": final_text},
+        ]
+
     call_id = str(uuid.uuid4())
     args = {
         "prompt": user_message,
@@ -1856,9 +2048,9 @@ PLANNER RULES:
 - For normal conversation, answer directly without calling tools.
 - When writing math, physics, chemistry, or engineering formulas, output valid Markdown math. Use inline math as `$...$` and display math as `$$...$$` on separate lines. Do not output raw LaTeX formulas without delimiters, do not double-escape backslashes, and do not emit literal `\n` escape sequences inside prose. Put each standalone formula, such as `y=\pm \frac{{b}}{{a}}x` or `c^2=a^2+b^2`, in its own display math block.
 - If the user asks to explain, describe, analyze, summarize, caption, identify, or understand an attached image/video, answer with the text/chat model. Do not call image/video generation tools.
-- For obvious image/video generation or editing tasks, a generation tool call is mandatory.
-- For simple media requests, call canvas_generate_image/canvas_generate_video directly. Do not stop after a plan.
-- If no selected image/video tool is listed, do not ask the user to choose a model. Call the generation tool without provider/model and let the backend use the default app_config fallback.
+	- For obvious image/video/audio generation or editing tasks, a generation tool call is mandatory.
+	- For simple media requests, call canvas_generate_image/canvas_generate_video/canvas_generate_audio directly. Do not stop after a plan.
+	- If no selected image/video/audio tool is listed, do not ask the user to choose a model. Call the generation tool without provider/model and let the backend use the default app_config fallback.
 - For complex media requests, you may call write_plan first, but you must continue to the generation tool after the plan result.
 - Do not ask for approval before media generation unless the backend returns a confirmation request.
 - Do not call multiple tools in the same assistant turn. Always wait for one tool result before making another tool call.
@@ -1882,13 +2074,19 @@ IMAGE CREATION RULES:
 - If more than one input image is present, prefer a selected image tool that supports multiple input_images.
 - If the request includes facial expression, mood, emotion, age, gender, region, or cultural constraints, add precise expression-control keywords to the prompt and avoid unsafe or culturally forbidden expression details.
 
-VIDEO CREATION RULES:
+	VIDEO CREATION RULES:
 - Use video generation tools for video tasks.
 - You may generate needed storyboard/keyframe images first, then call video generation using those images, or directly generate video from text if that better fits the request.
 - If input images are provided, pass s3_object_name values as input_images. Use file_id only as a fallback.
 - Respect duration, resolution, aspect ratio, camera movement, and shot references from XML tags.
 - Do not claim media was generated until the tool returns a backend result.
-- If the legacy prompt mentions generate_image, call generate_image or canvas_generate_image. If it mentions generate_video, call generate_video or canvas_generate_video.
+	- If the legacy prompt mentions generate_image, call generate_image or canvas_generate_image. If it mentions generate_video, call generate_video or canvas_generate_video.
+
+	AUDIO CREATION RULES:
+	- Use canvas_generate_audio or generate_audio for spoken-audio tasks, including "generate an audio", "create a voiceover", "read aloud", "生成一段音频", "生成一段音訊", "生成语音", "生成語音", "用粤语/粵語/广东话/廣東話介绍", and equivalent requests.
+	- The audio tool input must be ready-to-speak script text, not the raw command. First convert the user's request into a clear educational narration, then pass that narration as input.
+	- Match the requested spoken language: language_type="cantonese" for 粤语/粵語/广东话/廣東話/Cantonese, language_type="mandarin" for 中文/普通话/普通話/Mandarin, and language_type="english" for English.
+	- Do not ask the user to choose an audio model. Let the backend use module=ai key=tts or audio app_config defaults.
 
 STORYBOOK CREATION RULES:
 - Use canvas_create_storybook or create_storybook for requests like "make a storybook", "create a flip-book lesson", "storybook about ...", "page-by-page children's book", and equivalent Chinese/Traditional Chinese requests such as 绘本, 繪本, 故事书, 故事書, 童书, 童書, 翻页故事, 翻頁故事.
@@ -1907,6 +2105,7 @@ STORYBOOK CREATION RULES:
 - If reference images are provided with @file or <input_images>, use them as protagonist/background/object references according to the user's label, preserve s3_object_name, and do not convert them to base64.
 - Do not ask the image model to render normal body text inside illustrations. Use no-text illustrations except short signs/labels essential to the scene. Cover title text may be requested only when short and must be checked.
 - Keep page narration short, age-appropriate, safe, and educational. Maintain requested language, bilingual/trilingual intent, reading level, and factual precision.
+- Storybook read-aloud defaults are strict: Chinese storybooks use Mandarin narration/audio by default, and English storybooks use English narration/audio by default. Use Cantonese/粤语/粵語/广东话/廣東話 narration only when the user explicitly asks to read/narrate the storybook in Cantonese, such as “用粤语朗读” or “用广东话朗读”. Merely mentioning Cantonese without read-aloud intent is not enough.
 - Storybook physical pages and generated illustrations must be strict square 1:1 pages for printer compatibility. Do not use 4:3, 3:4, or widescreen storybook pages.
 - If the user selects or names a template, pass compact template fields such as template_slug, template_name, category, age_range, page_count, style, and read_aloud to canvas_create_storybook/create_storybook instead of hiding them inside prose.
 - If the user attaches images while asking for a storybook, treat those images as protagonist/character references. Pass them to canvas_create_storybook/create_storybook as input_images and preserve s3_object_name values. Do not call image generation merely because reference images are attached.
@@ -2760,6 +2959,8 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "backend_url": _backend_url_from_req(req),
         "tool_list": req.tool_list,
         "input_images": input_images,
+        "audio_language_type": _normalize_audio_language_type(req.audio_language_type) or _ui_audio_language_type(req.ui_language),
+        "ui_language": req.ui_language,
     }
 
     events: List[Dict[str, Any]] = []
@@ -2990,6 +3191,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                 forced_messages = _forced_storybook_tool_messages(
                     user_message,
                     input_images=input_images,
+                    audio_language_type=context.get("audio_language_type", ""),
                 )
             if not forced_messages and _storybook_page_update_intent(user_message) and not _storybook_tool_attempted(current_turn_messages):
                 forced_messages = _forced_storybook_page_update_messages(

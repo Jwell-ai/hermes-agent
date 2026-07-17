@@ -66,6 +66,57 @@ def _infer_storybook_language(text: Any) -> str:
     return "en"
 
 
+def _explicit_storybook_cantonese_read_aloud(text: Any) -> bool:
+    value = str(text or "").lower()
+    has_cantonese = any(word in value for word in ("粤语", "粵語", "广东话", "廣東話", "cantonese", "yue"))
+    has_read_aloud = any(
+        word in value
+        for word in (
+            "朗读",
+            "朗讀",
+            "读",
+            "讀",
+            "配音",
+            "旁白",
+            "audio",
+            "speech",
+            "voice",
+            "voiceover",
+            "read aloud",
+            "narrate",
+            "tts",
+        )
+    )
+    return has_cantonese and has_read_aloud
+
+
+def _normalize_audio_language_type(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"cantonese", "yue", "zh-hk", "zh_hk"} or any(
+        word in normalized for word in ("粤语", "粵語", "广东话", "廣東話")
+    ):
+        return "cantonese"
+    if normalized in {"mandarin", "zh", "zh-cn", "zh_cn", "zh-tw", "zh_tw", "chinese"} or any(
+        word in normalized for word in ("中文", "普通话", "普通話")
+    ):
+        return "mandarin"
+    if normalized in {"english", "en"} or any(word in normalized for word in ("english", "英文", "英语", "英語")):
+        return "english"
+    return ""
+
+
+def _storybook_read_aloud_language(text: Any, language: Any = "", requested: Any = "") -> str:
+    if _explicit_storybook_cantonese_read_aloud(text):
+        return "cantonese"
+    normalized_requested = _normalize_audio_language_type(requested)
+    if normalized_requested:
+        return normalized_requested
+    lang = str(language or "").lower()
+    if any(token in lang for token in ("zh", "chinese", "中文")) or re.search(r"[\u4e00-\u9fff]", str(text or "")):
+        return "mandarin"
+    return "english"
+
+
 def _slug(value: Any) -> str:
     text = str(value or "").strip().lower()
     text = re.sub(r"[^a-z0-9]+", "_", text)
@@ -414,11 +465,19 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
     create_url = _internal_api_url("storybooks")
     if not create_url:
         return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
+    language = args.get("language") or _infer_storybook_language(args.get("topic") or args.get("prompt"))
+    read_aloud_language = args.get("read_aloud_language") or _storybook_read_aloud_language(
+        "\n".join(str(args.get(key) or "") for key in ("prompt", "topic", "description", "title")),
+        language,
+        _ctx().get("audio_language_type"),
+    )
     payload = {
         "title": args.get("title"),
         "description": args.get("description"),
+        "prompt": args.get("prompt"),
         "topic": args.get("topic") or args.get("prompt"),
-        "language": args.get("language") or _infer_storybook_language(args.get("topic") or args.get("prompt")),
+        "language": language,
+        "read_aloud_language": read_aloud_language,
         "age_range": args.get("age_range"),
         "reading_level": args.get("reading_level"),
         "style": args.get("style"),
@@ -448,6 +507,7 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         plan_payload = {
             "topic": payload["topic"],
             "language": payload["language"],
+            "read_aloud_language": read_aloud_language,
             "age_range": payload["age_range"],
             "reading_level": payload["reading_level"],
             "style": payload["style"],
@@ -913,6 +973,72 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **_: Any) -> str:
         "task_id": decoded.get("id") if isinstance(decoded, dict) else "",
         "provider": decoded.get("provider") if isinstance(decoded, dict) else args.get("provider"),
         "model": decoded.get("model") if isinstance(decoded, dict) else args.get("model"),
+    }
+    return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
+
+
+def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
+    args = dict(args or {})
+    tool = _pick_tool("audio", args)
+    args.setdefault("provider", tool.get("provider"))
+    args.setdefault("model", tool.get("model") or tool.get("name") or tool.get("key"))
+    relay_url = _internal_relay_url("audio/speech")
+    if not relay_url:
+        return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
+    text = str(args.get("input") or args.get("text") or args.get("script") or args.get("prompt") or "").strip()
+    if not text:
+        return _tool_error("audio input text is required")
+    payload = {
+        "model": args.get("model"),
+        "input": text,
+        "voice": args.get("voice"),
+        "language_type": args.get("language_type"),
+        "response_format": args.get("response_format") or "wav",
+        "session_id": _ctx().get("session_id"),
+        "canvas_id": _ctx().get("canvas_id"),
+    }
+    print(
+        f"[alphart-agent] calling internal relay audio session_id={_ctx().get('session_id')} "
+        f"provider={args.get('provider') or '<backend-default>'} "
+        f"model={payload.get('model') or '<backend-default>'} url={relay_url}",
+        flush=True,
+    )
+    try:
+        resp = requests.post(
+            relay_url,
+            json=payload,
+            headers=_internal_relay_headers(),
+            timeout=int(
+                os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
+                or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")
+            ),
+        )
+    except requests.RequestException as exc:
+        return _tool_error(f"Alphart relay request failed: {exc}")
+    try:
+        decoded = resp.json()
+    except ValueError:
+        decoded = {"raw": resp.text}
+    response_preview = (resp.text or "").replace("\n", " ")[:500]
+    print(
+        f"[alphart-agent] internal relay audio response status={resp.status_code} bytes={len(resp.text)} body={response_preview}",
+        flush=True,
+    )
+    if resp.status_code < 200 or resp.status_code >= 300:
+        return _system_busy_tool_error()
+    data = decoded.get("data") if isinstance(decoded, dict) else None
+    asset = data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else {}
+    result = {
+        "type": "generate_audio_result",
+        "provider": asset.get("provider") or args.get("provider"),
+        "model": asset.get("model") or args.get("model"),
+        "url": asset.get("url"),
+        "audio_url": asset.get("url"),
+        "mime_type": asset.get("mime_type") or "audio/wav",
+        "duration_seconds": asset.get("duration_seconds"),
+        "filename": asset.get("filename"),
+        "s3_object_name": asset.get("s3_object_name"),
+        "usage": asset.get("usage"),
     }
     return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
 
@@ -1534,6 +1660,34 @@ CANVAS_GENERATE_VIDEO_SCHEMA = {
     },
 }
 
+CANVAS_GENERATE_AUDIO_SCHEMA = {
+    "name": "canvas_generate_audio",
+    "description": (
+        "Generate spoken audio through the selected Alphart Edu TTS/audio model. "
+        "Use this for requests like 'generate an audio...', '生成一段音频...', "
+        "'生成一段音频用粤语/广东话...', voiceover, narration, read-aloud, or spoken explanation. "
+        "Pass ready-to-speak script text as input, not just the user's raw command."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "input": {"type": "string", "description": "Ready-to-speak script text for the audio."},
+            "prompt": {"type": "string", "description": "Alias for input when needed."},
+            "tool_id": {"type": "string", "description": "Selected audio/TTS tool id, when known."},
+            "provider": {"type": "string", "description": "Selected audio/TTS provider, when known."},
+            "model": {"type": "string", "description": "Selected audio/TTS model, when known."},
+            "voice": {"type": "string", "description": "Optional voice id/name."},
+            "language_type": {
+                "type": "string",
+                "enum": ["mandarin", "cantonese", "english"],
+                "description": "Requested spoken language/accent: mandarin for 中文, cantonese for 粤语/广东话, english for English.",
+            },
+            "response_format": {"type": "string", "description": "Optional output format, e.g. wav or mp3."},
+        },
+        "required": ["input"],
+    },
+}
+
 CANVAS_CREATE_STORYBOOK_SCHEMA = {
     "name": "canvas_create_storybook",
     "description": (
@@ -1558,6 +1712,14 @@ CANVAS_CREATE_STORYBOOK_SCHEMA = {
             "prompt": {"type": "string", "description": "User-facing educational storybook brief."},
             "description": {"type": "string", "description": "Optional one-paragraph description."},
             "language": {"type": "string", "description": "Language code or name, e.g. en, zh-CN, zh-TW."},
+            "read_aloud_language": {
+                "type": "string",
+                "enum": ["mandarin", "english", "cantonese"],
+                "description": (
+                    "Spoken language for read-aloud audio. Default mandarin for Chinese storybooks and english for English storybooks. "
+                    "Use cantonese only when the user explicitly asks 用粤语/粵語/广东话/廣東話朗读/read aloud."
+                ),
+            },
             "age_range": {"type": "string", "description": "Target learner age range, e.g. 6-9."},
             "reading_level": {"type": "string", "description": "Target reading level."},
             "style": {"type": "string", "description": "Visual style for later page image generation."},
@@ -1629,7 +1791,11 @@ CANVAS_CREATE_STORYBOOK_SCHEMA = {
                         "title": {"type": "string"},
                         "narration": {
                             "type": "string",
-                            "description": "Short read-aloud text for this page. Keep age-appropriate and concise.",
+                            "description": (
+                                "Short read-aloud text for this page. Keep age-appropriate and concise. "
+                                "Default to Mandarin written Chinese for Chinese storybooks and English for English storybooks; "
+                                "write Cantonese narration only when read_aloud_language is cantonese."
+                            ),
                         },
                         "image_prompt": {
                             "type": "string",
@@ -1754,6 +1920,20 @@ registry.register(
     toolset="alphart-edu",
     schema={**CANVAS_GENERATE_VIDEO_SCHEMA, "name": "generate_video"},
     handler=_handle_alphart_generate_video,
+    is_async=False,
+)
+registry.register(
+    name="canvas_generate_audio",
+    toolset="alphart-edu",
+    schema=CANVAS_GENERATE_AUDIO_SCHEMA,
+    handler=_handle_alphart_generate_audio,
+    is_async=False,
+)
+registry.register(
+    name="generate_audio",
+    toolset="alphart-edu",
+    schema={**CANVAS_GENERATE_AUDIO_SCHEMA, "name": "generate_audio"},
+    handler=_handle_alphart_generate_audio,
     is_async=False,
 )
 
@@ -1930,6 +2110,11 @@ CANVAS_TRANSCRIBE_AUDIO_SCHEMA = {
             "tool_id": {"type": "string", "description": "Selected Canvas tool id, when known."},
             "provider": {"type": "string", "description": "Selected audio provider, when known."},
             "model": {"type": "string", "description": "Selected audio model, when known."},
+            "language_type": {
+                "type": "string",
+                "enum": ["mandarin", "cantonese", "english"],
+                "description": "Recording language intent. Use mandarin for 中文介绍, cantonese for 粤语介绍, and english for Explain in English.",
+            },
             "language": {"type": "string", "description": "BCP-47 language code hint (e.g. en, zh, ja). Optional."},
         },
         "required": ["audio_url"],
