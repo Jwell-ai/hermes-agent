@@ -225,6 +225,24 @@ def _pick_tool(media_type: str, args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _tool_model_value(tool: Dict[str, Any]) -> str:
+    return str(tool.get("model") or tool.get("name") or tool.get("key") or "").strip()
+
+
+def _set_tool_defaults(args: Dict[str, Any], tool: Dict[str, Any]) -> None:
+    provider = str(tool.get("provider") or "").strip()
+    model = _tool_model_value(tool)
+    if provider and not args.get("provider"):
+        args["provider"] = provider
+    if model and not args.get("model"):
+        args["model"] = model
+
+
+def _log_model_value(value: Any) -> str:
+    text = str(value or "").strip()
+    return text or "backend-selected"
+
+
 def _backend_url() -> str:
     value = str(
         _ctx().get("backend_url")
@@ -993,8 +1011,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **_: Any) -> str:
     if not args.get("input_images") and _ctx().get("input_images"):
         args["input_images"] = _ctx().get("input_images")
     tool = _pick_tool("video", args)
-    args.setdefault("provider", tool.get("provider"))
-    args.setdefault("model", tool.get("model") or tool.get("name") or tool.get("key"))
+    _set_tool_defaults(args, tool)
     args.setdefault("wait", False)
     relay_url = _internal_relay_url("videos")
     if not relay_url:
@@ -1014,8 +1031,8 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **_: Any) -> str:
         payload["image"] = images[0] if isinstance(images, list) and images else images
     print(
         f"[alphart-agent] calling internal relay video session_id={_ctx().get('session_id')} "
-        f"provider={payload.get('provider') or '<backend-default>'} "
-        f"model={payload.get('model') or '<backend-default>'} url={relay_url}",
+        f"provider={_log_model_value(payload.get('provider'))} "
+        f"model={_log_model_value(payload.get('model'))} url={relay_url}",
         flush=True,
     )
     try:
@@ -1041,14 +1058,21 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **_: Any) -> str:
     )
     if resp.status_code < 200 or resp.status_code >= 300:
         return _system_busy_tool_error()
+    selected_provider = decoded.get("provider") if isinstance(decoded, dict) else args.get("provider")
+    selected_model = decoded.get("model") if isinstance(decoded, dict) else args.get("model")
+    print(
+        f"[alphart-agent] internal relay video selected "
+        f"provider={_log_model_value(selected_provider)} model={_log_model_value(selected_model)}",
+        flush=True,
+    )
     result = {
         "phase": "task",
         "type": "generate_video_task",
         "status": decoded.get("status") if isinstance(decoded, dict) else "queued",
         "message": "Create generation task success",
         "task_id": decoded.get("id") if isinstance(decoded, dict) else "",
-        "provider": decoded.get("provider") if isinstance(decoded, dict) else args.get("provider"),
-        "model": decoded.get("model") if isinstance(decoded, dict) else args.get("model"),
+        "provider": selected_provider,
+        "model": selected_model,
     }
     return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
 
@@ -1056,8 +1080,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **_: Any) -> str:
 def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
     tool = _pick_tool("audio", args)
-    args.setdefault("provider", tool.get("provider"))
-    args.setdefault("model", tool.get("model") or tool.get("name") or tool.get("key"))
+    _set_tool_defaults(args, tool)
     args["language_type"] = _normalize_audio_language_type(args.get("language_type")) or _normalize_audio_language_type(_ctx().get("audio_language_type"))
     relay_url = _internal_relay_url("audio/speech")
     if not relay_url:
@@ -1078,8 +1101,8 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
     }
     print(
         f"[alphart-agent] calling internal relay audio session_id={_ctx().get('session_id')} "
-        f"provider={args.get('provider') or '<backend-default>'} "
-        f"model={payload.get('model') or '<backend-default>'} url={relay_url}",
+        f"provider={_log_model_value(args.get('provider'))} "
+        f"model={_log_model_value(payload.get('model'))} url={relay_url}",
         flush=True,
     )
     try:
@@ -1119,10 +1142,17 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
     audio_url = asset.get("url") or asset.get("audio_url")
     if not audio_url:
         return _system_busy_tool_error()
+    selected_provider = asset.get("provider") or args.get("provider")
+    selected_model = asset.get("model") or args.get("model")
+    print(
+        f"[alphart-agent] internal relay audio selected "
+        f"provider={_log_model_value(selected_provider)} model={_log_model_value(selected_model)}",
+        flush=True,
+    )
     result = {
         "type": "generate_audio_result",
-        "provider": asset.get("provider") or args.get("provider"),
-        "model": asset.get("model") or args.get("model"),
+        "provider": selected_provider,
+        "model": selected_model,
         "input": text,
         "script": text,
         "url": audio_url,

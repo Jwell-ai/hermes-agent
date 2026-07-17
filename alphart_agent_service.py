@@ -2207,11 +2207,11 @@ GAME CREATION RULES:
 - Keep generated HTML compact enough for a tool argument, but complete. Avoid comments, large inline data, verbose prose, unused CSS, and repeated plan/checklist JSON. Do not omit <body>, script, controls, or closing tags.
 - If canvas_generate_game returns a validation error such as missing visible DOM, overflow, clipped text, or layout issue, regenerate corrected HTML once using the error text as a hard requirement, then call canvas_generate_game again. This is the one allowed automatic retry exception for game validation.
 
-AUDIO INPUT RULES:
-- Audio is input-only. There is no text-to-speech output.
+UPLOADED AUDIO INPUT RULES:
+- These rules apply only when the user attaches or references an existing audio file as input.
 - When the user message contains an audio_url content part, call canvas_transcribe_audio immediately to get the text.
 - After transcription, read the transcribed text, detect the user's intent, and act on it exactly as if the user had typed that text.
-- If the transcribed text is an image or video generation command, follow the plan: 1) transcribe, 2) refine prompt, 3) call the generation API.
+- If the transcribed text is an image, video, audio, storybook, or game generation command, follow the corresponding generation rules above.
 - If transcription fails, report the failure clearly and stop.
 
 ERROR HANDLING:
