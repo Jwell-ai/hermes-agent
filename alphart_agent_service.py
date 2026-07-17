@@ -2371,14 +2371,19 @@ def _agent_provider_mode_for_wire_format(provider_format: str) -> Tuple[str, str
 def _internal_relay_agent_mode(provider: str, model: str, config: Dict[str, Any]) -> Tuple[str, str, str, bool]:
     """Return agent transport for Alphart's internal relay.
 
-    The internal relay exposes an OpenAI-compatible chat-completions surface and
-    translates to the upstream provider itself. Hermes should therefore use the
-    OpenAI client transport even for Claude/Gemini model names. Streaming stays
-    enabled only for models whose upstream wire format is OpenAI-compatible,
-    because the relay currently rejects streaming for translated providers.
+    The internal relay exposes both OpenAI-compatible chat-completions and
+    Anthropic-compatible messages surfaces. Claude models must use the official
+    Anthropic SDK transport against /internal/messages; routing them through
+    /internal/chat/completions loses Anthropic-native semantics and breaks
+    streaming/tool-use handling. Gemini still uses non-streaming OpenAI
+    transport until the relay grows a native Gemini streaming surface.
     """
     upstream_format = _text_model_wire_format(provider, model, config) or "openai"
-    return "openai", "chat_completions", upstream_format, upstream_format == "openai"
+    if upstream_format == "anthropic":
+        return "anthropic", "anthropic_messages", upstream_format, True
+    if upstream_format == "gemini":
+        return "openai", "chat_completions", upstream_format, False
+    return "openai", "chat_completions", upstream_format, True
 
 
 def _generate_title_anthropic(endpoint: str, api_key: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
