@@ -276,7 +276,7 @@ def _internal_relay_url(path: str) -> str:
     backend_url = _backend_url()
     if not backend_url:
         return ""
-    return f"{backend_url}/internal/api/v1/{path.lstrip('/')}"
+    return f"{backend_url}/internal/v1/{path.lstrip('/')}"
 
 
 def _internal_api_url(path: str) -> str:
@@ -1002,7 +1002,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
     return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
 
 
-def _handle_alphart_generate_video(args: Dict[str, Any], **_: Any) -> str:
+def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     args = dict(args or {})
     if args.get("duration_seconds") and not args.get("duration"):
         args["duration"] = args.get("duration_seconds")
@@ -1025,6 +1025,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **_: Any) -> str:
         "duration": args.get("duration"),
         "session_id": _ctx().get("session_id"),
         "canvas_id": _ctx().get("canvas_id"),
+        "tool_call_id": kwargs.get("tool_call_id") or args.get("tool_call_id"),
     }
     if args.get("input_images"):
         images = args.get("input_images")
