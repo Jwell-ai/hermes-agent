@@ -1123,6 +1123,8 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
         "type": "generate_audio_result",
         "provider": asset.get("provider") or args.get("provider"),
         "model": asset.get("model") or args.get("model"),
+        "input": text,
+        "script": text,
         "url": audio_url,
         "audio_url": audio_url,
         "mime_type": asset.get("mime_type") or "audio/wav",
