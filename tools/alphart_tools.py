@@ -1058,6 +1058,7 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
     tool = _pick_tool("audio", args)
     args.setdefault("provider", tool.get("provider"))
     args.setdefault("model", tool.get("model") or tool.get("name") or tool.get("key"))
+    args["language_type"] = _normalize_audio_language_type(args.get("language_type")) or _normalize_audio_language_type(_ctx().get("audio_language_type"))
     relay_url = _internal_relay_url("audio/speech")
     if not relay_url:
         return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")

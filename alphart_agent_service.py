@@ -1999,7 +1999,7 @@ def _forced_media_tool_messages(
     if intent == "audio":
         call_id = str(uuid.uuid4())
         script = _last_assistant_text(response_messages)
-        language_type = _audio_language_type_from_text(user_message)
+        language_type = _audio_language_type_from_text(user_message) or _normalize_audio_language_type(_ctx().get("audio_language_type"))
         if not script or script.strip() == user_message.strip() or script.strip().lower().startswith("plan:"):
             script = _audio_script_from_request(user_message, language_type)
         args = {
