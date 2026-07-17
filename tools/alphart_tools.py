@@ -959,7 +959,16 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
     if resp.status_code < 200 or resp.status_code >= 300:
         return _system_busy_tool_error()
     data = decoded.get("data") if isinstance(decoded, dict) else None
-    asset = data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else {}
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        asset = data[0]
+    elif isinstance(data, dict):
+        asset = data
+    elif isinstance(decoded, dict) and isinstance(decoded.get("result"), dict):
+        asset = decoded["result"]
+    elif isinstance(decoded, dict):
+        asset = decoded
+    else:
+        asset = {}
     result = {
         "type": "image",
         "provider": asset.get("provider") or args.get("provider"),
@@ -1096,13 +1105,25 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
     if resp.status_code < 200 or resp.status_code >= 300:
         return _system_busy_tool_error()
     data = decoded.get("data") if isinstance(decoded, dict) else None
-    asset = data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else {}
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        asset = data[0]
+    elif isinstance(data, dict):
+        asset = data
+    elif isinstance(decoded, dict) and isinstance(decoded.get("result"), dict):
+        asset = decoded["result"]
+    elif isinstance(decoded, dict):
+        asset = decoded
+    else:
+        asset = {}
+    audio_url = asset.get("url") or asset.get("audio_url")
+    if not audio_url:
+        return _system_busy_tool_error()
     result = {
         "type": "generate_audio_result",
         "provider": asset.get("provider") or args.get("provider"),
         "model": asset.get("model") or args.get("model"),
-        "url": asset.get("url"),
-        "audio_url": asset.get("url"),
+        "url": audio_url,
+        "audio_url": audio_url,
         "mime_type": asset.get("mime_type") or "audio/wav",
         "duration_seconds": asset.get("duration_seconds"),
         "filename": asset.get("filename"),

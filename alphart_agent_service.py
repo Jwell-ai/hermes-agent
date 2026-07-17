@@ -1235,6 +1235,10 @@ def _generation_tool_failed(messages: List[Any], media_type: str = "") -> bool:
     return False
 
 
+def _generation_tool_effectively_failed(messages: List[Any], media_type: str = "") -> bool:
+    return _generation_tool_failed(messages, media_type) and not _generation_tool_completed(messages, media_type)
+
+
 def _game_tool_failed(messages: List[Any]) -> bool:
     for msg in messages or []:
         if not isinstance(msg, dict) or msg.get("role") != "tool":
@@ -1312,10 +1316,12 @@ def _extract_generated_assets(result: Any, media_type: str) -> List[Dict[str, An
         candidates = payload
     elif isinstance(payload, dict):
         candidates = [payload]
-        for key in ("assets", "images", "videos", "outputs"):
+        for key in ("assets", "images", "videos", "audios", "audio", "data", "outputs", "media"):
             value = payload.get(key)
             if isinstance(value, list):
                 candidates.extend(value)
+            elif isinstance(value, dict):
+                candidates.append(value)
     else:
         candidates = []
 
@@ -2785,8 +2791,56 @@ def _generate_title_relay(req: AlphartEduTitleRequest, provider: str, model: str
     timeout = int(config.get("timeout") or config.get("timeout_seconds") or 60)
     endpoint = _internal_relay_base_url(req)
     headers = _internal_relay_headers(req)
+    wire_format = _text_model_wire_format(provider, model, config)
+    if wire_format == "anthropic":
+        url = endpoint.rstrip("/") + "/messages"
+        relay_headers = dict(headers)
+        relay_headers.update(
+            {
+                "authorization": "Bearer " + _internal_relay_api_key(),
+                "x-api-key": _internal_relay_api_key(),
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+        )
+        body = {
+            "model": model,
+            "max_tokens": 32,
+            "system": _TITLE_SYSTEM,
+            "messages": [{"role": "user", "content": _title_prompt(source)}],
+        }
+        logger.info("title relay anthropic provider=%s model=%s endpoint=%s org_no=%s", provider, model, url, headers.get("X-Org-No", ""))
+        try:
+            resp = requests.post(url, json=body, headers=relay_headers, timeout=timeout)
+            resp.raise_for_status()
+        except requests.exceptions.Timeout as exc:
+            logger.error("title relay anthropic read timeout endpoint=%s model=%s timeout=%s: %s", url, model, timeout, exc)
+            raise HTTPException(status_code=504, detail=f"Title model timed out after {timeout}s") from exc
+        except requests.ConnectionError as exc:
+            logger.error("title relay anthropic connection error endpoint=%s model=%s: %s", url, model, exc)
+            raise HTTPException(status_code=502, detail=f"Title model connection error: {exc}") from exc
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 502
+            body_text = exc.response.text[:500] if exc.response is not None else ""
+            logger.error("title relay anthropic http error endpoint=%s model=%s status=%s body=%s", url, model, status, body_text)
+            raise HTTPException(status_code=status, detail=f"Title model error: {body_text or exc}") from exc
+        data = resp.json()
+        content = ""
+        for block in data.get("content", []):
+            if isinstance(block, dict) and block.get("type") == "text":
+                content += block.get("text", "")
+        usage = data.get("usage", {})
+        return {
+            "title": _strip_think_tags(content),
+            "model": model,
+            "provider": provider,
+            "prompt_tokens": int(usage.get("input_tokens") or 0),
+            "completion_tokens": int(usage.get("output_tokens") or 0),
+            "total_tokens": int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0),
+        }
+
     client = OpenAI(api_key=_internal_relay_api_key(), base_url=endpoint, timeout=timeout)
-    logger.info("title relay provider=%s model=%s endpoint=%s org_no=%s", provider, model, endpoint, headers.get("X-Org-No", ""))
+    logger.info("title relay provider=%s model=%s endpoint=%s wire_format=%s org_no=%s", provider, model, endpoint, wire_format, headers.get("X-Org-No", ""))
     try:
         response = client.chat.completions.create(
             model=model,
@@ -3193,7 +3247,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
     response_messages = _current_turn_response_messages(response_messages, conversation_history)
     current_turn_messages = _messages_after_latest_user(response_messages)
     current_media_attempted = _generation_tool_attempted(current_turn_messages)
-    current_media_failed = _generation_tool_failed(current_turn_messages)
+    current_media_failed = _generation_tool_effectively_failed(current_turn_messages)
     current_game_failed = _game_tool_failed(current_turn_messages)
     current_tool_failed = current_media_failed or current_game_failed
     reference_image_generation = (
@@ -3257,7 +3311,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                 )
             response_messages.extend(forced_messages)
     current_turn_messages = _messages_after_latest_user(response_messages)
-    current_media_failed = current_media_failed or _generation_tool_failed(current_turn_messages)
+    current_media_failed = current_media_failed or _generation_tool_effectively_failed(current_turn_messages)
     current_game_failed = current_game_failed or _game_tool_failed(current_turn_messages)
     current_tool_failed = current_media_failed or current_game_failed
     if current_tool_failed:
@@ -3350,7 +3404,10 @@ def title(req: AlphartEduTitleRequest, authorization: Optional[str] = Header(def
         try:
             if not _use_internal_relay(req) and (not cand_endpoint or not cand_key):
                 continue
-            result = _generate_title_agent(req, cand_provider, cand_model, source, cand_config)
+            if _use_internal_relay(req):
+                result = _generate_title_relay(req, cand_provider, cand_model, source, cand_config)
+            else:
+                result = _generate_title_direct(cand_provider, cand_endpoint, cand_key, cand_model, source, cand_config)
             break
         except HTTPException as exc:
             logger.warning("title failed provider=%r model=%r status=%s: %s", cand_provider, cand_model, exc.status_code, exc.detail)
