@@ -447,6 +447,10 @@ def _internal_relay_base_url(req: Any) -> str:
     return _backend_url_from_req(req) + "/internal"
 
 
+def _internal_relay_gemini_base_url(req: Any) -> str:
+    return _backend_url_from_req(req) + "/internal/gemini/v1beta"
+
+
 def _internal_relay_headers(req: Any) -> Dict[str, str]:
     headers: Dict[str, str] = {}
     service_token = _service_token()
@@ -2087,7 +2091,7 @@ def _forced_media_tool_messages(
 
 def _alphart_agent_prompt(req: AlphartEduChatRequest) -> str:
     tool_lines = _selected_tool_lines(req.tool_list)
-    selected_tools = "\n".join(tool_lines) if tool_lines else "- No explicit canvas media model selected. Call the generation tool anyway and let the backend choose the default model from app_config."
+    selected_tools = "\n".join(tool_lines) if tool_lines else "- No configured canvas media tools are available. Do not invent provider/model names; return a concise configuration error for media generation requests."
     return f"""
 {req.system_prompt.strip()}
 
@@ -2104,7 +2108,7 @@ PLANNER RULES:
 - If the user asks to explain, describe, analyze, summarize, caption, identify, or understand an attached image/video, answer with the text/chat model. Do not call image/video generation tools.
 	- For obvious image/video/audio generation or editing tasks, a generation tool call is mandatory.
 	- For simple media requests, call canvas_generate_image/canvas_generate_video/canvas_generate_audio directly. Do not stop after a plan.
-	- If no selected image/video/audio tool is listed, do not ask the user to choose a model. Call the generation tool without provider/model and let the backend use the default app_config fallback.
+	- Use the selected tool metadata for provider/model. Do not invent provider/model names and do not rely on backend-selected defaults. If no selected image/video/audio tool is listed for the requested capability, return a concise configuration error.
 - For complex media requests, you may call write_plan first, but you must continue to the generation tool after the plan result.
 - Do not ask for approval before media generation unless the backend returns a confirmation request.
 - Do not call multiple tools in the same assistant turn. Always wait for one tool result before making another tool call.
@@ -2141,7 +2145,7 @@ IMAGE CREATION RULES:
 		- Audio generation must produce two user-visible outputs: first a normal assistant text message containing the educational narration/script, then the generated audio result. Do not replace the script with a plan.
 		- The audio tool input must be the same ready-to-speak script text from the assistant message, not the raw command.
 		- Match the requested spoken language: language_type="cantonese" for 粤语/粵語/广东话/廣東話/Cantonese, language_type="mandarin" for 中文/普通话/普通話/Mandarin, and language_type="english" for English.
-		- Do not ask the user to choose an audio model. Let the backend use module=ai key=tts or audio app_config defaults.
+		- Do not ask the user to choose an audio model. Use the selected audio tool metadata from SELECTED CANVAS TOOLS, including provider and model.
 
 STORYBOOK CREATION RULES:
 - Use canvas_create_storybook or create_storybook for requests like "make a storybook", "create a flip-book lesson", "storybook about ...", "page-by-page children's book", and equivalent Chinese/Traditional Chinese requests such as 绘本, 繪本, 故事书, 故事書, 童书, 童書, 翻页故事, 翻頁故事.
@@ -2626,17 +2630,17 @@ def _internal_relay_agent_mode(provider: str, model: str, config: Dict[str, Any]
     """Return agent transport for Alphart's internal relay.
 
     The internal relay exposes both OpenAI-compatible chat-completions and
-    Anthropic-compatible messages surfaces. Claude models must use the official
-    Anthropic SDK transport against /internal/messages; routing them through
-    /internal/chat/completions loses Anthropic-native semantics and breaks
-    streaming/tool-use handling. Gemini still uses non-streaming OpenAI
-    transport until the relay grows a native Gemini streaming surface.
+    Anthropic-compatible messages and Gemini-compatible generateContent
+    surfaces. Claude models must use the official Anthropic SDK transport
+    against /internal/messages; Gemini models use Hermes's Gemini native
+    adapter against /internal/gemini/v1beta. Routing either through
+    /internal/chat/completions loses provider-native semantics.
     """
     upstream_format = _text_model_wire_format(provider, model, config) or "openai"
     if upstream_format == "anthropic":
         return "anthropic", "anthropic_messages", upstream_format, True
     if upstream_format == "gemini":
-        return "openai", "chat_completions", upstream_format, False
+        return "gemini", "chat_completions", upstream_format, False
     return "openai", "chat_completions", upstream_format, True
 
 
@@ -2839,6 +2843,53 @@ def _generate_title_relay(req: AlphartEduTitleRequest, provider: str, model: str
             "total_tokens": int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0),
         }
 
+    if wire_format == "gemini":
+        safe_model = quote(model.lstrip("/").removeprefix("models/"), safe="/")
+        url = endpoint.rstrip("/") + f"/gemini/v1beta/models/{safe_model}:generateContent"
+        relay_headers = dict(headers)
+        relay_headers.update(
+            {
+                "authorization": "Bearer " + _internal_relay_api_key(),
+                "x-api-key": _internal_relay_api_key(),
+                "content-type": "application/json",
+            }
+        )
+        body = {
+            "contents": [{"role": "user", "parts": [{"text": _title_prompt(source)}]}],
+            "systemInstruction": {"parts": [{"text": _TITLE_SYSTEM}]},
+            "generationConfig": {"maxOutputTokens": 32, "temperature": 0.2},
+        }
+        logger.info("title relay gemini provider=%s model=%s endpoint=%s org_no=%s", provider, model, url, headers.get("X-Org-No", ""))
+        try:
+            resp = requests.post(url, json=body, headers=relay_headers, timeout=timeout)
+            resp.raise_for_status()
+        except requests.exceptions.Timeout as exc:
+            logger.error("title relay gemini read timeout endpoint=%s model=%s timeout=%s: %s", url, model, timeout, exc)
+            raise HTTPException(status_code=504, detail=f"Title model timed out after {timeout}s") from exc
+        except requests.ConnectionError as exc:
+            logger.error("title relay gemini connection error endpoint=%s model=%s: %s", url, model, exc)
+            raise HTTPException(status_code=502, detail=f"Title model connection error: {exc}") from exc
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 502
+            body_text = exc.response.text[:500] if exc.response is not None else ""
+            logger.error("title relay gemini http error endpoint=%s model=%s status=%s body=%s", url, model, status, body_text)
+            raise HTTPException(status_code=status, detail=f"Title model error: {body_text or exc}") from exc
+        data = resp.json()
+        content = ""
+        for candidate in data.get("candidates", []):
+            for part in candidate.get("content", {}).get("parts", []):
+                if isinstance(part, dict):
+                    content += _string(part.get("text"))
+        usage = data.get("usageMetadata", {})
+        return {
+            "title": _strip_think_tags(content),
+            "model": model,
+            "provider": provider,
+            "prompt_tokens": int(usage.get("promptTokenCount") or 0),
+            "completion_tokens": int(usage.get("candidatesTokenCount") or 0),
+            "total_tokens": int(usage.get("totalTokenCount") or 0),
+        }
+
     client = OpenAI(api_key=_internal_relay_api_key(), base_url=endpoint, timeout=timeout)
     logger.info("title relay provider=%s model=%s endpoint=%s wire_format=%s org_no=%s", provider, model, endpoint, wire_format, headers.get("X-Org-No", ""))
     try:
@@ -2881,7 +2932,8 @@ def _generate_title_agent(req: AlphartEduTitleRequest, provider: str, model: str
     stream_enabled = True
     relay_headers: Dict[str, str] = {}
     if _use_internal_relay(req):
-        endpoint = _internal_relay_base_url(req)
+        provider_format = _text_model_wire_format(provider, model, config)
+        endpoint = _internal_relay_gemini_base_url(req) if provider_format == "gemini" else _internal_relay_base_url(req)
         api_key = _internal_relay_api_key()
         relay_headers = _internal_relay_headers(req)
         request_overrides = {"extra_headers": relay_headers}
@@ -3082,7 +3134,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         agent_provider = provider
         agent_api_mode = _string(config.get("api_mode")) or "chat_completions"
         if _use_internal_relay(req):
-            endpoint = _internal_relay_base_url(req)
+            endpoint = _internal_relay_gemini_base_url(req) if provider_format == "gemini" else _internal_relay_base_url(req)
             api_key = _internal_relay_api_key()
             relay_headers = _internal_relay_headers(req)
             agent_provider, agent_api_mode, provider_format, stream_enabled = _internal_relay_agent_mode(provider, model, config)

@@ -52,6 +52,8 @@ def is_native_gemini_base_url(base_url: str) -> bool:
     # Proxy / self-hosted Gemini endpoints that carry the native path shape
     if ":generatecontent" in normalized or ":streamgeneratecontent" in normalized:
         return True
+    if normalized.endswith("/v1beta") or "/v1beta/" in normalized:
+        return True
     if "%s" in normalized and ("/v1beta" in normalized or "models/" in normalized):
         return True
     return False

@@ -1081,6 +1081,10 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
     tool = _pick_tool("audio", args)
     _set_tool_defaults(args, tool)
+    selected_provider = str(args.get("provider") or "").strip()
+    selected_model = str(args.get("model") or "").strip()
+    if not selected_provider or not selected_model:
+        return _tool_error("No configured audio generation model is available.", "AUDIO_MODEL_NOT_CONFIGURED")
     args["language_type"] = _normalize_audio_language_type(args.get("language_type")) or _normalize_audio_language_type(_ctx().get("audio_language_type"))
     relay_url = _internal_relay_url("audio/speech")
     if not relay_url:
@@ -1091,6 +1095,7 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
     if len(text) < 80 or re.search(r"^\s*(/audio|generate|create|生成)", text, flags=re.I):
         text = _audio_script_from_request(text, str(args.get("language_type") or ""))
     payload = {
+        "provider": selected_provider,
         "model": args.get("model"),
         "input": text,
         "voice": args.get("voice"),
@@ -1101,22 +1106,51 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
     }
     print(
         f"[alphart-agent] calling internal relay audio session_id={_ctx().get('session_id')} "
-        f"provider={_log_model_value(args.get('provider'))} "
-        f"model={_log_model_value(payload.get('model'))} url={relay_url}",
+        f"provider={_log_model_value(selected_provider)} model={_log_model_value(selected_model)} url={relay_url}",
         flush=True,
     )
-    try:
-        resp = requests.post(
-            relay_url,
-            json=payload,
-            headers=_internal_relay_headers(),
-            timeout=int(
-                os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
-                or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")
-            ),
+    attempts = max(1, int(os.getenv("ALPHART_AUDIO_RELAY_RETRY_ATTEMPTS", "3") or "3"))
+    timeout = int(
+        os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
+        or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")
+    )
+    resp = None
+    last_exc: Optional[BaseException] = None
+    for attempt in range(1, attempts + 1):
+        try:
+            print(
+                f"[alphart-agent] internal relay audio attempt session_id={_ctx().get('session_id')} "
+                f"attempt={attempt}/{attempts}",
+                flush=True,
+            )
+            resp = requests.post(
+                relay_url,
+                json=payload,
+                headers=_internal_relay_headers(),
+                timeout=timeout,
+            )
+        except requests.RequestException as exc:
+            last_exc = exc
+            print(
+                f"[alphart-agent] internal relay audio request failed "
+                f"attempt={attempt}/{attempts} error={exc}",
+                flush=True,
+            )
+            if attempt < attempts:
+                time.sleep(min(2 * attempt, 5))
+                continue
+            return _tool_error(f"Alphart relay request failed: {exc}")
+        if resp.status_code not in {502, 503, 504} or attempt >= attempts:
+            break
+        response_preview = (resp.text or "").replace("\n", " ")[:500]
+        print(
+            f"[alphart-agent] internal relay audio retryable response "
+            f"attempt={attempt}/{attempts} status={resp.status_code} body={response_preview}",
+            flush=True,
         )
-    except requests.RequestException as exc:
-        return _tool_error(f"Alphart relay request failed: {exc}")
+        time.sleep(min(2 * attempt, 5))
+    if resp is None:
+        return _tool_error(f"Alphart relay request failed: {last_exc}")
     try:
         decoded = resp.json()
     except ValueError:
