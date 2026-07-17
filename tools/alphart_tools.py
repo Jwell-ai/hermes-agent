@@ -57,6 +57,73 @@ def _system_busy_tool_error() -> str:
     return "generate fail"
 
 
+def _strip_audio_preferences(text: str) -> str:
+    return re.sub(r"\n*\s*<audio_preferences\b[^>]*/>\s*", "\n", str(text or ""), flags=re.I).strip()
+
+
+def _audio_language_type_from_text(text: Any) -> str:
+    plain_text = _strip_audio_preferences(str(text or ""))
+    value = plain_text.lower()
+    if any(word in value for word in ("粤语", "粵語", "广东话", "廣東話", "cantonese", "yue")):
+        return "cantonese"
+    if any(word in value for word in ("english", "英文", "英语", "英語")):
+        return "english"
+    preference = re.search(r"<audio_preferences\b[^>]*\blanguage_type=[\"']([^\"']+)[\"']", str(text or ""), re.I)
+    if preference:
+        preferred = preference.group(1).strip().lower()
+        if preferred in {"mandarin", "cantonese", "english"}:
+            return preferred
+    if re.search(r"[\u4e00-\u9fff]", plain_text):
+        return "mandarin"
+    return "english"
+
+
+def _clean_audio_topic(text: Any) -> str:
+    value = _strip_audio_preferences(str(text or ""))
+    value = re.sub(
+        r"^\s*(/audio|generate\s+(an?\s+)?audio|create\s+(an?\s+)?audio|generate\s+speech|create\s+speech|"
+        r"生成一段?音频|生成一段?音訊|生成音频|生成音訊|生成语音|生成語音|生成旁白)\s*[:：,，-]*\s*",
+        "",
+        value,
+        flags=re.I,
+    ).strip()
+    value = re.sub(r"\b(use|in|with)\s+(mandarin|cantonese|english)\b", "", value, flags=re.I).strip()
+    value = re.sub(r"(用|以)?(中文|普通话|普通話|粤语|粵語|广东话|廣東話|英文|英语|英語)(介绍|介紹|朗读|朗讀|讲解|講解)?", "", value).strip()
+    return value or _strip_audio_preferences(str(text or "")).strip()
+
+
+def _audio_script_from_request(text: Any, language_type: str = "") -> str:
+    topic = _clean_audio_topic(text)
+    language = (language_type or _audio_language_type_from_text(text)).strip().lower()
+    if language == "cantonese":
+        return (
+            f"大家好，今日我哋用一段簡單清楚嘅講解，認識{topic}。\n\n"
+            f"首先，我哋會由最基本嘅概念開始，了解{topic}係乜嘢，點解佢重要。"
+            "然後，我哋會用生活入面容易見到嘅例子，將抽象嘅內容變得更加具體。"
+            "聽嘅時候，可以留意三個重點：第一，事情點樣開始；第二，中間經過咩變化；第三，最後會產生咩結果。\n\n"
+            f"總結嚟講，{topic}唔係孤立嘅知識點，而係一個有因有果、可以一步一步理解嘅過程。"
+            "只要抓住主要概念，再配合例子，就會更容易記住同應用。"
+        )
+    if language == "english":
+        return (
+            f"Hello. In this short audio lesson, we will explain {topic} in a clear and learner-friendly way.\n\n"
+            f"First, we will start with the basic idea: what {topic} means and why it matters. "
+            "Then we will connect the idea to an everyday example, so the concept becomes easier to picture. "
+            "As you listen, focus on three things: what starts the process, what changes during the process, "
+            "and what result comes at the end.\n\n"
+            f"In summary, {topic} is easier to understand when we break it into simple steps. "
+            "Once the key idea is clear, examples can help you remember it and use it in new situations."
+        )
+    return (
+        f"大家好，下面用一段简洁清楚的音频，来介绍{topic}。\n\n"
+        f"首先，我们从最基本的概念开始，理解{topic}是什么，以及它为什么重要。"
+        "接着，我们会结合生活中容易观察到的例子，把抽象的内容变得更具体。"
+        "在听的过程中，可以重点关注三个问题：第一，它是怎样开始的；第二，中间发生了什么变化；第三，最后产生了什么结果。\n\n"
+        f"总结一下，{topic}并不是孤立的知识点，而是一个可以分步骤理解的过程。"
+        "只要抓住核心概念，再配合具体例子，就能更容易记住，并在学习和表达中灵活使用。"
+    )
+
+
 def _infer_storybook_language(text: Any) -> str:
     value = str(text or "")
     if re.search(r"[\u4e00-\u9fff]", value):
@@ -988,6 +1055,8 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
     text = str(args.get("input") or args.get("text") or args.get("script") or args.get("prompt") or "").strip()
     if not text:
         return _tool_error("audio input text is required")
+    if len(text) < 80 or re.search(r"^\s*(/audio|generate|create|生成)", text, flags=re.I):
+        text = _audio_script_from_request(text, str(args.get("language_type") or ""))
     payload = {
         "model": args.get("model"),
         "input": text,

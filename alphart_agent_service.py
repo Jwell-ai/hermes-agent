@@ -954,6 +954,52 @@ def _strip_audio_preferences(text: str) -> str:
     return re.sub(r"\n*\s*<audio_preferences\b[^>]*/>\s*", "\n", text or "", flags=re.I).strip()
 
 
+def _clean_audio_topic(text: str) -> str:
+    value = _strip_audio_preferences(text)
+    value = re.sub(
+        r"^\s*(/audio|generate\s+(an?\s+)?audio|create\s+(an?\s+)?audio|generate\s+speech|create\s+speech|"
+        r"生成一段?音频|生成一段?音訊|生成音频|生成音訊|生成语音|生成語音|生成旁白)\s*[:：,，-]*\s*",
+        "",
+        value,
+        flags=re.I,
+    ).strip()
+    value = re.sub(r"\b(use|in|with)\s+(mandarin|cantonese|english)\b", "", value, flags=re.I).strip()
+    value = re.sub(r"(用|以)?(中文|普通话|普通話|粤语|粵語|广东话|廣東話|英文|英语|英語)(介绍|介紹|朗读|朗讀|讲解|講解)?", "", value).strip()
+    return value or _strip_audio_preferences(text).strip()
+
+
+def _audio_script_from_request(text: str, language_type: str = "") -> str:
+    topic = _clean_audio_topic(text)
+    language = language_type or _audio_language_type_from_text(text)
+    if language == "cantonese":
+        return (
+            f"大家好，今日我哋用一段簡單清楚嘅講解，認識{topic}。\n\n"
+            f"首先，我哋會由最基本嘅概念開始，了解{topic}係乜嘢，點解佢重要。"
+            "然後，我哋會用生活入面容易見到嘅例子，將抽象嘅內容變得更加具體。"
+            "聽嘅時候，可以留意三個重點：第一，事情點樣開始；第二，中間經過咩變化；第三，最後會產生咩結果。\n\n"
+            f"總結嚟講，{topic}唔係孤立嘅知識點，而係一個有因有果、可以一步一步理解嘅過程。"
+            "只要抓住主要概念，再配合例子，就會更容易記住同應用。"
+        )
+    if language == "english":
+        return (
+            f"Hello. In this short audio lesson, we will explain {topic} in a clear and learner-friendly way.\n\n"
+            f"First, we will start with the basic idea: what {topic} means and why it matters. "
+            "Then we will connect the idea to an everyday example, so the concept becomes easier to picture. "
+            "As you listen, focus on three things: what starts the process, what changes during the process, "
+            "and what result comes at the end.\n\n"
+            f"In summary, {topic} is easier to understand when we break it into simple steps. "
+            "Once the key idea is clear, examples can help you remember it and use it in new situations."
+        )
+    return (
+        f"大家好，下面用一段简洁清楚的音频，来介绍{topic}。\n\n"
+        f"首先，我们从最基本的概念开始，理解{topic}是什么，以及它为什么重要。"
+        "接着，我们会结合生活中容易观察到的例子，把抽象的内容变得更具体。"
+        "在听的过程中，可以重点关注三个问题：第一，它是怎样开始的；第二，中间发生了什么变化；第三，最后产生了什么结果。\n\n"
+        f"总结一下，{topic}并不是孤立的知识点，而是一个可以分步骤理解的过程。"
+        "只要抓住核心概念，再配合具体例子，就能更容易记住，并在学习和表达中灵活使用。"
+    )
+
+
 def _game_intent(text: str) -> bool:
     value = (text or "").lower()
     if not value.strip():
@@ -1947,12 +1993,13 @@ def _forced_media_tool_messages(
     if intent == "audio":
         call_id = str(uuid.uuid4())
         script = _last_assistant_text(response_messages)
-        if not script or script.strip() == user_message.strip():
-            script = _strip_audio_preferences(user_message)
+        language_type = _audio_language_type_from_text(user_message)
+        if not script or script.strip() == user_message.strip() or script.strip().lower().startswith("plan:"):
+            script = _audio_script_from_request(user_message, language_type)
         args = {
             "input": script,
             "tool_call_id": call_id,
-            "language_type": _audio_language_type_from_text(user_message),
+            "language_type": language_type,
         }
         print(
             f"[alphart-agent] forcing audio generation session_intent={intent} tool_count={len(_selected_media_tools(intent))}",
@@ -1960,9 +2007,8 @@ def _forced_media_tool_messages(
         )
         result = _handle_alphart_generate_audio(args)
         tool_name = "canvas_generate_audio"
-        final_text = "Audio generation has been submitted." if _tool_result_success(result) else "generate fail"
-        return [
-            {"role": "assistant", "content": plan_text},
+        messages = [
+            {"role": "assistant", "content": script},
             {
                 "role": "assistant",
                 "content": "",
@@ -1983,8 +2029,10 @@ def _forced_media_tool_messages(
                 "name": tool_name,
                 "content": result,
             },
-            {"role": "assistant", "content": final_text},
         ]
+        if not _tool_result_success(result):
+            messages.append({"role": "assistant", "content": "generate fail"})
+        return messages
 
     call_id = str(uuid.uuid4())
     args = {
@@ -2082,11 +2130,12 @@ IMAGE CREATION RULES:
 - Do not claim media was generated until the tool returns a backend result.
 	- If the legacy prompt mentions generate_image, call generate_image or canvas_generate_image. If it mentions generate_video, call generate_video or canvas_generate_video.
 
-	AUDIO CREATION RULES:
-	- Use canvas_generate_audio or generate_audio for spoken-audio tasks, including "generate an audio", "create a voiceover", "read aloud", "生成一段音频", "生成一段音訊", "生成语音", "生成語音", "用粤语/粵語/广东话/廣東話介绍", and equivalent requests.
-	- The audio tool input must be ready-to-speak script text, not the raw command. First convert the user's request into a clear educational narration, then pass that narration as input.
-	- Match the requested spoken language: language_type="cantonese" for 粤语/粵語/广东话/廣東話/Cantonese, language_type="mandarin" for 中文/普通话/普通話/Mandarin, and language_type="english" for English.
-	- Do not ask the user to choose an audio model. Let the backend use module=ai key=tts or audio app_config defaults.
+		AUDIO CREATION RULES:
+		- Use canvas_generate_audio or generate_audio for spoken-audio tasks, including "generate an audio", "create a voiceover", "read aloud", "生成一段音频", "生成一段音訊", "生成语音", "生成語音", "用粤语/粵語/广东话/廣東話介绍", and equivalent requests.
+		- Audio generation must produce two user-visible outputs: first a normal assistant text message containing the educational narration/script, then the generated audio result. Do not replace the script with a plan.
+		- The audio tool input must be the same ready-to-speak script text from the assistant message, not the raw command.
+		- Match the requested spoken language: language_type="cantonese" for 粤语/粵語/广东话/廣東話/Cantonese, language_type="mandarin" for 中文/普通话/普通話/Mandarin, and language_type="english" for English.
+		- Do not ask the user to choose an audio model. Let the backend use module=ai key=tts or audio app_config defaults.
 
 STORYBOOK CREATION RULES:
 - Use canvas_create_storybook or create_storybook for requests like "make a storybook", "create a flip-book lesson", "storybook about ...", "page-by-page children's book", and equivalent Chinese/Traditional Chinese requests such as 绘本, 繪本, 故事书, 故事書, 童书, 童書, 翻页故事, 翻頁故事.
