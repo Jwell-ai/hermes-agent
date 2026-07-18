@@ -2331,6 +2331,80 @@ def _is_failed_storybook_tool_message(message: Any) -> bool:
     return _string(payload.get("error")) != "" and not isinstance(payload.get("result"), dict)
 
 
+def _storybook_result_record(value: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    if isinstance(value, dict):
+        payload = value
+    elif isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+        if isinstance(decoded, dict):
+            payload = decoded
+    if not payload:
+        return {}
+    result = payload.get("result")
+    if isinstance(result, dict):
+        canvas_element = result.get("canvas_element")
+        if isinstance(canvas_element, dict):
+            custom_data = canvas_element.get("customData")
+            if isinstance(custom_data, dict):
+                return custom_data
+        return result
+    return payload
+
+
+def _storybook_completion_text(messages: List[Any]) -> str:
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict):
+            continue
+        candidates: List[Any] = []
+        if msg.get("role") == "tool" and "storybook" in _string(msg.get("name") or msg.get("tool_name")).lower():
+            candidates.append(msg.get("content"))
+        if msg.get("role") == "assistant" and isinstance(msg.get("tool_calls"), list):
+            for tool_call in msg.get("tool_calls") or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                if "storybook" in _tool_call_name(tool_call).lower():
+                    candidates.append(tool_call.get("result"))
+        for candidate in candidates:
+            record = _storybook_result_record(candidate)
+            if _string(record.get("type")).lower() not in {"storybook", "storybook_page_update"}:
+                continue
+            storybook_id = _string(record.get("storybook_id") or record.get("id"))
+            if not storybook_id:
+                continue
+            title = _string(record.get("title") or record.get("topic") or "storybook")
+            status = _string(record.get("status") or "completed")
+            pages = record.get("pages") if isinstance(record.get("pages"), list) else []
+            page_count = int(record.get("page_count") or len(pages) or 0)
+            image_pages = sum(1 for page in pages if isinstance(page, dict) and _string(page.get("image_s3_object_name") or page.get("image") or page.get("image_url")))
+            text_pages = max(0, page_count - image_pages) if page_count else 0
+            if _string(record.get("type")).lower() == "storybook_page_update":
+                return f"Storybook page update completed.\n\n- Storybook ID: `{storybook_id}`\n- Status: `{status}`"
+            lines = [f"Storybook created: {title}"]
+            if page_count:
+                lines.append(f"- Pages: {page_count}")
+            if image_pages:
+                lines.append(f"- Illustration pages: {image_pages}")
+            if text_pages:
+                lines.append(f"- Narration/text pages: {text_pages}")
+            lines.append(f"- Storybook ID: `{storybook_id}`")
+            return "\n".join(lines)
+    return ""
+
+
+def _last_assistant_text_after_last_tool(messages: List[Any]) -> str:
+    start = 0
+    for idx, msg in enumerate(messages or []):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "tool" or isinstance(msg.get("tool_calls"), list):
+            start = idx + 1
+    return _last_assistant_text((messages or [])[start:])
+
+
 def _last_assistant_text(messages: List[Any]) -> str:
     for msg in reversed(messages or []):
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
@@ -3328,7 +3402,12 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         if reference_image_generation:
             final_response = _last_assistant_text(response_messages)
         else:
-            final_response = _last_assistant_text(response_messages) or _last_assistant_text(raw_result_messages)
+            final_response = (
+                _last_assistant_text_after_last_tool(response_messages)
+                or _storybook_completion_text(response_messages)
+                or _last_assistant_text(response_messages)
+                or _last_assistant_text(raw_result_messages)
+            )
     user_audio_urls = _audio_urls_from_content(user_content)
     if not model_failed:
         with alphart_context(context):
@@ -3368,6 +3447,12 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
     current_tool_failed = current_media_failed or current_game_failed
     if current_tool_failed:
         final_response = SYSTEM_BUSY_MESSAGE
+    if not final_response or (
+        _storybook_tool_attempted(current_turn_messages)
+        and final_response == _last_assistant_text(response_messages)
+        and not _last_assistant_text_after_last_tool(current_turn_messages)
+    ):
+        final_response = _storybook_completion_text(current_turn_messages) or final_response
     response_messages = _append_visible_generated_media(response_messages, current_turn_messages)
     response_messages = _sanitize_assistant_media_url_text(response_messages)
     final_response = _strip_media_urls_from_text(final_response)
