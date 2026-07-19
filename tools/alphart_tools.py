@@ -1162,6 +1162,16 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
         flush=True,
     )
     if resp.status_code < 200 or resp.status_code >= 300:
+        if isinstance(decoded, dict) and isinstance(decoded.get("result"), dict):
+            result = dict(decoded["result"])
+            result.setdefault("type", "generate_audio_result")
+            result.setdefault("status", "partial" if result.get("usage") else "failed")
+            result.setdefault("message", decoded.get("message") or "generate fail")
+            result.setdefault("provider", selected_provider)
+            result.setdefault("model", selected_model)
+            result.setdefault("input", text)
+            result.setdefault("script", text)
+            return json.dumps({"status": "failed", "result": result}, ensure_ascii=False)
         return _system_busy_tool_error()
     data = decoded.get("data") if isinstance(decoded, dict) else None
     if isinstance(data, list) and data and isinstance(data[0], dict):
