@@ -265,8 +265,9 @@ def _backend_media_url(req: AlphartEduChatRequest, ref: Dict[str, Any]) -> str:
     if not object_name:
         return ""
     backend_url = (req.backend_url or os.getenv("ALPHART_EDU_BACKEND_URL") or os.getenv("CANVAS_BACKEND_URL", "http://localhost:57988")).rstrip("/")
-    file_id = _string(ref.get("file_id")) or "media"
-    return f"{backend_url}/api/v1/files/{file_id}?s3_object_name={quote(object_name, safe='')}"
+    file_id = _string(ref.get("file_id"))
+    route_file_id = (object_name.rstrip("/").rsplit("/", 1)[-1] or file_id.rstrip("/").rsplit("/", 1)[-1] or "media")
+    return f"{backend_url}/api/v1/files/{quote(route_file_id, safe='')}?s3_object_name={quote(object_name, safe='')}"
 
 
 def _download_image_as_data_url(req: AlphartEduChatRequest, ref: Dict[str, Any]) -> str:
@@ -935,6 +936,26 @@ def _media_intent(text: str, has_image_context: bool = False, has_video_context:
     if any(word in value for word in ("draw", "render", "paint", "sketch", "illustrate", "画", "绘制")):
         return "image"
     return ""
+
+
+def _duration_seconds_from_text(text: str) -> int:
+    value = text or ""
+    patterns = (
+        r"\b(\d{1,3})\s*(?:seconds?|secs?|s)\b",
+        r"\b(\d{1,3})\s*(?:second|sec)s?\b",
+        r"\b(\d{1,3})\s*秒\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, value, re.IGNORECASE)
+        if not match:
+            continue
+        try:
+            seconds = int(match.group(1))
+        except (TypeError, ValueError):
+            continue
+        if seconds > 0:
+            return seconds
+    return 0
 
 
 def _audio_language_type_from_text(text: str) -> str:
@@ -2049,6 +2070,11 @@ def _forced_media_tool_messages(
         "prompt": user_message,
         "tool_call_id": call_id,
     }
+    if has_image_context and input_images:
+        args["input_images"] = input_images
+    duration_seconds = _duration_seconds_from_text(user_message)
+    if duration_seconds:
+        args["duration_seconds"] = duration_seconds
     aspect_ratio = _aspect_ratio_from_text(user_message)
     if aspect_ratio:
         args["aspect_ratio"] = aspect_ratio
