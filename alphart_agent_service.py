@@ -1322,6 +1322,12 @@ def _tool_result_success(result: str) -> bool:
         return False
     if isinstance(decoded, dict) and decoded.get("success") is False:
         return False
+    if isinstance(decoded, dict) and _string(decoded.get("status")).lower() in {"failed", "error", "failure"}:
+        return False
+    if isinstance(decoded, dict) and isinstance(decoded.get("result"), dict):
+        result_status = _string(decoded["result"].get("status")).lower()
+        if result_status in {"failed", "error", "failure"}:
+            return False
     return True
 
 
