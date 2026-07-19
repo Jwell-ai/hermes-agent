@@ -1,11 +1,59 @@
+x-agent-logging: &agent-logging
+  driver: json-file
+  options:
+    max-size: ${ALPHART_AGENT_LOG_MAX_SIZE:-50m}
+    max-file: ${ALPHART_AGENT_LOG_MAX_FILES:-10}
+
 services:
+  alphart-agent-gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    logging: *agent-logging
+    ports:
+      - "58088:58088"
+    networks:
+      default:
+        aliases:
+          - hermes-agent
+    depends_on:
+      - alphart-agent
+    command:
+      - /bin/sh
+      - -c
+      - |
+        cat > /etc/nginx/conf.d/default.conf <<'EOF'
+        resolver 127.0.0.11 valid=10s ipv6=off;
+
+        server {
+          listen 58088;
+
+          location / {
+            set $$agent_upstream alphart-agent:58088;
+            proxy_pass http://$$agent_upstream;
+            proxy_http_version 1.1;
+            proxy_set_header Host $$host;
+            proxy_set_header X-Real-IP $$remote_addr;
+            proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $$scheme;
+            proxy_set_header Upgrade $$http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_read_timeout 1800s;
+            proxy_send_timeout 1800s;
+          }
+        }
+        EOF
+        exec nginx -g 'daemon off;'
+
   alphart-agent:
     build:
       context: .
       dockerfile: Dockerfile.alphart
     image: alphart-hermes-agent:latest
     restart: unless-stopped
+    logging: *agent-logging
     env_file:
       - ./.env.alphart
-    ports:
-      - "58088:58088"
+    expose:
+      - "58088"
+    deploy:
+      replicas: ${ALPHART_AGENT_REPLICAS:-2}
