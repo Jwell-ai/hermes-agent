@@ -88,11 +88,9 @@ _sync_bundled_skills()
 
 def _service_token() -> str:
     return (
-        os.getenv("ALPHART_EDU_AGENT_TOKEN")
-        or os.getenv("ALPHART_CANVAS_AGENT_TOKEN")
+        os.getenv("HERMES_AGENT_TOKEN")
         or os.getenv("ALPHART_AGENT_TOKEN")
         or os.getenv("CANVAS_AGENT_TOKEN")
-        or os.getenv("HERMES_AGENT_TOKEN")
         or ""
     ).strip()
 
@@ -450,7 +448,7 @@ def _request_app_scope(req: Any) -> str:
         return "edu"
 
     backend_url = _string(getattr(req, "backend_url", "")).rstrip("/")
-    canvas_url = _string(os.getenv("CANVAS_BACKEND_URL") or os.getenv("ALPHART_CANVAS_BACKEND_URL")).rstrip("/")
+    canvas_url = _string(os.getenv("ALPHART_CANVAS_BACKEND_URL") or os.getenv("CANVAS_BACKEND_URL")).rstrip("/")
     edu_url = _string(os.getenv("ALPHART_EDU_BACKEND_URL")).rstrip("/")
     if backend_url and canvas_url and backend_url == canvas_url:
         return "canvas"
@@ -467,8 +465,8 @@ def _backend_url_from_req(req: Any) -> str:
         return explicit
     if _request_app_scope(req) == "canvas":
         return _string(
-            os.getenv("CANVAS_BACKEND_URL")
-            or os.getenv("ALPHART_CANVAS_BACKEND_URL")
+            os.getenv("ALPHART_CANVAS_BACKEND_URL")
+            or os.getenv("CANVAS_BACKEND_URL")
             or "http://localhost:9999"
         ).rstrip("/")
     return _string(os.getenv("ALPHART_EDU_BACKEND_URL") or "http://localhost:57988").rstrip("/")
@@ -2540,11 +2538,9 @@ def _callback_backend_url(req: AlphartEduChatRequest) -> str:
 
 def _callback_service_token() -> str:
     return _string(
-        os.getenv("ALPHART_EDU_AGENT_TOKEN")
-        or os.getenv("ALPHART_CANVAS_AGENT_TOKEN")
+        os.getenv("HERMES_AGENT_TOKEN")
         or os.getenv("ALPHART_AGENT_TOKEN")
         or os.getenv("CANVAS_AGENT_TOKEN")
-        or os.getenv("HERMES_AGENT_TOKEN")
     )
 
 

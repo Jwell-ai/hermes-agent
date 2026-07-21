@@ -249,7 +249,7 @@ def _backend_url() -> str:
         return context_url.rstrip("/")
     app_scope = str(_ctx().get("app_scope") or "edu").strip().lower()
     if app_scope == "canvas":
-        value = str(os.getenv("CANVAS_BACKEND_URL") or os.getenv("ALPHART_CANVAS_BACKEND_URL") or "").strip()
+        value = str(os.getenv("ALPHART_CANVAS_BACKEND_URL") or os.getenv("CANVAS_BACKEND_URL") or "").strip()
     else:
         value = str(os.getenv("ALPHART_EDU_BACKEND_URL") or "").strip()
     return value.rstrip("/")
@@ -266,11 +266,9 @@ def _auth_token() -> str:
 
 def _service_token() -> str:
     return str(
-        os.getenv("ALPHART_EDU_AGENT_TOKEN")
-        or os.getenv("ALPHART_CANVAS_AGENT_TOKEN")
+        os.getenv("HERMES_AGENT_TOKEN")
         or os.getenv("ALPHART_AGENT_TOKEN")
         or os.getenv("CANVAS_AGENT_TOKEN")
-        or os.getenv("HERMES_AGENT_TOKEN")
         or ""
     ).strip()
 
@@ -288,6 +286,19 @@ def _internal_api_url(path: str) -> str:
     if not backend_url:
         return ""
     return f"{backend_url}/internal/api/v1/{path.lstrip('/')}"
+
+
+def _backend_tool_timeout(default: int = 900) -> int:
+    raw = (
+        os.getenv("ALPHART_BACKEND_TOOL_TIMEOUT_SECONDS")
+        or os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
+        or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS")
+        or str(default)
+    )
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
 
 
 def _internal_relay_headers() -> Dict[str, str]:
@@ -349,7 +360,7 @@ def _handle_canvas_create_node(args: Dict[str, Any], **_: Any) -> str:
             url,
             json=args,
             headers=_internal_relay_headers(),
-            timeout=int(os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "60")),
+            timeout=_backend_tool_timeout(60),
         )
     except requests.RequestException as exc:
         return _tool_error(f"Canvas node create failed: {exc}")
@@ -378,7 +389,7 @@ def _handle_canvas_update_node(args: Dict[str, Any], **_: Any) -> str:
             url,
             json=args,
             headers=_internal_relay_headers(),
-            timeout=int(os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "60")),
+            timeout=_backend_tool_timeout(60),
         )
     except requests.RequestException as exc:
         return _tool_error(f"Canvas node update failed: {exc}")
@@ -404,7 +415,7 @@ def _handle_canvas_connect_nodes(args: Dict[str, Any], **_: Any) -> str:
             url,
             json=args,
             headers=_internal_relay_headers(),
-            timeout=int(os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "60")),
+            timeout=_backend_tool_timeout(60),
         )
     except requests.RequestException as exc:
         return _tool_error(f"Canvas connection create failed: {exc}")
@@ -673,7 +684,7 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
             "[alphart-agent] storybook page plan was not valid JSON after repair; using backend physical-page planner",
             flush=True,
         )
-    timeout = int(os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS") or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900"))
+    timeout = _backend_tool_timeout()
     storybook_id = ""
     created: Dict[str, Any] = {}
     try:
@@ -973,7 +984,7 @@ def _handle_alphart_update_storybook_page(args: Dict[str, Any], **_: Any) -> str
     storybook_id = str(args.get("storybook_id") or args.get("id") or "").strip()
     if not storybook_id:
         return _tool_error("storybook_id is required")
-    timeout = int(os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS") or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900"))
+    timeout = _backend_tool_timeout()
     page_id = str(args.get("page_id") or "").strip()
     if not page_id:
         try:
@@ -1054,10 +1065,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
             relay_url,
             json=payload,
             headers=_internal_relay_headers(),
-            timeout=int(
-                os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
-                or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")
-            ),
+            timeout=_backend_tool_timeout(),
         )
     except requests.RequestException as exc:
         return _tool_error(f"Alphart relay request failed: {exc}")
@@ -1137,10 +1145,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
             relay_url,
             json=payload,
             headers=_internal_relay_headers(),
-            timeout=int(
-                os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
-                or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")
-            ),
+            timeout=_backend_tool_timeout(),
         )
     except requests.RequestException as exc:
         return _tool_error(f"Alphart relay request failed: {exc}")
@@ -1207,10 +1212,7 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
         flush=True,
     )
     attempts = max(1, int(os.getenv("ALPHART_AUDIO_RELAY_RETRY_ATTEMPTS", "3") or "3"))
-    timeout = int(
-        os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
-        or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")
-    )
+    timeout = _backend_tool_timeout()
     resp = None
     last_exc: Optional[BaseException] = None
     for attempt in range(1, attempts + 1):
@@ -1562,10 +1564,7 @@ def _request_game_upload_target(args: Dict[str, Any]) -> Dict[str, Any]:
             **({"Authorization": f"Bearer {service_token or token}"} if (service_token or token) else {}),
             **({"X-Hermes-Agent-Token": service_token} if service_token else {}),
         },
-        timeout=int(
-            os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
-            or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "900")
-        ),
+        timeout=_backend_tool_timeout(),
     )
     if resp.status_code < 200 or resp.status_code >= 300:
         raise RuntimeError(f"game upload target failed {resp.status_code}: {resp.text[:300]}")
