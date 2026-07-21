@@ -244,12 +244,14 @@ def _log_model_value(value: Any) -> str:
 
 
 def _backend_url() -> str:
-    value = str(
-        _ctx().get("backend_url")
-        or os.getenv("ALPHART_EDU_BACKEND_URL")
-        or os.getenv("CANVAS_BACKEND_URL")
-        or ""
-    ).strip()
+    context_url = str(_ctx().get("backend_url") or "").strip()
+    if context_url:
+        return context_url.rstrip("/")
+    app_scope = str(_ctx().get("app_scope") or "edu").strip().lower()
+    if app_scope == "canvas":
+        value = str(os.getenv("CANVAS_BACKEND_URL") or os.getenv("ALPHART_CANVAS_BACKEND_URL") or "").strip()
+    else:
+        value = str(os.getenv("ALPHART_EDU_BACKEND_URL") or "").strip()
     return value.rstrip("/")
 
 
@@ -265,6 +267,7 @@ def _auth_token() -> str:
 def _service_token() -> str:
     return str(
         os.getenv("ALPHART_EDU_AGENT_TOKEN")
+        or os.getenv("ALPHART_CANVAS_AGENT_TOKEN")
         or os.getenv("ALPHART_AGENT_TOKEN")
         or os.getenv("CANVAS_AGENT_TOKEN")
         or os.getenv("HERMES_AGENT_TOKEN")
@@ -273,10 +276,11 @@ def _service_token() -> str:
 
 
 def _internal_relay_url(path: str) -> str:
+    normalized_path = path.lstrip("/")
     backend_url = _backend_url()
     if not backend_url:
         return ""
-    return f"{backend_url}/internal/v1/{path.lstrip('/')}"
+    return f"{backend_url}/internal/v1/{normalized_path}"
 
 
 def _internal_api_url(path: str) -> str:
@@ -321,6 +325,97 @@ def _handle_write_plan(args: Dict[str, Any], **_: Any) -> str:
             line += f" - {step['description']}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def _handle_canvas_create_node(args: Dict[str, Any], **_: Any) -> str:
+    args = dict(args or {})
+    if not args.get("canvas_id"):
+        args["canvas_id"] = _ctx().get("canvas_id")
+    if not args.get("item_type") and args.get("type"):
+        args["item_type"] = args.get("type")
+    if not args.get("content"):
+        content: Dict[str, Any] = {}
+        if args.get("text"):
+            content["text"] = args.get("text")
+        if args.get("prompt"):
+            content["prompt"] = args.get("prompt")
+        if content:
+            args["content"] = content
+    url = _internal_api_url("canvas/nodes")
+    if not url:
+        return _tool_error("Canvas backend URL is not configured")
+    try:
+        resp = requests.post(
+            url,
+            json=args,
+            headers=_internal_relay_headers(),
+            timeout=int(os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "60")),
+        )
+    except requests.RequestException as exc:
+        return _tool_error(f"Canvas node create failed: {exc}")
+    try:
+        decoded = resp.json()
+    except ValueError:
+        decoded = {"raw": resp.text}
+    if resp.status_code < 200 or resp.status_code >= 300:
+        detail = decoded.get("detail") if isinstance(decoded, dict) else resp.text
+        return _tool_error(str(detail or f"HTTP {resp.status_code}"))
+    return json.dumps({"status": "success", "result": decoded}, ensure_ascii=False)
+
+
+def _handle_canvas_update_node(args: Dict[str, Any], **_: Any) -> str:
+    args = dict(args or {})
+    item_id = str(args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or "").strip()
+    if not item_id:
+        return _tool_error("canvas_item_id is required")
+    if not args.get("canvas_id"):
+        args["canvas_id"] = _ctx().get("canvas_id")
+    url = _internal_api_url(f"canvas/nodes/{item_id}")
+    if not url:
+        return _tool_error("Canvas backend URL is not configured")
+    try:
+        resp = requests.patch(
+            url,
+            json=args,
+            headers=_internal_relay_headers(),
+            timeout=int(os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "60")),
+        )
+    except requests.RequestException as exc:
+        return _tool_error(f"Canvas node update failed: {exc}")
+    try:
+        decoded = resp.json()
+    except ValueError:
+        decoded = {"raw": resp.text}
+    if resp.status_code < 200 or resp.status_code >= 300:
+        detail = decoded.get("detail") if isinstance(decoded, dict) else resp.text
+        return _tool_error(str(detail or f"HTTP {resp.status_code}"))
+    return json.dumps({"status": "success", "result": decoded}, ensure_ascii=False)
+
+
+def _handle_canvas_connect_nodes(args: Dict[str, Any], **_: Any) -> str:
+    args = dict(args or {})
+    if not args.get("canvas_id"):
+        args["canvas_id"] = _ctx().get("canvas_id")
+    url = _internal_api_url("canvas/connections")
+    if not url:
+        return _tool_error("Canvas backend URL is not configured")
+    try:
+        resp = requests.post(
+            url,
+            json=args,
+            headers=_internal_relay_headers(),
+            timeout=int(os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS", "60")),
+        )
+    except requests.RequestException as exc:
+        return _tool_error(f"Canvas connection create failed: {exc}")
+    try:
+        decoded = resp.json()
+    except ValueError:
+        decoded = {"raw": resp.text}
+    if resp.status_code < 200 or resp.status_code >= 300:
+        detail = decoded.get("detail") if isinstance(decoded, dict) else resp.text
+        return _tool_error(str(detail or f"HTTP {resp.status_code}"))
+    return json.dumps({"status": "success", "result": decoded}, ensure_ascii=False)
 
 
 def _normalize_storybook_pages(value: Any) -> List[Dict[str, Any]]:
@@ -944,6 +1039,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
         "aspect_ratio": args.get("aspect_ratio"),
         "session_id": _ctx().get("session_id"),
         "canvas_id": _ctx().get("canvas_id"),
+        "canvas_item_id": args.get("canvas_item_id") or args.get("item_id") or args.get("node_id"),
     }
     if args.get("quantity"):
         payload["n"] = args.get("quantity")
@@ -1755,6 +1851,78 @@ WRITE_PLAN_SCHEMA = {
     },
 }
 
+CANVAS_CREATE_NODE_SCHEMA = {
+    "name": "canvas_create_node",
+    "description": (
+        "Create a Canvas node in the current document. Use this before generation when the user asks the agent "
+        "to create or manage canvas items, especially to create an image/video prompt node that later generation "
+        "tools can update by passing canvas_item_id."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "canvas_id": {"type": "string", "description": "Canvas document id. Defaults to current canvas."},
+            "item_type": {"type": "string", "enum": ["text", "note", "image", "video", "audio", "file", "group"]},
+            "title": {"type": "string"},
+            "text": {"type": "string", "description": "Text content for text/note nodes."},
+            "prompt": {"type": "string", "description": "Prompt content for media generation nodes."},
+            "content": {"type": "object", "description": "Full Canvas node content JSON."},
+            "generation_config": {"type": "object", "description": "Generation config JSON."},
+            "position_x": {"type": "number"},
+            "position_y": {"type": "number"},
+            "width": {"type": "number"},
+            "height": {"type": "number"},
+            "z_index": {"type": "integer"},
+            "last_run_status": {"type": "string", "enum": ["idle", "running", "completed", "failed"]},
+        },
+        "required": ["item_type", "title"],
+    },
+}
+
+CANVAS_UPDATE_NODE_SCHEMA = {
+    "name": "canvas_update_node",
+    "description": "Update an existing Canvas node's title, content, prompt, status, layout, or output.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "canvas_id": {"type": "string", "description": "Canvas document id. Defaults to current canvas."},
+            "canvas_item_id": {"type": "string", "description": "Canvas item/node id to update."},
+            "item_id": {"type": "string", "description": "Alias for canvas_item_id."},
+            "item_type": {"type": "string"},
+            "title": {"type": "string"},
+            "text": {"type": "string"},
+            "prompt": {"type": "string"},
+            "content": {"type": "object"},
+            "generation_config": {"type": "object"},
+            "position_x": {"type": "number"},
+            "position_y": {"type": "number"},
+            "width": {"type": "number"},
+            "height": {"type": "number"},
+            "z_index": {"type": "integer"},
+            "last_run_status": {"type": "string", "enum": ["idle", "running", "completed", "failed"]},
+            "last_run_error": {"type": "string"},
+            "last_output": {"type": "object"},
+        },
+        "required": ["canvas_item_id"],
+    },
+}
+
+CANVAS_CONNECT_NODES_SCHEMA = {
+    "name": "canvas_connect_nodes",
+    "description": "Create a connection between two Canvas nodes in the current document.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "canvas_id": {"type": "string", "description": "Canvas document id. Defaults to current canvas."},
+            "source_item_id": {"type": "string"},
+            "target_item_id": {"type": "string"},
+            "source_handle": {"type": "string", "default": "out"},
+            "target_handle": {"type": "string", "default": "in"},
+        },
+        "required": ["source_item_id", "target_item_id"],
+    },
+}
+
 CANVAS_GENERATE_IMAGE_SCHEMA = {
     "name": "canvas_generate_image",
     "description": (
@@ -1765,6 +1933,7 @@ CANVAS_GENERATE_IMAGE_SCHEMA = {
         "type": "object",
         "properties": {
             "prompt": {"type": "string", "description": "Detailed professional image prompt."},
+            "canvas_item_id": {"type": "string", "description": "Existing Canvas image node id to update instead of creating a duplicate node."},
             "tool_id": {"type": "string", "description": "Selected Canvas tool id, when known."},
             "provider": {"type": "string", "description": "Selected image provider, when known."},
             "model": {"type": "string", "description": "Selected image model, when known."},
@@ -2032,6 +2201,27 @@ registry.register(
     toolset="alphart-edu",
     schema=WRITE_PLAN_SCHEMA,
     handler=_handle_write_plan,
+    is_async=False,
+)
+registry.register(
+    name="canvas_create_node",
+    toolset="alphart-edu",
+    schema=CANVAS_CREATE_NODE_SCHEMA,
+    handler=_handle_canvas_create_node,
+    is_async=False,
+)
+registry.register(
+    name="canvas_update_node",
+    toolset="alphart-edu",
+    schema=CANVAS_UPDATE_NODE_SCHEMA,
+    handler=_handle_canvas_update_node,
+    is_async=False,
+)
+registry.register(
+    name="canvas_connect_nodes",
+    toolset="alphart-edu",
+    schema=CANVAS_CONNECT_NODES_SCHEMA,
+    handler=_handle_canvas_connect_nodes,
     is_async=False,
 )
 registry.register(

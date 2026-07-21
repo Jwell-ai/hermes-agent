@@ -84,10 +84,17 @@ _HERMES_WEBHOOK_SAFE_TOOLS = [
 
 _ALPHART_TOOLS = [
     "write_plan",
+    "canvas_create_node",
+    "canvas_update_node",
+    "canvas_connect_nodes",
     "generate_image",
     "generate_video",
+    "generate_audio",
+    "transcribe_audio",
     "canvas_generate_image",
     "canvas_generate_video",
+    "canvas_generate_audio",
+    "canvas_transcribe_audio",
     "canvas_generate_game",
     "generate_game",
     "canvas_create_storybook",
@@ -102,6 +109,11 @@ _ALPHART_TOOLS = [
 TOOLSETS = {
     "alphart-edu": {
         "description": "Alphart app tools: planning plus backend-managed media generation.",
+        "tools": _ALPHART_TOOLS,
+        "includes": []
+    },
+    "alphart-canvas": {
+        "description": "Alphart Canvas tools: planning plus canvas-node-aware media generation.",
         "tools": _ALPHART_TOOLS,
         "includes": []
     },

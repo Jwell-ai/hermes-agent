@@ -49,6 +49,7 @@ class AlphartEduChatRequest(BaseModel):
     tool_list: List[Any] = Field(default_factory=list)
     model_configs: Dict[str, Any] = Field(default_factory=dict)
     backend_url: str = ""
+    app_scope: str = "edu"
     system_prompt: str = ""
     audio_language_type: str = ""
     ui_language: str = ""
@@ -60,6 +61,7 @@ class AlphartEduTitleRequest(BaseModel):
     auth_token: str = ""
     org_no: str = ""
     backend_url: str = ""
+    app_scope: str = "edu"
     text_model: Dict[str, Any] = Field(default_factory=dict)
     text_models: List[Dict[str, Any]] = Field(default_factory=list)
     model_configs: Dict[str, Any] = Field(default_factory=dict)
@@ -87,6 +89,7 @@ _sync_bundled_skills()
 def _service_token() -> str:
     return (
         os.getenv("ALPHART_EDU_AGENT_TOKEN")
+        or os.getenv("ALPHART_CANVAS_AGENT_TOKEN")
         or os.getenv("ALPHART_AGENT_TOKEN")
         or os.getenv("CANVAS_AGENT_TOKEN")
         or os.getenv("HERMES_AGENT_TOKEN")
@@ -264,7 +267,7 @@ def _backend_media_url(req: AlphartEduChatRequest, ref: Dict[str, Any]) -> str:
     object_name = _string(ref.get("s3_object_name") or ref.get("object_name") or ref.get("key"))
     if not object_name:
         return ""
-    backend_url = (req.backend_url or os.getenv("ALPHART_EDU_BACKEND_URL") or os.getenv("CANVAS_BACKEND_URL", "http://localhost:57988")).rstrip("/")
+    backend_url = _backend_url_from_req(req)
     file_id = _string(ref.get("file_id"))
     route_file_id = (object_name.rstrip("/").rsplit("/", 1)[-1] or file_id.rstrip("/").rsplit("/", 1)[-1] or "media")
     return f"{backend_url}/api/v1/files/{quote(route_file_id, safe='')}?s3_object_name={quote(object_name, safe='')}"
@@ -435,13 +438,40 @@ def _endpoint(config: Dict[str, Any]) -> str:
     return ""
 
 
+def _request_app_scope(req: Any) -> str:
+    raw = _string(
+        getattr(req, "app_scope", "")
+        or getattr(req, "app_name", "")
+        or getattr(req, "app", "")
+    ).lower()
+    if "canvas" in raw:
+        return "canvas"
+    if "edu" in raw:
+        return "edu"
+
+    backend_url = _string(getattr(req, "backend_url", "")).rstrip("/")
+    canvas_url = _string(os.getenv("CANVAS_BACKEND_URL") or os.getenv("ALPHART_CANVAS_BACKEND_URL")).rstrip("/")
+    edu_url = _string(os.getenv("ALPHART_EDU_BACKEND_URL")).rstrip("/")
+    if backend_url and canvas_url and backend_url == canvas_url:
+        return "canvas"
+    if backend_url and edu_url and backend_url == edu_url:
+        return "edu"
+    if "canvas" in backend_url.lower():
+        return "canvas"
+    return "edu"
+
+
 def _backend_url_from_req(req: Any) -> str:
-    return (
-        _string(getattr(req, "backend_url", ""))
-        or os.getenv("ALPHART_EDU_BACKEND_URL")
-        or os.getenv("CANVAS_BACKEND_URL")
-        or "http://localhost:57988"
-    ).rstrip("/")
+    explicit = _string(getattr(req, "backend_url", "")).rstrip("/")
+    if explicit:
+        return explicit
+    if _request_app_scope(req) == "canvas":
+        return _string(
+            os.getenv("CANVAS_BACKEND_URL")
+            or os.getenv("ALPHART_CANVAS_BACKEND_URL")
+            or "http://localhost:9999"
+        ).rstrip("/")
+    return _string(os.getenv("ALPHART_EDU_BACKEND_URL") or "http://localhost:57988").rstrip("/")
 
 
 def _internal_relay_base_url(req: Any) -> str:
@@ -2142,6 +2172,8 @@ PLANNER RULES:
 	- For simple media requests, call canvas_generate_image/canvas_generate_video/canvas_generate_audio directly. Do not stop after a plan.
 	- Use the selected tool metadata for provider/model. Do not invent provider/model names and do not rely on backend-selected defaults. If no selected image/video/audio tool is listed for the requested capability, return a concise configuration error.
 - For complex media requests, you may call write_plan first, but you must continue to the generation tool after the plan result.
+- For Canvas requests where the user asks you to create/manage canvas nodes, use canvas_create_node/canvas_update_node/canvas_connect_nodes. For image generation on Canvas, create an image node first with the enriched professional prompt, then call canvas_generate_image with that node's canvas_item_id so the backend updates the same node with the generated asset.
+- If you create a planning/prompt node and a final media node, connect them with canvas_connect_nodes after both node ids are known.
 - Do not ask for approval before media generation unless the backend returns a confirmation request.
 - Do not call multiple tools in the same assistant turn. Always wait for one tool result before making another tool call.
 - If a tool call fails, explain the error to the user and do not retry automatically.
@@ -2503,16 +2535,23 @@ def _has_visible_agent_output(messages: List[Any], final_response: str) -> bool:
 
 
 def _callback_backend_url(req: AlphartEduChatRequest) -> str:
-    return _string(req.backend_url or os.getenv("ALPHART_EDU_BACKEND_URL") or os.getenv("CANVAS_BACKEND_URL")).rstrip("/")
+    return _backend_url_from_req(req)
 
 
 def _callback_service_token() -> str:
     return _string(
         os.getenv("ALPHART_EDU_AGENT_TOKEN")
+        or os.getenv("ALPHART_CANVAS_AGENT_TOKEN")
         or os.getenv("ALPHART_AGENT_TOKEN")
         or os.getenv("CANVAS_AGENT_TOKEN")
         or os.getenv("HERMES_AGENT_TOKEN")
     )
+
+
+def _alphart_enabled_toolsets(req: AlphartEduChatRequest) -> List[str]:
+    if _request_app_scope(req) == "canvas":
+        return ["alphart-canvas", "skills"]
+    return ["alphart-edu", "skills"]
 
 
 def _post_chat_result_callback(req: AlphartEduChatRequest, response: Dict[str, Any]) -> None:
@@ -3060,7 +3099,7 @@ def _generate_title_agent(req: AlphartEduTitleRequest, provider: str, model: str
         api_mode=api_mode,
         model=model,
         enabled_toolsets=[],
-        disabled_toolsets=["alphart-edu", "skills"],
+        disabled_toolsets=["alphart-edu", "alphart-canvas", "skills"],
         max_iterations=1,
         max_tokens=64,
         quiet_mode=True,
@@ -3218,6 +3257,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "org_no": req.org_no,
         "auth_token": req.auth_token,
         "backend_url": _backend_url_from_req(req),
+        "app_scope": _request_app_scope(req),
         "tool_list": req.tool_list,
         "input_images": input_images,
         "audio_language_type": _normalize_audio_language_type(req.audio_language_type) or _ui_audio_language_type(req.ui_language),
@@ -3339,7 +3379,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                         provider=agent_provider,
                         api_mode=agent_api_mode,
                         model=model,
-                        enabled_toolsets=["alphart-edu", "skills"],
+                        enabled_toolsets=_alphart_enabled_toolsets(req),
                         max_iterations=_agent_max_iterations(config),
                         max_tokens=_agent_max_tokens(config, is_game=is_game_request),
                         quiet_mode=True,
