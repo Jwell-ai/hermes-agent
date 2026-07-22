@@ -461,15 +461,14 @@ def _request_app_scope(req: Any) -> str:
 
 def _backend_url_from_req(req: Any) -> str:
     explicit = _string(getattr(req, "backend_url", "")).rstrip("/")
-    if explicit:
-        return explicit
     if _request_app_scope(req) == "canvas":
         return _string(
             os.getenv("ALPHART_CANVAS_BACKEND_URL")
             or os.getenv("CANVAS_BACKEND_URL")
+            or explicit
             or "http://localhost:9999"
         ).rstrip("/")
-    return _string(os.getenv("ALPHART_EDU_BACKEND_URL") or "http://localhost:57988").rstrip("/")
+    return _string(os.getenv("ALPHART_EDU_BACKEND_URL") or explicit or "http://localhost:57988").rstrip("/")
 
 
 def _internal_relay_base_url(req: Any) -> str:

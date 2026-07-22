@@ -245,13 +245,11 @@ def _log_model_value(value: Any) -> str:
 
 def _backend_url() -> str:
     context_url = str(_ctx().get("backend_url") or "").strip()
-    if context_url:
-        return context_url.rstrip("/")
     app_scope = str(_ctx().get("app_scope") or "edu").strip().lower()
     if app_scope == "canvas":
-        value = str(os.getenv("ALPHART_CANVAS_BACKEND_URL") or os.getenv("CANVAS_BACKEND_URL") or "").strip()
+        value = str(os.getenv("ALPHART_CANVAS_BACKEND_URL") or os.getenv("CANVAS_BACKEND_URL") or context_url or "").strip()
     else:
-        value = str(os.getenv("ALPHART_EDU_BACKEND_URL") or "").strip()
+        value = str(os.getenv("ALPHART_EDU_BACKEND_URL") or context_url or "").strip()
     return value.rstrip("/")
 
 
