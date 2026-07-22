@@ -3565,6 +3565,9 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
 def title(req: AlphartEduTitleRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
     _check_auth(authorization)
 
+    candidates = _text_model_candidates(req)
+    if candidates:
+        req.text_model = candidates[0]
     provider = _string(req.text_model.get("provider"))
     model = _string(req.text_model.get("model"))
     config = _provider_config(req)
