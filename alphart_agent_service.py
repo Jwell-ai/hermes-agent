@@ -1295,6 +1295,26 @@ def _generation_tool_effectively_failed(messages: List[Any], media_type: str = "
     return _generation_tool_failed(messages, media_type) and not _generation_tool_completed(messages, media_type)
 
 
+def _generation_tool_error(messages: List[Any], media_type: str = "") -> str:
+    expected = media_type.lower().strip()
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        name = _string(msg.get("name")).lower()
+        if expected and expected not in name:
+            continue
+        content = msg.get("content")
+        try:
+            decoded = json.loads(content) if isinstance(content, str) else content
+        except (TypeError, ValueError):
+            continue
+        if isinstance(decoded, dict) and decoded.get("success") is False:
+            message = _string(decoded.get("error")).strip()
+            if message:
+                return message[:500]
+    return ""
+
+
 def _game_tool_failed(messages: List[Any]) -> bool:
     for msg in messages or []:
         if not isinstance(msg, dict) or msg.get("role") != "tool":
@@ -3450,6 +3470,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
     current_media_failed = _generation_tool_effectively_failed(current_turn_messages)
     current_game_failed = _game_tool_failed(current_turn_messages)
     current_tool_failed = current_media_failed or current_game_failed
+    canvas_tool_error = _generation_tool_error(current_turn_messages) if _request_app_scope(req) == "canvas" else ""
     reference_image_generation = (
         bool(input_images)
         and not current_media_attempted
@@ -3469,7 +3490,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
             response_messages = []
     final_response = _string(result.get("final_response"))
     if current_tool_failed:
-        final_response = SYSTEM_BUSY_MESSAGE
+        final_response = canvas_tool_error or SYSTEM_BUSY_MESSAGE
     if reference_image_generation and not _generation_tool_completed(response_messages, "image"):
         final_response = ""
     if not final_response:
@@ -3519,8 +3540,9 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
     current_media_failed = current_media_failed or _generation_tool_effectively_failed(current_turn_messages)
     current_game_failed = current_game_failed or _game_tool_failed(current_turn_messages)
     current_tool_failed = current_media_failed or current_game_failed
+    canvas_tool_error = _generation_tool_error(current_turn_messages) if _request_app_scope(req) == "canvas" else ""
     if current_tool_failed:
-        final_response = SYSTEM_BUSY_MESSAGE
+        final_response = canvas_tool_error or SYSTEM_BUSY_MESSAGE
     if not final_response or (
         _storybook_tool_attempted(current_turn_messages)
         and final_response == _last_assistant_text(response_messages)
@@ -3544,7 +3566,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         f"session_id={req.session_id} raw_messages={raw_count} "
         f"public_messages={len(response_messages)} final_response_len={len(final_response)} "
         f"failed={bool(result.get('failed') or current_tool_failed or empty_result_error)} "
-        f"error={empty_result_error or (SYSTEM_BUSY_MESSAGE if current_tool_failed else '')}",
+        f"error={empty_result_error or ((canvas_tool_error or SYSTEM_BUSY_MESSAGE) if current_tool_failed else '')}",
         flush=True,
     )
     response = {
@@ -3561,7 +3583,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "output_tokens": result.get("output_tokens") or 0,
         "interrupted": bool(result.get("interrupted") or current_tool_failed),
         "failed": bool(result.get("failed") or current_tool_failed or empty_result_error),
-        "error": empty_result_error or (SYSTEM_BUSY_MESSAGE if current_tool_failed else _string(result.get("error"))),
+        "error": empty_result_error or ((canvas_tool_error or SYSTEM_BUSY_MESSAGE) if current_tool_failed else _string(result.get("error"))),
     }
     _post_chat_result_callback(req, response)
     return response

@@ -1077,6 +1077,15 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
         flush=True,
     )
     if resp.status_code < 200 or resp.status_code >= 300:
+        if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
+            detail = ""
+            if isinstance(decoded, dict):
+                error = decoded.get("error")
+                if isinstance(error, dict):
+                    detail = str(error.get("message") or error.get("detail") or "")
+                detail = detail or str(decoded.get("detail") or decoded.get("message") or "")
+            detail = " ".join((detail or f"relay returned HTTP {resp.status_code}").split())[:500]
+            return _tool_error(f"Canvas video relay failed (HTTP {resp.status_code}): {detail}")
         return _system_busy_tool_error()
     data = decoded.get("data") if isinstance(decoded, dict) else None
     if isinstance(data, list) and data and isinstance(data[0], dict):
