@@ -1048,7 +1048,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
         "aspect_ratio": args.get("aspect_ratio"),
         "session_id": _ctx().get("session_id"),
         "canvas_id": _ctx().get("canvas_id"),
-        "canvas_item_id": args.get("canvas_item_id") or args.get("item_id") or args.get("node_id"),
+        "canvas_item_id": args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or _ctx().get("canvas_item_id"),
     }
     if args.get("quantity"):
         payload["n"] = args.get("quantity")

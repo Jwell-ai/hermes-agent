@@ -38,6 +38,7 @@ from tools.alphart_tools import (
 class AlphartEduChatRequest(BaseModel):
     session_id: str = ""
     canvas_id: str = ""
+    canvas_item_id: str = ""
     user_id: str = ""
     user_uuid: str = ""
     storage_prefix: str = ""
@@ -3246,6 +3247,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
     context = {
         "session_id": req.session_id,
         "canvas_id": req.canvas_id,
+        "canvas_item_id": req.canvas_item_id,
         "user_id": req.user_id,
         "user_uuid": req.user_uuid,
         "storage_prefix": req.storage_prefix,
