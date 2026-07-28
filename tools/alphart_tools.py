@@ -1115,13 +1115,44 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
 
 def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     args = dict(args or {})
+    if str(_ctx().get("app_scope") or "").strip().lower() == "canvas" and _ctx().get("duration_seconds"):
+        args["duration"] = _ctx().get("duration_seconds")
     if args.get("duration_seconds") and not args.get("duration"):
         args["duration"] = args.get("duration_seconds")
     if args.get("image_url") and not args.get("input_images"):
         args["input_images"] = [args.get("image_url")]
     if not args.get("input_images") and _ctx().get("input_images"):
         args["input_images"] = _ctx().get("input_images")
-    if "generate_audio" not in args:
+
+    if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
+        canvas_audio = [entry for entry in (_ctx().get("input_audio") or []) if isinstance(entry, dict)]
+        requested_audio = [entry for entry in (args.get("input_audio") or []) if isinstance(entry, dict)]
+        # Directly connected Canvas audio is authoritative. Preserve any additional
+        # model-selected references without allowing it to discard the soundtrack.
+        merged_audio = list(canvas_audio)
+        known_audio = {
+            str(entry.get("s3_object_name") or entry.get("object_key") or entry.get("url") or "")
+            for entry in canvas_audio
+        }
+        for entry in requested_audio:
+            identity = str(entry.get("s3_object_name") or entry.get("object_key") or entry.get("url") or "")
+            if identity and identity in known_audio:
+                continue
+            merged_audio.append(entry)
+        args["input_audio"] = merged_audio
+    elif not args.get("input_audio") and _ctx().get("input_audio"):
+        args["input_audio"] = _ctx().get("input_audio")
+    has_canvas_soundtrack = (
+        str(_ctx().get("app_scope") or "").strip().lower() == "canvas"
+        and any(
+            str((entry or {}).get("role") or "").strip().lower() in {"soundtrack", "background_music"}
+            for entry in (args.get("input_audio") or [])
+            if isinstance(entry, dict)
+        )
+    )
+    if has_canvas_soundtrack:
+        args["generate_audio"] = False
+    elif "generate_audio" not in args:
         args["generate_audio"] = bool(_ctx().get("generate_audio"))
     tool = _pick_tool("video", args)
     _set_tool_defaults(args, tool)
@@ -1151,6 +1182,8 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     if args.get("input_images"):
         images = args.get("input_images")
         payload["image"] = images[0] if isinstance(images, list) and images else images
+    if args.get("input_audio"):
+        payload["audio"] = args.get("input_audio")
     print(
         f"[alphart-agent] calling internal relay video session_id={_ctx().get('session_id')} "
         f"provider={_log_model_value(payload.get('provider'))} "
@@ -2003,6 +2036,11 @@ CANVAS_GENERATE_VIDEO_SCHEMA = {
                     },
                 },
                 "description": "Reference images extracted from <input_images> XML. Prefer s3_object_name objects; file_id strings are fallback only.",
+            },
+            "input_audio": {
+                "type": "array",
+                "items": {"type": "object", "properties": {"s3_object_name": {"type": "string"}, "url": {"type": "string"}, "filename": {"type": "string"}, "role": {"type": "string", "enum": ["soundtrack", "background_music", "voiceprint"]}}},
+                "description": "Soundtrack audio references. Canvas sends these from connected sound nodes.",
             },
             "duration_seconds": {"type": "integer", "description": "Requested video duration in seconds."},
             "resolution": {"type": "string", "description": "Video resolution, for example 480p, 720p, 1080p."},
