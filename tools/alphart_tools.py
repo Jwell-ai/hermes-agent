@@ -1127,6 +1127,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         "duration": args.get("duration"),
         "session_id": _ctx().get("session_id"),
         "canvas_id": _ctx().get("canvas_id"),
+        "canvas_item_id": args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or _ctx().get("canvas_item_id"),
         "tool_call_id": kwargs.get("tool_call_id") or args.get("tool_call_id"),
     }
     if args.get("input_images"):

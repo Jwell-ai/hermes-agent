@@ -39,6 +39,7 @@ class AlphartEduChatRequest(BaseModel):
     session_id: str = ""
     canvas_id: str = ""
     canvas_item_id: str = ""
+    video_model: str = ""
     user_id: str = ""
     user_uuid: str = ""
     storage_prefix: str = ""
