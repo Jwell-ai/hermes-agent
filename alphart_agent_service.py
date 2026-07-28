@@ -40,6 +40,8 @@ class AlphartEduChatRequest(BaseModel):
     canvas_id: str = ""
     canvas_item_id: str = ""
     video_model: str = ""
+    input_images: List[Any] = Field(default_factory=list)
+    generate_audio: bool = False
     user_id: str = ""
     user_uuid: str = ""
     storage_prefix: str = ""
@@ -3235,7 +3237,8 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
     if is_game_request and not is_storybook_request:
         candidates = _require_openai_text_model_candidates(req, candidates, "game generation", exclude_small_models=True)
         primary_text_model = candidates[0]
-    input_images = _input_images_from_text(user_message)
+    canvas_input_images = list(req.input_images or []) if _request_app_scope(req) == "canvas" else []
+    input_images = canvas_input_images or _input_images_from_text(user_message)
     latest_generated_image = _latest_generated_image_ref(conversation_history)
     if not input_images and latest_generated_image and _media_intent(user_message, has_image_context=True) == "image":
         input_images = [latest_generated_image]
@@ -3258,6 +3261,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "app_scope": _request_app_scope(req),
         "tool_list": req.tool_list,
         "input_images": input_images,
+        "generate_audio": bool(req.generate_audio),
         "audio_language_type": _normalize_audio_language_type(req.audio_language_type) or _ui_audio_language_type(req.ui_language),
         "ui_language": req.ui_language,
     }

@@ -1112,6 +1112,8 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         args["input_images"] = [args.get("image_url")]
     if not args.get("input_images") and _ctx().get("input_images"):
         args["input_images"] = _ctx().get("input_images")
+    if "generate_audio" not in args:
+        args["generate_audio"] = bool(_ctx().get("generate_audio"))
     tool = _pick_tool("video", args)
     _set_tool_defaults(args, tool)
     args.setdefault("wait", False)
@@ -1128,8 +1130,15 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         "session_id": _ctx().get("session_id"),
         "canvas_id": _ctx().get("canvas_id"),
         "canvas_item_id": args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or _ctx().get("canvas_item_id"),
+        "generate_audio": bool(args.get("generate_audio")),
         "tool_call_id": kwargs.get("tool_call_id") or args.get("tool_call_id"),
     }
+    if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
+        payload.update({
+            "user_id": _ctx().get("user_id"),
+            "user_uuid": _ctx().get("user_uuid"),
+            "org_no": _ctx().get("org_no"),
+        })
     if args.get("input_images"):
         images = args.get("input_images")
         payload["image"] = images[0] if isinstance(images, list) and images else images
@@ -1989,6 +1998,7 @@ CANVAS_GENERATE_VIDEO_SCHEMA = {
             "duration_seconds": {"type": "integer", "description": "Requested video duration in seconds."},
             "resolution": {"type": "string", "description": "Video resolution, for example 480p, 720p, 1080p."},
             "aspect_ratio": {"type": "string", "description": "Video aspect ratio, for example 16:9 or 9:16."},
+            "generate_audio": {"type": "boolean", "description": "Whether the generated video should include audio."},
             "wait": {"type": "boolean", "default": False},
         },
         "required": ["prompt"],
