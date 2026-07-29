@@ -1115,6 +1115,8 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
 
 def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     args = dict(args or {})
+    if not str(args.get("prompt") or "").strip() and str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
+        args["prompt"] = str(_ctx().get("canvas_prompt_context") or _ctx().get("user_message") or "").strip()
     if str(_ctx().get("app_scope") or "").strip().lower() == "canvas" and _ctx().get("duration_seconds"):
         args["duration"] = _ctx().get("duration_seconds")
     if args.get("duration_seconds") and not args.get("duration"):
