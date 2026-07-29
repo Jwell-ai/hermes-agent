@@ -44,6 +44,8 @@ class AlphartEduChatRequest(BaseModel):
     input_audio: List[Any] = Field(default_factory=list)
     duration_seconds: int = 0
     generate_audio: bool = False
+    script_only: bool = False
+    approved_audio_script: str = ""
     user_id: str = ""
     user_uuid: str = ""
     storage_prefix: str = ""
@@ -1999,6 +2001,7 @@ def _forced_media_tool_messages(
     has_image_context: bool = False,
     has_video_context: bool = False,
     input_images: Optional[List[Any]] = None,
+    approved_audio_script: str = "",
 ) -> List[Dict[str, Any]]:
     if _storybook_intent(user_message):
         return []
@@ -2082,7 +2085,7 @@ def _forced_media_tool_messages(
 
     if intent == "audio":
         call_id = str(uuid.uuid4())
-        script = _last_assistant_text(response_messages)
+        script = _string(approved_audio_script) or _last_assistant_text(response_messages)
         language_type = _audio_language_type_from_text(user_message) or _normalize_audio_language_type(_ctx().get("audio_language_type"))
         if not script or script.strip() == user_message.strip() or script.strip().lower().startswith("plan:"):
             script = _audio_script_from_request(user_message, language_type)
@@ -2570,6 +2573,10 @@ def _callback_service_token() -> str:
 
 
 def _alphart_enabled_toolsets(req: AlphartEduChatRequest) -> List[str]:
+    if req.script_only:
+        # Canvas uses this mode to draft an Audio node's spoken script. Media tools
+        # must be unavailable even when the brief contains words such as "audio".
+        return ["skills"]
     if _request_app_scope(req) == "canvas":
         return ["alphart-canvas", "skills"]
     return ["alphart-edu", "skills"]
@@ -3287,6 +3294,8 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "input_audio": canvas_input_audio,
         "duration_seconds": int(req.duration_seconds or 0),
         "generate_audio": bool(req.generate_audio),
+        "script_only": bool(req.script_only),
+        "approved_audio_script": req.approved_audio_script,
         "audio_language_type": _normalize_audio_language_type(req.audio_language_type) or _ui_audio_language_type(req.ui_language),
         "ui_language": req.ui_language,
     }
@@ -3532,13 +3541,14 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     user_message,
                     input_images=input_images,
                 )
-            if not forced_messages and not current_media_attempted:
+            if not forced_messages and not current_media_attempted and not req.script_only:
                 forced_messages = _forced_media_tool_messages(
                     user_message,
                     response_messages,
                     current_turn_messages,
                     has_image_context=bool(input_images),
                     input_images=input_images,
+                    approved_audio_script=req.approved_audio_script,
                 )
             response_messages.extend(forced_messages)
     current_turn_messages = _messages_after_latest_user(response_messages)

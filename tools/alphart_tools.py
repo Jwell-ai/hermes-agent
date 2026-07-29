@@ -1242,9 +1242,12 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
     if not relay_url:
         return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
     text = str(args.get("input") or args.get("text") or args.get("script") or args.get("prompt") or "").strip()
+    approved_script = str(_ctx().get("approved_audio_script") or "").strip()
+    if _ctx().get("app_scope") == "canvas" and approved_script:
+        text = approved_script
     if not text:
         return _tool_error("audio input text is required")
-    if len(text) < 80 or re.search(r"^\s*(/audio|generate|create|生成)", text, flags=re.I):
+    if _ctx().get("app_scope") != "canvas" and (len(text) < 80 or re.search(r"^\s*(/audio|generate|create|生成)", text, flags=re.I)):
         text = _audio_script_from_request(text, str(args.get("language_type") or ""))
     payload = {
         "provider": selected_provider,
@@ -1255,6 +1258,10 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
         "response_format": args.get("response_format") or "wav",
         "session_id": _ctx().get("session_id"),
         "canvas_id": _ctx().get("canvas_id"),
+        "canvas_item_id": _ctx().get("canvas_item_id"),
+        "user_id": _ctx().get("user_id"),
+        "user_uuid": _ctx().get("user_uuid"),
+        "org_no": _ctx().get("org_no"),
     }
     print(
         f"[alphart-agent] calling internal relay audio session_id={_ctx().get('session_id')} "
