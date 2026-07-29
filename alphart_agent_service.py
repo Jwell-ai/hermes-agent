@@ -2002,6 +2002,7 @@ def _forced_media_tool_messages(
     has_video_context: bool = False,
     input_images: Optional[List[Any]] = None,
     approved_audio_script: str = "",
+    forced_intent: str = "",
 ) -> List[Dict[str, Any]]:
     if _storybook_intent(user_message):
         return []
@@ -2009,7 +2010,7 @@ def _forced_media_tool_messages(
         return []
     if _media_analysis_intent(user_message.lower()):
         return []
-    intent = _media_intent(user_message, has_image_context=has_image_context, has_video_context=has_video_context)
+    intent = forced_intent or _media_intent(user_message, has_image_context=has_image_context, has_video_context=has_video_context)
     if not intent:
         return []
     current_messages = scan_messages if scan_messages is not None else response_messages
@@ -3549,6 +3550,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     has_image_context=bool(input_images),
                     input_images=input_images,
                     approved_audio_script=req.approved_audio_script,
+                    forced_intent="audio" if req.approved_audio_script else "",
                 )
             response_messages.extend(forced_messages)
     current_turn_messages = _messages_after_latest_user(response_messages)
