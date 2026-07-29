@@ -1256,6 +1256,9 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
 
 def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
+    requested_duration = int(args.get("duration_seconds") or _ctx().get("duration_seconds") or 0)
+    if _ctx().get("app_scope") == "canvas":
+        requested_duration = max(5, min(15, requested_duration or 5))
     tool = _pick_tool("audio", args)
     _set_tool_defaults(args, tool)
     selected_provider = str(args.get("provider") or "").strip()
@@ -1281,6 +1284,7 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
         "voice": args.get("voice"),
         "language_type": args.get("language_type"),
         "response_format": args.get("response_format") or "wav",
+        "duration_seconds": requested_duration or None,
         "session_id": _ctx().get("session_id"),
         "canvas_id": _ctx().get("canvas_id"),
         "canvas_item_id": _ctx().get("canvas_item_id"),
@@ -2107,6 +2111,7 @@ CANVAS_GENERATE_AUDIO_SCHEMA = {
                 "description": "Requested spoken language/accent: mandarin for 中文, cantonese for 粤语/广东话, english for English.",
             },
             "response_format": {"type": "string", "description": "Optional output format, e.g. wav or mp3."},
+            "duration_seconds": {"type": "integer", "description": "Requested Canvas audio duration in seconds (5-15)."},
         },
         "required": ["input"],
     },
