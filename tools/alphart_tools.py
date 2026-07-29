@@ -1123,7 +1123,29 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         args["duration"] = args.get("duration_seconds")
     if args.get("image_url") and not args.get("input_images"):
         args["input_images"] = [args.get("image_url")]
-    if not args.get("input_images") and _ctx().get("input_images"):
+    if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
+        # Connected Canvas nodes are the user-selected keyframes. Keep them
+        # ahead of any model-suggested images so an audio reference can never
+        # reach the video relay without its visual counterpart.
+        canvas_images = [entry for entry in (_ctx().get("input_images") or []) if entry]
+        requested_images = [entry for entry in (args.get("input_images") or []) if entry]
+        merged_images = list(canvas_images)
+        known_images = {
+            str(entry.get("s3_object_name") or entry.get("object_key") or entry.get("url") or entry)
+            if isinstance(entry, dict)
+            else str(entry)
+            for entry in canvas_images
+        }
+        for entry in requested_images:
+            identity = (
+                str(entry.get("s3_object_name") or entry.get("object_key") or entry.get("url") or entry)
+                if isinstance(entry, dict)
+                else str(entry)
+            )
+            if identity and identity not in known_images:
+                merged_images.append(entry)
+        args["input_images"] = merged_images
+    elif not args.get("input_images") and _ctx().get("input_images"):
         args["input_images"] = _ctx().get("input_images")
 
     if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
@@ -1180,10 +1202,11 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
             "user_id": _ctx().get("user_id"),
             "user_uuid": _ctx().get("user_uuid"),
             "org_no": _ctx().get("org_no"),
+            "reference_item_ids": _ctx().get("reference_item_ids") or [],
         })
     if args.get("input_images"):
         images = args.get("input_images")
-        payload["image"] = images[0] if isinstance(images, list) and images else images
+        payload["images"] = images if isinstance(images, list) else [images]
     if args.get("input_audio"):
         payload["audio"] = args.get("input_audio")
     print(

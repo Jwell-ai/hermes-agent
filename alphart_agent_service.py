@@ -43,6 +43,7 @@ class AlphartEduChatRequest(BaseModel):
     video_model: str = ""
     input_images: List[Any] = Field(default_factory=list)
     input_audio: List[Any] = Field(default_factory=list)
+    reference_item_ids: List[str] = Field(default_factory=list)
     duration_seconds: int = 0
     generate_audio: bool = False
     script_only: bool = False
@@ -3284,7 +3285,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "session_id": req.session_id,
         "canvas_id": req.canvas_id,
         "canvas_item_id": req.canvas_item_id,
-		"canvas_prompt_context": req.canvas_prompt_context,
+        "canvas_prompt_context": req.canvas_prompt_context,
         "user_id": req.user_id,
         "user_uuid": req.user_uuid,
         "storage_prefix": req.storage_prefix,
@@ -3296,6 +3297,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "tool_list": req.tool_list,
         "input_images": input_images,
         "input_audio": canvas_input_audio,
+        "reference_item_ids": list(req.reference_item_ids or []),
         "duration_seconds": int(req.duration_seconds or 0),
         "generate_audio": bool(req.generate_audio),
         "script_only": bool(req.script_only),
