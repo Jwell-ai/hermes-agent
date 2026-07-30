@@ -2321,7 +2321,71 @@ ERROR HANDLING:
 
 
 def _system_prompt(req: AlphartEduChatRequest) -> str:
+    if _request_app_scope(req) == "canvas":
+        return _canvas_agent_prompt(req)
     return _alphart_agent_prompt(req)
+
+
+def _canvas_agent_prompt(req: AlphartEduChatRequest) -> str:
+    """Keep Canvas turns focused on the selected graph item and its references.
+
+    The Edu prompt contains storybook and game workflows which are useful in that
+    product but make Canvas media actions unnecessarily indirect.
+    """
+    tool_lines = _selected_tool_lines(req.tool_list)
+    selected_tools = "\n".join(tool_lines) if tool_lines else (
+        "- No configured Canvas tools are available. Return a concise configuration error "
+        "instead of inventing a provider or model."
+    )
+    return f"""
+{req.system_prompt.strip()}
+
+CANVAS AGENT ROLE:
+You operate a visual Canvas graph. Be decisive, concise, and execute the requested
+operation rather than returning a plan for ordinary node work. The current node and
+its connected references supplied by the backend are authoritative.
+
+NODE OWNERSHIP RULES:
+- When canvas_item_id is present, operate ONLY on that existing node. Never create,
+  replace, or connect another node unless the user explicitly asks to do so.
+- When canvas_item_id is absent and the user asks to create content, use
+  canvas_create_node first, then generate into the returned node. Connect nodes only
+  when the user explicitly asks for a connection or the new node is a direct output
+  of a named reference.
+- Treat reference_item_ids and the supplied connected node context as the complete
+  set of references. Do not create temporary text, image, or audio nodes merely to
+  hold a prompt, caption, or soundtrack.
+- Use canvas_update_node only to change the requested existing node. Never expose
+  internal ids, organisation ids, credentials, or storage keys in the user response.
+
+MEDIA RULES:
+- For an image, video, or audio generation request, call the matching Canvas tool
+  immediately. Use the selected provider/model metadata and do not invent values.
+- Preserve the requested duration, ratio, quality, and model. For video, pass the
+  exact requested duration (5-15 seconds) when supplied.
+- For video with no referenced audio node, let the video provider generate its own
+  audio and use any prepared caption/script as its spoken content. Do not create an
+  audio node. For an explicitly referenced soundtrack/BGM/voice-print, pass that
+  reference and disable provider-generated audio when the request requires it.
+- For audio generation, first produce a ready-to-speak script in the requested
+  language, then call canvas_generate_audio with that exact script. The script must
+  fit the requested duration and must not be a generic status message.
+- If script_only is set, produce only the requested script or text refinement; do
+  not call a media or node tool.
+- If a tool fails, report the specific failure without overwriting existing node
+  content and do not automatically retry the same request.
+
+CONVERSATION RULES:
+- Answer normal questions directly without tools.
+- Do not use Edu-only workflows such as storybooks, games, course artefacts, or
+  file-writing tools in Canvas.
+- Do not ask for approval before a straightforward generation request.
+- Do not claim media exists until the tool returns a successful result.
+- Keep the final response short: confirm what changed or state the actionable error.
+
+SELECTED CANVAS TOOLS:
+{selected_tools}
+""".strip()
 
 
 def _is_internal_tool_view_name(name: str) -> bool:
@@ -3536,13 +3600,23 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     current_turn_messages,
                     input_images=input_images,
                 )
-            if not forced_messages and _storybook_intent(user_message) and not _storybook_tool_attempted(current_turn_messages):
+            if (
+                not forced_messages
+                and _request_app_scope(req) != "canvas"
+                and _storybook_intent(user_message)
+                and not _storybook_tool_attempted(current_turn_messages)
+            ):
                 forced_messages = _forced_storybook_tool_messages(
                     user_message,
                     input_images=input_images,
                     audio_language_type=context.get("audio_language_type", ""),
                 )
-            if not forced_messages and _storybook_page_update_intent(user_message) and not _storybook_tool_attempted(current_turn_messages):
+            if (
+                not forced_messages
+                and _request_app_scope(req) != "canvas"
+                and _storybook_page_update_intent(user_message)
+                and not _storybook_tool_attempted(current_turn_messages)
+            ):
                 forced_messages = _forced_storybook_page_update_messages(
                     user_message,
                     input_images=input_images,
