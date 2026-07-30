@@ -39,12 +39,17 @@ class AlphartEduChatRequest(BaseModel):
     session_id: str = ""
     canvas_id: str = ""
     canvas_item_id: str = ""
+    canvas_item_type: str = ""
     canvas_prompt_context: str = ""
+    image_model: str = ""
+    image_quality: str = ""
     video_model: str = ""
     input_images: List[Any] = Field(default_factory=list)
     input_audio: List[Any] = Field(default_factory=list)
     reference_item_ids: List[str] = Field(default_factory=list)
     duration_seconds: int = 0
+    aspect_ratio: str = ""
+    resolution: str = ""
     generate_audio: bool = False
     script_only: bool = False
     approved_audio_script: str = ""
@@ -2019,6 +2024,8 @@ def _forced_media_tool_messages(
     if _generation_tool_completed(current_messages, intent):
         return []
 
+    production_prompt = _canvas_fallback_production_prompt(intent, user_message)
+
     plan_text = (
         "Plan:\n"
         "1. Use the user's request and referenced media as generation context.\n"
@@ -2038,9 +2045,9 @@ def _forced_media_tool_messages(
         success_count = 0
         for task_index in range(1, quantity + 1):
             call_id = str(uuid.uuid4())
-            task_prompt = user_message
+            task_prompt = production_prompt
             if quantity > 1:
-                task_prompt = f"{user_message} (variation {task_index} of {quantity}: vary composition, angle, lighting, or style)"
+                task_prompt = f"{production_prompt} (variation {task_index} of {quantity}: vary composition, angle, lighting, or style)"
             args: Dict[str, Any] = {
                 "prompt": task_prompt,
                 "tool_call_id": call_id,
@@ -2132,7 +2139,7 @@ def _forced_media_tool_messages(
 
     call_id = str(uuid.uuid4())
     args = {
-        "prompt": user_message,
+        "prompt": production_prompt,
         "tool_call_id": call_id,
     }
     if has_image_context and input_images:
@@ -2178,6 +2185,33 @@ def _forced_media_tool_messages(
         },
         {"role": "assistant", "content": final_text},
     ]
+
+
+def _canvas_fallback_production_prompt(intent: str, user_message: str) -> str:
+    """Keep Canvas no-tool-call recovery aligned with its specialised skills."""
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
+        return user_message
+    if intent == "image":
+        return (
+            "Create a production-ready Canvas keyframe. Preserve every supplied visual "
+            "reference, identity, silhouette, composition, palette, and lighting constraint. "
+            "Use one clear focal subject and specify setting, subject, composition, camera, "
+            "lighting, material, and finish without adding unrelated elements.\n\n"
+            f"User brief: {user_message}"
+        )
+    if intent == "video":
+        duration = int(_ctx().get("duration_seconds") or 0)
+        pacing = "Use one clear action and one camera move." if duration <= 5 else (
+            "Use setup, action, and a clear resolution." if duration <= 9 else
+            "Use compact timed beats with a clear ending and no repetitive motion."
+        )
+        return (
+            "Direct one coherent cinematic Canvas video. Preserve continuity across supplied "
+            "frame references; respect first/last-frame constraints; use one deliberate camera "
+            f"grammar; {pacing} Keep supplied soundtrack or voice-print references intact.\n\n"
+            f"User brief: {user_message}"
+        )
+    return user_message
 
 
 def _alphart_agent_prompt(req: AlphartEduChatRequest) -> str:
@@ -2337,6 +2371,7 @@ def _canvas_agent_prompt(req: AlphartEduChatRequest) -> str:
         "- No configured Canvas tools are available. Return a concise configuration error "
         "instead of inventing a provider or model."
     )
+    workflow_guidance = _canvas_workflow_guidance(req)
     return f"""
 {req.system_prompt.strip()}
 
@@ -2359,6 +2394,9 @@ NODE OWNERSHIP RULES:
   internal ids, organisation ids, credentials, or storage keys in the user response.
 
 MEDIA RULES:
+- The selected Canvas workflow is preloaded below. Apply it before dispatching
+  media; do not skip it, expose it as a planning document, or substitute an
+  external CLI, API key, local file, or non-Canvas storage path.
 - For an image, video, or audio generation request, call the matching Canvas tool
   immediately. Use the selected provider/model metadata and do not invent values.
 - Preserve the requested duration, ratio, quality, and model. For video, pass the
@@ -2385,7 +2423,36 @@ CONVERSATION RULES:
 
 SELECTED CANVAS TOOLS:
 {selected_tools}
+
+PRELOADED CANVAS WORKFLOW:
+{workflow_guidance or 'No specialised workflow applies to this node type.'}
 """.strip()
+
+
+_canvas_workflow_cache: Dict[str, str] = {}
+
+
+def _canvas_workflow_guidance(req: AlphartEduChatRequest) -> str:
+    skill_by_item_type = {
+        "image": "canvas-gpt-image2-keyframes",
+        "video": "canvas-seedance2-video-director",
+    }
+    skill_name = skill_by_item_type.get(_string(req.canvas_item_type).strip().lower())
+    if not skill_name or req.script_only:
+        return ""
+    if skill_name in _canvas_workflow_cache:
+        return _canvas_workflow_cache[skill_name]
+    try:
+        from tools.skills_tool import skill_view
+
+        payload = json.loads(skill_view(skill_name, preprocess=True))
+        content = _string(payload.get("content")) if isinstance(payload, dict) and payload.get("success") else ""
+        if content:
+            _canvas_workflow_cache[skill_name] = content
+        return content
+    except Exception as exc:
+        logger.warning("failed to preload Canvas workflow skill %s: %s", skill_name, exc)
+        return ""
 
 
 def _is_internal_tool_view_name(name: str) -> bool:
@@ -3349,6 +3416,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "session_id": req.session_id,
         "canvas_id": req.canvas_id,
         "canvas_item_id": req.canvas_item_id,
+        "canvas_item_type": req.canvas_item_type,
         "canvas_prompt_context": req.canvas_prompt_context,
         "user_id": req.user_id,
         "user_uuid": req.user_uuid,
@@ -3363,6 +3431,9 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "input_audio": canvas_input_audio,
         "reference_item_ids": list(req.reference_item_ids or []),
         "duration_seconds": int(req.duration_seconds or 0),
+        "aspect_ratio": req.aspect_ratio,
+        "resolution": req.resolution,
+        "image_quality": req.image_quality,
         "generate_audio": bool(req.generate_audio),
         "script_only": bool(req.script_only),
         "approved_audio_script": req.approved_audio_script,

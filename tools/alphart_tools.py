@@ -1031,6 +1031,11 @@ def _handle_alphart_update_storybook_page(args: Dict[str, Any], **_: Any) -> str
 
 def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
+    if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
+        if _ctx().get("aspect_ratio"):
+            args["aspect_ratio"] = _ctx().get("aspect_ratio")
+        if _ctx().get("image_quality"):
+            args["quality"] = _ctx().get("image_quality")
     if args.get("image_quantity") and not args.get("quantity"):
         args["quantity"] = args.get("image_quantity")
     if not args.get("input_images") and _ctx().get("input_images"):
@@ -1038,7 +1043,10 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
     tool = _pick_tool("image", args)
     args.setdefault("provider", tool.get("provider"))
     args.setdefault("model", tool.get("model") or tool.get("name") or tool.get("key"))
-    relay_url = _internal_relay_url("images/edits" if args.get("input_images") else "images/generations")
+    # Canvas owns a generation-only relay. Reference nodes remain structured
+    # Canvas context for prompt composition; do not send them to Edu's edit API.
+    is_canvas = str(_ctx().get("app_scope") or "").strip().lower() == "canvas"
+    relay_url = _internal_relay_url("images/generations" if is_canvas or not args.get("input_images") else "images/edits")
     if not relay_url:
         return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
     payload = {
@@ -1046,6 +1054,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
         "provider": args.get("provider"),
         "prompt": args.get("prompt"),
         "aspect_ratio": args.get("aspect_ratio"),
+        "quality": args.get("quality"),
         "session_id": _ctx().get("session_id"),
         "canvas_id": _ctx().get("canvas_id"),
         "canvas_item_id": args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or _ctx().get("canvas_item_id"),
@@ -1115,10 +1124,15 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
 
 def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     args = dict(args or {})
-    if not str(args.get("prompt") or "").strip() and str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
+    is_canvas = str(_ctx().get("app_scope") or "").strip().lower() == "canvas"
+    if not str(args.get("prompt") or "").strip() and is_canvas:
         args["prompt"] = str(_ctx().get("canvas_prompt_context") or _ctx().get("user_message") or "").strip()
-    if str(_ctx().get("app_scope") or "").strip().lower() == "canvas" and _ctx().get("duration_seconds"):
+    if is_canvas and _ctx().get("duration_seconds"):
         args["duration"] = _ctx().get("duration_seconds")
+    if is_canvas and _ctx().get("aspect_ratio"):
+        args["aspect_ratio"] = _ctx().get("aspect_ratio")
+    if is_canvas and _ctx().get("resolution"):
+        args["resolution"] = _ctx().get("resolution")
     if args.get("duration_seconds") and not args.get("duration"):
         args["duration"] = args.get("duration_seconds")
     if args.get("image_url") and not args.get("input_images"):
