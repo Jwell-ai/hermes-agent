@@ -1094,7 +1094,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
                     detail = str(error.get("message") or error.get("detail") or "")
                 detail = detail or str(decoded.get("detail") or decoded.get("message") or "")
             detail = " ".join((detail or f"relay returned HTTP {resp.status_code}").split())[:500]
-            return _tool_error(f"Canvas video relay failed (HTTP {resp.status_code}): {detail}")
+            return _tool_error(f"Canvas image relay failed (HTTP {resp.status_code}): {detail}")
         return _system_busy_tool_error()
     data = decoded.get("data") if isinstance(decoded, dict) else None
     if isinstance(data, list) and data and isinstance(data[0], dict):
