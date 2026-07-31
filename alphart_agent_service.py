@@ -24,6 +24,7 @@ import requests
 from run_agent import AIAgent
 from tools.skills_sync import sync_skills
 from tools.alphart_tools import (
+    _ctx,
     _handle_alphart_create_storybook,
     _handle_alphart_generate_audio,
     _handle_alphart_generate_image,
