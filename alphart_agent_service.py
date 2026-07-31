@@ -40,6 +40,7 @@ class AlphartEduChatRequest(BaseModel):
     canvas_id: str = ""
     canvas_item_id: str = ""
     canvas_item_type: str = ""
+    force_media_intent: str = ""
     canvas_prompt_context: str = ""
     image_model: str = ""
     image_quality: str = ""
@@ -3417,6 +3418,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "canvas_id": req.canvas_id,
         "canvas_item_id": req.canvas_item_id,
         "canvas_item_type": req.canvas_item_type,
+        "force_media_intent": req.force_media_intent,
         "canvas_prompt_context": req.canvas_prompt_context,
         "user_id": req.user_id,
         "user_uuid": req.user_uuid,
@@ -3693,11 +3695,20 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     input_images=input_images,
                 )
             canvas_item_type = _string(req.canvas_item_type).strip().lower()
-            canvas_forced_intent = (
-                canvas_item_type
-                if _request_app_scope(req) == "canvas" and canvas_item_type in {"image", "video", "audio"}
-                else ""
-            )
+            requested_media_intent = _string(req.force_media_intent).strip().lower()
+            canvas_forced_intent = ""
+            if _request_app_scope(req) == "canvas":
+                requested_or_selected_intent = requested_media_intent or canvas_item_type
+                if requested_or_selected_intent in {"image", "video", "audio"}:
+                    canvas_forced_intent = requested_or_selected_intent
+            if canvas_forced_intent:
+                print(
+                    "[alphart-agent] canvas media request "
+                    f"session_id={req.session_id} item_type={canvas_item_type} "
+                    f"force_media_intent={requested_media_intent or canvas_forced_intent} "
+                    f"input_images={len(input_images)} input_audio={len(canvas_input_audio)}",
+                    flush=True,
+                )
             if not forced_messages and not current_media_attempted and not req.script_only:
                 forced_messages = _forced_media_tool_messages(
                     user_message,
