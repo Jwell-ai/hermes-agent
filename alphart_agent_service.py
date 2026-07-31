@@ -3692,6 +3692,12 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     user_message,
                     input_images=input_images,
                 )
+            canvas_item_type = _string(req.canvas_item_type).strip().lower()
+            canvas_forced_intent = (
+                canvas_item_type
+                if _request_app_scope(req) == "canvas" and canvas_item_type in {"image", "video", "audio"}
+                else ""
+            )
             if not forced_messages and not current_media_attempted and not req.script_only:
                 forced_messages = _forced_media_tool_messages(
                     user_message,
@@ -3700,7 +3706,10 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     has_image_context=bool(input_images),
                     input_images=input_images,
                     approved_audio_script=req.approved_audio_script,
-                    forced_intent="audio" if req.approved_audio_script else "",
+                    # A Canvas composer is bound to a selected media node. Its type is
+                    # a stronger signal than whether the user's descriptive prompt
+                    # happens to contain a word such as "generate".
+                    forced_intent="audio" if req.approved_audio_script else canvas_forced_intent,
                 )
             response_messages.extend(forced_messages)
     current_turn_messages = _messages_after_latest_user(response_messages)
