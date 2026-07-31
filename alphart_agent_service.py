@@ -10,6 +10,7 @@ import re
 import uuid
 import base64
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import quote
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -2399,6 +2400,9 @@ MEDIA RULES:
 - The selected Canvas workflow is preloaded below. Apply it before dispatching
   media; do not skip it, expose it as a planning document, or substitute an
   external CLI, API key, local file, or non-Canvas storage path.
+- Do not call skills_list or skill_view for Canvas image/video workflows: their
+  guidance is already embedded below and may not appear in the user's optional
+  skill inventory.
 - For an image, video, or audio generation request, call the matching Canvas tool
   immediately. Use the selected provider/model metadata and do not invent values.
 - Preserve the requested duration, ratio, quality, and model. For video, pass the
@@ -2436,12 +2440,13 @@ _canvas_workflow_cache: Dict[str, str] = {}
 
 def _canvas_workflow_guidance(req: AlphartEduChatRequest) -> str:
     skill_by_item_type = {
-        "image": "canvas-gpt-image2-keyframes",
-        "video": "canvas-seedance2-video-director",
+        "image": ("canvas-gpt-image2-keyframes", "gpt-image2-keyframes"),
+        "video": ("canvas-seedance2-video-director", "seedance2-video-director"),
     }
-    skill_name = skill_by_item_type.get(_string(req.canvas_item_type).strip().lower())
-    if not skill_name or req.script_only:
+    skill = skill_by_item_type.get(_string(req.canvas_item_type).strip().lower())
+    if not skill or req.script_only:
         return ""
+    skill_name, skill_directory = skill
     if skill_name in _canvas_workflow_cache:
         return _canvas_workflow_cache[skill_name]
     try:
@@ -2451,10 +2456,21 @@ def _canvas_workflow_guidance(req: AlphartEduChatRequest) -> str:
         content = _string(payload.get("content")) if isinstance(payload, dict) and payload.get("success") else ""
         if content:
             _canvas_workflow_cache[skill_name] = content
-        return content
+            return content
     except Exception as exc:
         logger.warning("failed to preload Canvas workflow skill %s: %s", skill_name, exc)
-        return ""
+    # Canvas workflows ship with this service and are mandatory product
+    # guidance, not optional user-installed skills. The user skill inventory
+    # may deliberately omit them, so load the bundled source directly.
+    bundled_skill = Path(__file__).resolve().parent / "skills" / "canvas" / skill_directory / "SKILL.md"
+    try:
+        content = bundled_skill.read_text(encoding="utf-8").strip()
+        if content:
+            _canvas_workflow_cache[skill_name] = content
+            return content
+    except OSError as exc:
+        logger.warning("failed to read bundled Canvas workflow %s: %s", skill_name, exc)
+    return ""
 
 
 def _is_internal_tool_view_name(name: str) -> bool:
