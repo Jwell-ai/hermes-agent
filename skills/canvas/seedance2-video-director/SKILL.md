@@ -13,7 +13,8 @@ and do not create extra Canvas nodes unless the user explicitly requests one.
 
 Treat the Canvas context as authoritative:
 
-- Connected text/note nodes are narrative, dialogue, and caption direction.
+- Connected text/note nodes are visual narrative direction. Canvas owns approved
+  voiceover and caption rendering outside Seedance.
 - `@Image as first frame` anchors the opening composition.
 - `@Image as last frame` anchors the closing composition.
 - `@Image as keyframe`, `@Image as intermediate frame`, or an unqualified image
@@ -42,18 +43,18 @@ or report a concrete error.
    short timed beats with a clear ending. Do not pad with repetitive motion.
 5. State lighting, material, atmosphere, grade, and realism/stylization only
    when they materially improve the intended result.
-6. Incorporate supplied caption/dialogue exactly when the request says it is
-   approved. Otherwise make dialogue concise enough for the chosen duration.
+6. Do not add dialogue, spoken words, captions, subtitles, or text overlays to
+   the Seedance prompt. Canvas renders the approved TTS voiceover and SRT itself.
 7. When a soundtrack/BGM reference is attached, preserve it and disable
-   provider-generated audio. When no audio reference exists, allow the video
-   provider to generate synced audio only when the user enabled it.
+   provider-generated audio. When no soundtrack/BGM reference exists, allow the
+   provider to generate ambient audio only.
 
 ## Prompt Shape
 
 Write a concise cinematic instruction in this order:
 
 `subject and continuity; setting and lighting; action; camera/framing/motion;
-temporal progression; visual finish; sound or dialogue constraints.`
+temporal progression; visual finish; ambient sound constraints.`
 
 For longer clips, use compact segments such as `0-3s`, `3-7s`, and `7-10s`.
 Mention first and last frame constraints in prose only when those references

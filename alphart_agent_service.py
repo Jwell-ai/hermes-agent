@@ -54,6 +54,7 @@ class AlphartEduChatRequest(BaseModel):
     aspect_ratio: str = ""
     resolution: str = ""
     generate_audio: bool = False
+    video_caption_script: str = ""
     script_only: bool = False
     approved_audio_script: str = ""
     user_id: str = ""
@@ -2407,10 +2408,10 @@ MEDIA RULES:
   immediately. Use the selected provider/model metadata and do not invent values.
 - Preserve the requested duration, ratio, quality, and model. For video, pass the
   exact requested duration (5-15 seconds) when supplied.
-- For video with no referenced audio node, let the video provider generate its own
-  audio and use any prepared caption/script as its spoken content. Do not create an
-  audio node. For an explicitly referenced soundtrack/BGM/voice-print, pass that
-  reference and disable provider-generated audio when the request requires it.
+- Canvas generates the approved voiceover and burns its SRT separately. Never put
+  caption or dialogue text into a video-provider prompt. With no soundtrack/BGM
+  reference, let the video provider generate ambient audio; with a soundtrack/BGM
+  reference, pass that reference and disable provider-generated audio.
 - For audio generation, first produce a ready-to-speak script in the requested
   language, then call canvas_generate_audio with that exact script. The script must
   fit the requested duration and must not be a generic status message.
@@ -2440,7 +2441,6 @@ _canvas_workflow_cache: Dict[str, str] = {}
 
 def _canvas_workflow_guidance(req: AlphartEduChatRequest) -> str:
     skill_by_item_type = {
-        "image": ("canvas-gpt-image2-keyframes", "gpt-image2-keyframes"),
         "video": ("canvas-seedance2-video-director", "seedance2-video-director"),
     }
     skill = skill_by_item_type.get(_string(req.canvas_item_type).strip().lower())
@@ -3454,6 +3454,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "resolution": req.resolution,
         "image_quality": req.image_quality,
         "generate_audio": bool(req.generate_audio),
+        "video_caption_script": req.video_caption_script,
         "script_only": bool(req.script_only),
         "approved_audio_script": req.approved_audio_script,
         "audio_language_type": _normalize_audio_language_type(req.audio_language_type) or _ui_audio_language_type(req.ui_language),

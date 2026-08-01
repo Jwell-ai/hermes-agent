@@ -1190,6 +1190,11 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     )
     if has_canvas_soundtrack:
         args["generate_audio"] = False
+    elif str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
+        # Canvas owns captions and voiceover separately. Seedance should still
+        # create the ambient track whenever no BGM/soundtrack is attached,
+        # regardless of a model-supplied tool argument.
+        args["generate_audio"] = True
     elif "generate_audio" not in args:
         args["generate_audio"] = bool(_ctx().get("generate_audio"))
     tool = _pick_tool("video", args)
@@ -1209,6 +1214,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         "canvas_id": _ctx().get("canvas_id"),
         "canvas_item_id": args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or _ctx().get("canvas_item_id"),
         "generate_audio": bool(args.get("generate_audio")),
+        "caption_script": _ctx().get("video_caption_script"),
         "tool_call_id": kwargs.get("tool_call_id") or args.get("tool_call_id"),
     }
     if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
