@@ -2439,10 +2439,22 @@ PRELOADED CANVAS WORKFLOW:
 _canvas_workflow_cache: Dict[str, str] = {}
 
 
+def _canvas_shot_breakdown_intent(req: AlphartEduChatRequest) -> bool:
+    if _string(req.canvas_item_type).strip().lower() != "video":
+        return False
+    text = "\n".join(_message_text(message) for message in req.messages if isinstance(message, dict)).lower()
+    return any(phrase in text for phrase in (
+        "video-shot-breakdown", "shot breakdown", "shot-by-shot", "shot by shot",
+        "拉片", "分镜分析", "镜头分析", "镜头拆解",
+    ))
+
+
 def _canvas_workflow_guidance(req: AlphartEduChatRequest) -> str:
     skill_by_item_type = {
         "video": ("canvas-seedance2-video-director", "seedance2-video-director"),
     }
+    if _canvas_shot_breakdown_intent(req):
+        skill_by_item_type["video"] = ("canvas-video-shot-breakdown", "video-shot-breakdown")
     skill = skill_by_item_type.get(_string(req.canvas_item_type).strip().lower())
     if not skill or req.script_only:
         return ""
@@ -2730,7 +2742,10 @@ def _alphart_enabled_toolsets(req: AlphartEduChatRequest) -> List[str]:
         # must be unavailable even when the brief contains words such as "audio".
         return ["skills"]
     if _request_app_scope(req) == "canvas":
-        return ["alphart-canvas", "skills"]
+        toolsets = ["alphart-canvas", "skills"]
+        if _canvas_shot_breakdown_intent(req):
+            toolsets.append("video")
+        return toolsets
     return ["alphart-edu", "skills"]
 
 
@@ -3715,7 +3730,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
             canvas_item_type = _string(req.canvas_item_type).strip().lower()
             requested_media_intent = _string(req.force_media_intent).strip().lower()
             canvas_forced_intent = ""
-            if _request_app_scope(req) == "canvas":
+            if _request_app_scope(req) == "canvas" and not _canvas_shot_breakdown_intent(req):
                 requested_or_selected_intent = requested_media_intent or canvas_item_type
                 if requested_or_selected_intent in {"image", "video", "audio"}:
                     canvas_forced_intent = requested_or_selected_intent
