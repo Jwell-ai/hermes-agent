@@ -2376,6 +2376,14 @@ def _canvas_agent_prompt(req: AlphartEduChatRequest) -> str:
         "instead of inventing a provider or model."
     )
     workflow_guidance = _canvas_workflow_guidance(req)
+    shot_breakdown_instruction = ""
+    if _canvas_shot_breakdown_intent(req):
+        shot_breakdown_instruction = """
+SHOT BREAKDOWN EXECUTION:
+- This is analysis only, never a media-generation request.
+- Call video_analyze exactly once using the completed Canvas video URL supplied in the system context.
+- After the tool succeeds, return exactly the <canvas-shot-breakdown> JSON block required by the preloaded workflow. Do not call skill_view or any Canvas generation tool.
+""".strip()
     return f"""
 {req.system_prompt.strip()}
 
@@ -2433,6 +2441,8 @@ SELECTED CANVAS TOOLS:
 
 PRELOADED CANVAS WORKFLOW:
 {workflow_guidance or 'No specialised workflow applies to this node type.'}
+
+{shot_breakdown_instruction}
 """.strip()
 
 
@@ -2742,10 +2752,12 @@ def _alphart_enabled_toolsets(req: AlphartEduChatRequest) -> List[str]:
         # must be unavailable even when the brief contains words such as "audio".
         return ["skills"]
     if _request_app_scope(req) == "canvas":
-        toolsets = ["alphart-canvas", "skills"]
         if _canvas_shot_breakdown_intent(req):
-            toolsets.append("video")
-        return toolsets
+            # The product workflow is already preloaded. Excluding the generic
+            # skills toolset prevents a model from attempting an optional
+            # skill_view lookup instead of the required video analysis call.
+            return ["alphart-canvas", "video"]
+        return ["alphart-canvas", "skills"]
     return ["alphart-edu", "skills"]
 
 
