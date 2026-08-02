@@ -164,6 +164,32 @@ class TestHandleVideoAnalyze:
             args = mock_tool.call_args[0]
             assert args[2] == "google/gemini-flash"
 
+    def test_canvas_runtime_overrides_edu_environment_model(self, monkeypatch):
+        from tools.alphart_tools import alphart_context
+
+        monkeypatch.setenv("AUXILIARY_VIDEO_MODEL", "edu-video-model")
+        runtime = {
+            "provider": "gemini",
+            "model": "gemini-3.5-flash",
+            "base_url": "https://example.test/v1beta/models/%s:generateContent",
+            "api_key": "canvas-key",
+            "timeout": 300,
+        }
+        with patch("tools.vision_tools.video_analyze_tool", new_callable=AsyncMock) as mock_tool:
+            mock_tool.return_value = json.dumps({"success": True, "analysis": "ok"})
+            with alphart_context({"app_scope": "canvas", "multimodal_runtime": runtime}):
+                asyncio.get_event_loop().run_until_complete(
+                    _handle_video_analyze({"video_url": "/tmp/test.mp4", "question": "test"})
+                )
+
+        kwargs = mock_tool.call_args.kwargs
+        assert kwargs["provider"] == "gemini"
+        assert kwargs["model"] == "gemini-3.5-flash"
+        assert kwargs["base_url"] == runtime["base_url"]
+        assert kwargs["api_key"] == "canvas-key"
+        assert kwargs["timeout"] == 300
+        assert kwargs["native_gemini"] is True
+
 
 # ---------------------------------------------------------------------------
 # video_analyze_tool — integration-style tests with mocked LLM

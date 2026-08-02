@@ -65,6 +65,7 @@ class AlphartEduChatRequest(BaseModel):
     messages: List[Any] = Field(default_factory=list)
     text_model: Dict[str, Any] = Field(default_factory=dict)
     text_models: List[Dict[str, Any]] = Field(default_factory=list)
+    multimodal_model: Dict[str, Any] = Field(default_factory=dict)
     tool_list: List[Any] = Field(default_factory=list)
     model_configs: Dict[str, Any] = Field(default_factory=dict)
     backend_url: str = ""
@@ -351,8 +352,12 @@ def _provider_config(req: Any) -> Dict[str, Any]:
 
 
 def _provider_config_for(model_configs: Any, text_model: Dict[str, Any]) -> Dict[str, Any]:
-    provider = _string(text_model.get("provider"))
-    model = _string(text_model.get("model"))
+    return _provider_config_for_domain(model_configs, "text", text_model)
+
+
+def _provider_config_for_domain(model_configs: Any, domain: str, model_ref: Dict[str, Any]) -> Dict[str, Any]:
+    provider = _string(model_ref.get("provider"))
+    model = _string(model_ref.get("model"))
     def with_model_config(raw: Dict[str, Any]) -> Dict[str, Any]:
         merged = dict(raw)
         models = raw.get("models")
@@ -361,7 +366,7 @@ def _provider_config_for(model_configs: Any, text_model: Dict[str, Any]) -> Dict
         return merged
     if not isinstance(model_configs, dict):
         return {}
-    config = model_configs.get("text")
+    config = model_configs.get(domain)
     if isinstance(config, dict) and provider:
         raw = config.get(provider)
         if isinstance(raw, dict):
@@ -2459,12 +2464,23 @@ def _canvas_shot_breakdown_intent(req: AlphartEduChatRequest) -> bool:
     ))
 
 
+def _canvas_video_shotcraft_intent(req: AlphartEduChatRequest) -> bool:
+    if _request_app_scope(req) != "canvas" or _string(req.canvas_item_type).strip().lower() != "video":
+        return False
+    text = "\n".join(_message_text(message) for message in req.messages if isinstance(message, dict)).lower()
+    return any(phrase in text for phrase in (
+        "video-shotcraft", "shotcraft", "shot recipe", "shot card", "镜头配方", "镜头卡",
+    ))
+
+
 def _canvas_workflow_guidance(req: AlphartEduChatRequest) -> str:
     skill_by_item_type = {
         "video": ("canvas-seedance2-video-director", "seedance2-video-director"),
     }
     if _canvas_shot_breakdown_intent(req):
         skill_by_item_type["video"] = ("canvas-video-shot-breakdown", "video-shot-breakdown")
+    elif _canvas_video_shotcraft_intent(req):
+        skill_by_item_type["video"] = ("canvas-video-shotcraft", "video-shotcraft")
     skill = skill_by_item_type.get(_string(req.canvas_item_type).strip().lower())
     if not skill or req.script_only:
         return ""
@@ -3457,6 +3473,8 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         if isinstance(prepared_content, list) and prepared_content:
             model_user_message = prepared_content
 
+    multimodal_model = dict(req.multimodal_model) if isinstance(req.multimodal_model, dict) else {}
+    multimodal_config = _provider_config_for_domain(req.model_configs, "multimodal", multimodal_model)
     context = {
         "session_id": req.session_id,
         "canvas_id": req.canvas_id,
@@ -3487,6 +3505,14 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "audio_language_type": _normalize_audio_language_type(req.audio_language_type) or _ui_audio_language_type(req.ui_language),
         "ui_language": req.ui_language,
     }
+    if _request_app_scope(req) == "canvas":
+        context["multimodal_runtime"] = {
+            "provider": _string(multimodal_model.get("provider")),
+            "model": _string(multimodal_model.get("model")),
+            "base_url": _endpoint(multimodal_config),
+            "api_key": _api_key(multimodal_config),
+            "timeout": multimodal_config.get("timeout"),
+        }
 
     events: List[Dict[str, Any]] = []
     result: Dict[str, Any] = {}

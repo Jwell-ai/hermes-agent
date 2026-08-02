@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -124,6 +125,51 @@ def test_build_native_request_strips_json_schema_only_fields_from_tool_parameter
         "description": "City name",
     }
 
+
+def test_build_native_request_preserves_video_data_url_as_inline_data():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this video."},
+                    {
+                        "type": "canvas_video_url",
+                        "canvas_video_url": {"url": "data:video/mp4;base64,AAEC"},
+                    },
+                ],
+            }
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    parts = request["contents"][0]["parts"]
+    assert parts[0] == {"text": "Describe this video."}
+    assert parts[1]["inlineData"] == {"mimeType": "video/mp4", "data": "AAEC"}
+
+
+def test_canvas_native_gemini_endpoint_uses_gemini_transport():
+    from agent.auxiliary_client import resolve_vision_provider_client
+
+    client = object()
+    with patch(
+        "agent.auxiliary_client.resolve_provider_client",
+        return_value=(client, "gemini-3.5-flash"),
+    ) as resolve:
+        provider, resolved_client, model = resolve_vision_provider_client(
+            provider="custom",
+            model="gemini-3.5-flash",
+            base_url="https://example.test/v1beta/models/%s:generateContent",
+            api_key="test-key",
+            force_native_gemini=True,
+        )
+
+    assert (provider, resolved_client, model) == ("gemini", client, "gemini-3.5-flash")
+    assert resolve.call_args.args[0] == "gemini"
+    assert resolve.call_args.kwargs["explicit_base_url"] == "https://example.test/v1beta/models/%s:generateContent"
 
 def test_translate_native_response_surfaces_reasoning_and_tool_calls():
     from agent.gemini_native_adapter import translate_gemini_response

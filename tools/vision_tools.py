@@ -1253,7 +1253,12 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
 async def video_analyze_tool(
     video_url: str,
     user_prompt: str,
+    provider: str = None,
     model: str = None,
+    base_url: str = None,
+    api_key: str = None,
+    timeout: float = None,
+    native_gemini: bool = False,
 ) -> str:
     """Analyze a video via multimodal LLM. Returns JSON {success, analysis}."""
     if not isinstance(user_prompt, str):
@@ -1340,8 +1345,8 @@ async def video_analyze_tool(
                         "text": user_prompt,
                     },
                     {
-                        "type": "video_url",
-                        "video_url": {
+                        "type": "canvas_video_url" if native_gemini else "video_url",
+                        "canvas_video_url" if native_gemini else "video_url": {
                             "url": video_data_url,
                         },
                     },
@@ -1363,13 +1368,22 @@ async def video_analyze_tool(
                 vision_temperature = float(_vtemp)
         except Exception:
             pass
+        if timeout is not None:
+            try:
+                vision_timeout = max(float(timeout), 1.0)
+            except (TypeError, ValueError):
+                pass
 
         call_kwargs = {
             "task": "vision",
+            "provider": provider,
+            "base_url": base_url,
+            "api_key": api_key,
             "messages": messages,
             "temperature": vision_temperature,
             "max_tokens": 4000,
             "timeout": vision_timeout,
+            "native_gemini": native_gemini,
         }
         if model:
             call_kwargs["model"] = model
@@ -1491,8 +1505,44 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         "including visual content, motion, audio cues, text overlays, and scene "
         f"transitions. Then answer the following question:\n\n{question}"
     )
-    model = os.getenv("AUXILIARY_VIDEO_MODEL", "").strip() or os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
-    return video_analyze_tool(video_url, full_prompt, model)
+    runtime: Dict[str, Any] = {}
+    app_scope = ""
+    try:
+        from tools.alphart_tools import _ctx
+        context = _ctx()
+        app_scope = str(context.get("app_scope") or "").strip().lower()
+        value = context.get("multimodal_runtime")
+        if isinstance(value, dict):
+            runtime = value
+    except Exception:
+        pass
+
+    has_runtime = any(str(runtime.get(key) or "").strip() for key in ("provider", "model", "base_url", "api_key"))
+    if not has_runtime and app_scope != "canvas":
+        # Hermes is shared with Edu. Preserve its existing opt-in environment
+        # behavior when this is not a Canvas request carrying app_config data.
+        model = os.getenv("AUXILIARY_VIDEO_MODEL", "").strip() or os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+        return video_analyze_tool(video_url, full_prompt, model)
+
+    native_gemini = False
+    if app_scope == "canvas" and str(runtime.get("provider") or "").strip().lower() in {"gemini", "google", "google-gemini", "google-ai-studio"}:
+        try:
+            from agent.gemini_native_adapter import is_native_gemini_base_url
+
+            native_gemini = is_native_gemini_base_url(str(runtime.get("base_url") or ""))
+        except Exception:
+            pass
+
+    return video_analyze_tool(
+        video_url,
+        full_prompt,
+        provider=str(runtime.get("provider") or "") or None,
+        model=str(runtime.get("model") or "") or None,
+        base_url=str(runtime.get("base_url") or "") or None,
+        api_key=str(runtime.get("api_key") or "") or None,
+        timeout=runtime.get("timeout"),
+        native_gemini=native_gemini,
+    )
 
 
 registry.register(

@@ -3971,6 +3971,7 @@ def resolve_vision_provider_client(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     async_mode: bool = False,
+    force_native_gemini: bool = False,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Resolve the client actually used for vision tasks.
 
@@ -3992,6 +3993,19 @@ def resolve_vision_provider_client(
             async_client, async_model = _to_async_client(sync_client, final_model, is_vision=True)
             return resolved_provider, async_client, async_model
         return resolved_provider, sync_client, final_model
+
+    if force_native_gemini:
+        client, final_model = resolve_provider_client(
+            "gemini",
+            model=resolved_model,
+            async_mode=async_mode,
+            explicit_base_url=resolved_base_url,
+            explicit_api_key=resolved_api_key,
+            api_mode=resolved_api_mode,
+        )
+        if client is None:
+            return "gemini", None, None
+        return "gemini", client, final_model
 
     if resolved_base_url:
         provider_for_base_override = (
@@ -5333,6 +5347,7 @@ async def async_call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    native_gemini: bool = False,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
@@ -5350,6 +5365,7 @@ async def async_call_llm(
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
             async_mode=True,
+            force_native_gemini=native_gemini,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning(
