@@ -371,6 +371,11 @@ def _provider_config_for_domain(model_configs: Any, domain: str, model_ref: Dict
         raw = config.get(provider)
         if isinstance(raw, dict):
             return with_model_config(raw)
+        # Canvas app_configs may be stored as one flat provider configuration,
+        # rather than a provider-keyed map. Accept that shape only when it
+        # explicitly names the requested provider.
+        if _string(config.get("provider")).lower() == provider.lower():
+            return with_model_config(config)
     if provider:
         raw = model_configs.get(provider)
         if isinstance(raw, dict):

@@ -1517,12 +1517,35 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     except Exception:
         pass
 
-    has_runtime = any(str(runtime.get(key) or "").strip() for key in ("provider", "model", "base_url", "api_key"))
-    if not has_runtime and app_scope != "canvas":
+    required_runtime_fields = ("provider", "model", "base_url", "api_key")
+    missing_runtime_fields = [
+        field for field in required_runtime_fields if not str(runtime.get(field) or "").strip()
+    ]
+    if app_scope == "canvas" and missing_runtime_fields:
+        missing_runtime_labels = [
+            "endpoint" if field == "base_url" else field
+            for field in missing_runtime_fields
+        ]
+        logger.warning(
+            "Canvas video analysis skipped: incomplete multimodal runtime fields=%s",
+            ",".join(missing_runtime_fields),
+        )
+
+        async def missing_canvas_multimodal_runtime() -> str:
+            return tool_error(
+                "Canvas video analysis requires an active ai/multimodal configuration "
+                "with provider, model, endpoint, and api_key. Missing: "
+                + ", ".join(missing_runtime_labels),
+                success=False,
+            )
+
+        return missing_canvas_multimodal_runtime()
+
+    if app_scope != "canvas":
         # Hermes is shared with Edu. Preserve its existing opt-in environment
         # behavior when this is not a Canvas request carrying app_config data.
         model = os.getenv("AUXILIARY_VIDEO_MODEL", "").strip() or os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
-        return video_analyze_tool(video_url, full_prompt, model)
+        return video_analyze_tool(video_url, full_prompt, model=model)
 
     native_gemini = False
     if app_scope == "canvas" and str(runtime.get("provider") or "").strip().lower() in {"gemini", "google", "google-gemini", "google-ai-studio"}:

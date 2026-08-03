@@ -1226,7 +1226,9 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         })
     if args.get("input_images"):
         images = args.get("input_images")
-        payload["images"] = images if isinstance(images, list) else [images]
+        # Edu's video relay accepts image-to-video references under `image`;
+        # the value itself may be a list for multi-reference providers.
+        payload["image"] = images if isinstance(images, list) else [images]
     if args.get("input_audio"):
         payload["audio"] = args.get("input_audio")
     print(

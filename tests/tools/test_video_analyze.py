@@ -149,8 +149,7 @@ class TestHandleVideoAnalyze:
             asyncio.get_event_loop().run_until_complete(
                 _handle_video_analyze({"video_url": "/tmp/test.mp4", "question": "test"})
             )
-            args = mock_tool.call_args[0]
-            assert args[2] == "google/gemini-2.5-flash"
+            assert mock_tool.call_args.kwargs["model"] == "google/gemini-2.5-flash"
 
     def test_falls_back_to_vision_model_env(self, tmp_path, monkeypatch):
         monkeypatch.setenv("AUXILIARY_VIDEO_MODEL", "")
@@ -161,8 +160,7 @@ class TestHandleVideoAnalyze:
             asyncio.get_event_loop().run_until_complete(
                 _handle_video_analyze({"video_url": "/tmp/test.mp4", "question": "test"})
             )
-            args = mock_tool.call_args[0]
-            assert args[2] == "google/gemini-flash"
+            assert mock_tool.call_args.kwargs["model"] == "google/gemini-flash"
 
     def test_canvas_runtime_overrides_edu_environment_model(self, monkeypatch):
         from tools.alphart_tools import alphart_context
@@ -189,6 +187,21 @@ class TestHandleVideoAnalyze:
         assert kwargs["api_key"] == "canvas-key"
         assert kwargs["timeout"] == 300
         assert kwargs["native_gemini"] is True
+
+    def test_canvas_without_multimodal_runtime_does_not_use_auxiliary_providers(self):
+        from tools.alphart_tools import alphart_context
+
+        with patch("tools.vision_tools.video_analyze_tool", new_callable=AsyncMock) as mock_tool:
+            with alphart_context({"app_scope": "canvas"}):
+                result = asyncio.get_event_loop().run_until_complete(
+                    _handle_video_analyze({"video_url": "/tmp/test.mp4", "question": "test"})
+                )
+
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert "ai/multimodal" in payload["error"]
+        assert "provider, model, endpoint, api_key" in payload["error"]
+        mock_tool.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
