@@ -56,6 +56,7 @@ class AlphartEduChatRequest(BaseModel):
     input_audio: List[Any] = Field(default_factory=list)
     reference_item_ids: List[str] = Field(default_factory=list)
     duration_seconds: int = 0
+    audio_duration_seconds: int = 0
     aspect_ratio: str = ""
     resolution: str = ""
     generate_audio: bool = False
@@ -3588,6 +3589,9 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "input_audio": canvas_input_audio,
         "reference_item_ids": list(req.reference_item_ids or []),
         "duration_seconds": int(req.duration_seconds or 0),
+        # Canvas keeps audio duration independent from video duration. Edu
+        # requests intentionally receive zero here and retain their legacy path.
+        "audio_duration_seconds": int(req.audio_duration_seconds or 0) if _request_app_scope(req) == "canvas" else 0,
         "aspect_ratio": req.aspect_ratio,
         "resolution": req.resolution,
         "image_quality": req.image_quality,

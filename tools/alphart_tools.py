@@ -1331,7 +1331,8 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
 def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
     _set_canvas_model_default(args, "audio")
-    requested_duration = int(args.get("duration_seconds") or _ctx().get("duration_seconds") or 0)
+    canvas_audio_duration = _ctx().get("audio_duration_seconds") if _ctx().get("app_scope") == "canvas" else 0
+    requested_duration = int(args.get("duration_seconds") or canvas_audio_duration or _ctx().get("duration_seconds") or 0)
     if _ctx().get("app_scope") == "canvas":
         requested_duration = max(5, min(15, requested_duration or 5))
     tool = _pick_tool("audio", args)
