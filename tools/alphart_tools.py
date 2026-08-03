@@ -357,6 +357,30 @@ def _handle_canvas_create_node(args: Dict[str, Any], **_: Any) -> str:
         args["canvas_id"] = _ctx().get("canvas_id")
     if not args.get("item_type") and args.get("type"):
         args["item_type"] = args.get("type")
+    if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
+        item_type = str(args.get("item_type") or "text").strip().lower()
+        source_ids = []
+        for source_field in ("source_item_ids", "connect_from_item_ids", "reference_item_ids"):
+            raw_sources = args.get(source_field) or []
+            if isinstance(raw_sources, str):
+                raw_sources = [raw_sources]
+            source_ids.extend(str(value).strip() for value in raw_sources if str(value).strip())
+        context_sources = _ctx().get("reference_item_ids") or []
+        if isinstance(context_sources, str):
+            context_sources = [context_sources]
+        source_ids.extend(str(value).strip() for value in context_sources if str(value).strip())
+        # A new media node follows the newly created Prompt node. Persist both
+        # the user's referenced inputs and that prompt-to-output edge in the
+        # backend, even if the model forgets a separate connect tool call.
+        if item_type in {"image", "video", "audio"}:
+            for created in reversed(_ctx().get("_canvas_created_nodes") or []):
+                if created.get("item_type") in {"text", "note"}:
+                    prompt_id = str(created.get("id") or "").strip()
+                    if prompt_id and prompt_id not in source_ids:
+                        source_ids.append(prompt_id)
+                    break
+        if source_ids:
+            args["source_item_ids"] = list(dict.fromkeys(source_ids))
     if not args.get("content"):
         content: Dict[str, Any] = {}
         if args.get("text"):
@@ -384,6 +408,10 @@ def _handle_canvas_create_node(args: Dict[str, Any], **_: Any) -> str:
     if resp.status_code < 200 or resp.status_code >= 300:
         detail = decoded.get("detail") if isinstance(decoded, dict) else resp.text
         return _tool_error(str(detail or f"HTTP {resp.status_code}"))
+    if isinstance(decoded, dict):
+        item_id = str(decoded.get("canvas_item_id") or (decoded.get("item") or {}).get("id") or "").strip()
+        if item_id:
+            _ctx().setdefault("_canvas_created_nodes", []).append({"id": item_id, "item_type": str(args.get("item_type") or "text").strip().lower()})
     return json.dumps({"status": "success", "result": decoded}, ensure_ascii=False)
 
 
@@ -1054,6 +1082,8 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
             args["aspect_ratio"] = _ctx().get("image_aspect_ratio")
         if _ctx().get("image_quality"):
             args["quality"] = _ctx().get("image_quality")
+        if _ctx().get("image_resolution"):
+            args["resolution"] = _ctx().get("image_resolution")
     if args.get("image_quantity") and not args.get("quantity"):
         args["quantity"] = args.get("image_quantity")
     if not args.get("input_images") and _ctx().get("input_images"):
@@ -1073,6 +1103,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
         "prompt": args.get("prompt"),
         "aspect_ratio": args.get("aspect_ratio"),
         "quality": args.get("quality"),
+        "resolution": args.get("resolution"),
         "session_id": _ctx().get("session_id"),
         "canvas_id": _ctx().get("canvas_id"),
         "canvas_item_id": args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or _ctx().get("canvas_item_id"),
@@ -1081,6 +1112,8 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
         payload["n"] = args.get("quantity")
     if args.get("input_images"):
         payload["images"] = args.get("input_images")
+    if is_canvas:
+        payload["reference_item_ids"] = _ctx().get("reference_item_ids") or []
     print(
         f"[alphart-agent] calling internal relay image session_id={_ctx().get('session_id')} url={relay_url}",
         flush=True,
@@ -1334,6 +1367,8 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
         "user_uuid": _ctx().get("user_uuid"),
         "org_no": _ctx().get("org_no"),
     }
+    if _ctx().get("app_scope") == "canvas":
+        payload["reference_item_ids"] = _ctx().get("reference_item_ids") or []
     print(
         f"[alphart-agent] calling internal relay audio session_id={_ctx().get('session_id')} "
         f"provider={_log_model_value(selected_provider)} model={_log_model_value(selected_model)} url={relay_url}",
@@ -1990,7 +2025,7 @@ CANVAS_CREATE_NODE_SCHEMA = {
         "properties": {
             "canvas_id": {"type": "string", "description": "Canvas document id. Defaults to current canvas."},
             "item_type": {"type": "string", "enum": ["text", "note", "image", "video", "audio", "file", "group"]},
-            "title": {"type": "string"},
+            "title": {"type": "string", "description": "Concise 2-6 word summary of this node's role or content; preserve an explicit user title."},
             "text": {"type": "string", "description": "Text content for text/note nodes."},
             "prompt": {"type": "string", "description": "Prompt content for media generation nodes."},
             "content": {"type": "object", "description": "Full Canvas node content JSON."},
@@ -2001,6 +2036,11 @@ CANVAS_CREATE_NODE_SCHEMA = {
             "height": {"type": "number"},
             "z_index": {"type": "integer"},
             "last_run_status": {"type": "string", "enum": ["idle", "running", "completed", "failed"]},
+            "source_item_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Canvas node ids to connect into this new node. For referenced inputs, pass every source id; Canvas persists these lines automatically.",
+            },
         },
         "required": ["item_type", "title"],
     },
@@ -2065,6 +2105,7 @@ CANVAS_GENERATE_IMAGE_SCHEMA = {
             "provider": {"type": "string", "description": "Selected image provider, when known."},
             "model": {"type": "string", "description": "Selected image model, when known."},
             "aspect_ratio": {"type": "string", "description": "1:1, 16:9, 9:16, 4:3, or 3:4."},
+            "resolution": {"type": "string", "description": "Canvas image resolution: auto, 1K, 2K, or 4K."},
             "image_quantity": {"type": "integer", "description": "Requested number of images."},
             "input_images": {
                 "type": "array",

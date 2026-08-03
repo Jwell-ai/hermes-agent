@@ -49,6 +49,7 @@ class AlphartEduChatRequest(BaseModel):
     image_model: str = ""
     image_aspect_ratio: str = ""
     image_quality: str = ""
+    image_resolution: str = ""
     video_model: str = ""
     audio_model: str = ""
     input_images: List[Any] = Field(default_factory=list)
@@ -490,6 +491,29 @@ def _request_app_scope(req: Any) -> str:
     if "canvas" in backend_url.lower():
         return "canvas"
     return "edu"
+
+
+def _canvas_reasoning_config(req: Any) -> Optional[Dict[str, Any]]:
+    """Translate Canvas' text think-level setting for Hermes only.
+
+    Edu requests intentionally keep Hermes' existing reasoning behavior. The
+    Canvas UI sends the setting alongside the selected text model so it can be
+    applied without adding another app-wide environment variable.
+    """
+    if _request_app_scope(req) != "canvas":
+        return None
+    text_model = getattr(req, "text_model", {})
+    if not isinstance(text_model, dict):
+        return None
+    effort = _string(
+        text_model.get("thinking_level")
+        or text_model.get("thinkingLevel")
+        or text_model.get("reasoning_effort")
+    )
+    if not effort:
+        return None
+    from hermes_constants import parse_reasoning_effort
+    return parse_reasoning_effort(effort)
 
 
 def _backend_url_from_req(req: Any) -> str:
@@ -3567,6 +3591,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "aspect_ratio": req.aspect_ratio,
         "resolution": req.resolution,
         "image_quality": req.image_quality,
+        "image_resolution": req.image_resolution,
         "image_aspect_ratio": req.image_aspect_ratio,
         "generate_audio": bool(req.generate_audio),
         "video_caption_script": req.video_caption_script,
@@ -3715,6 +3740,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                         skip_memory=True,
                         skip_context_files=True,
                         request_overrides={"extra_headers": relay_headers} if relay_headers else None,
+                        reasoning_config=_canvas_reasoning_config(req),
                     )
                     if agent_api_mode == "anthropic_messages":
                         _install_internal_relay_anthropic_headers(agent, relay_headers)

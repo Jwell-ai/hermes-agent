@@ -10,6 +10,7 @@ This skill is loaded only for `app_scope=canvas`. It is the authoritative workfl
 - The backend may provide a graph inventory containing node ids, types, titles, content, media references, and existing lines. Node ids are tool-call-only values.
 - A graph `media_ref` is an opaque Canvas object reference. Copy it only into the matching tool's `s3_object_name` reference field when that node is an explicitly selected input; never turn it into a URL or mention it in the user-facing response.
 - User mentions such as `@Prompt`, `@Image node`, `@a.mp3`, or equivalent native-language references identify graph inputs. Match by title and graph context; never expose ids in the response.
+- Every newly created node gets a concise, human-readable title summarizing its role or content in 2-6 words. Preserve an explicit title from the user; avoid generic titles such as `Image node`, `Video node`, or `Prompt` when a meaningful summary is available.
 - The Canvas backend owns persistence, S3 storage, provider relay, task polling, billing, and authorization. Do not use local files, local storage, direct provider credentials, or external storage.
 
 ## Intent And Target Selection
@@ -50,9 +51,9 @@ For a new graph, create only the nodes needed for the selected workflow and conn
 For a new image, video, or audio design, execute these steps in order. Use one tool call at a time and wait for each result.
 
 1. Comprehend the user's intent and write a production-ready prompt in the user's language or the language requested by the user.
-2. Create one text node titled `Prompt` containing the enriched prompt with `canvas_create_node`.
-3. Create one output node of the requested type with `canvas_create_node`. Keep its prompt/content empty or set it to the enriched prompt as appropriate.
-4. Connect every explicitly named input reference to the Prompt node with `canvas_connect_nodes`. Connect the Prompt node to the output node. Also connect explicitly named media references directly to the output when the provider needs the original media bytes as a keyframe, image reference, soundtrack, or voice print.
+2. Create one text node with a concise summary title containing the enriched prompt with `canvas_create_node`.
+3. Create one output node of the requested type with a concise summary title using `canvas_create_node`. Keep its prompt/content empty or set it to the enriched prompt as appropriate.
+4. Pass every explicitly named input node id in `source_item_ids` when creating the Prompt and output nodes. The Canvas backend persists those source-to-target lines automatically. Also call `canvas_connect_nodes` when a semantic edge is needed that is not covered by those source ids, such as the Prompt-to-output edge. Do not create duplicate lines.
 5. Generate only into the output node using the matching Canvas generation tool and its returned `canvas_item_id`.
 6. Treat an accepted asynchronous task as started, not completed. Let the Go backend poll and persist the result.
 
@@ -70,7 +71,7 @@ When `canvas_item_id` is present:
 
 ## Connections And Errors
 
-- A line is persisted only through `canvas_connect_nodes`; never claim a connection exists after merely describing it.
+- A line is persisted only through `canvas_connect_nodes` or a `source_item_ids` edge on Canvas node creation; never claim a connection exists after merely describing it.
 - Do not create duplicate lines, self-loops, or connections to nodes outside the current Canvas.
 - On tool failure, report a concise actionable error and preserve existing node content and media. Do not retry the same generation automatically.
 - Do not expose provider errors containing secrets or internal URLs. The backend response is the source of truth for status.
