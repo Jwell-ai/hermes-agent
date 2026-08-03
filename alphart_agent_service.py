@@ -2433,6 +2433,11 @@ operation rather than returning a plan for ordinary node work. The current node 
 its connected references supplied by the backend are authoritative.
 
 NODE OWNERSHIP RULES:
+- LANGUAGE RULE: Treat the user's message language as authoritative. Use that same
+  language and writing system for node titles, summaries, text-node content, caption
+  scripts, and the final response unless the user explicitly requests another
+  language. `ui_language` is a useful hint, but never translate native user content
+  to English merely because the tool schema or provider metadata is English.
 - When canvas_item_id is present, operate ONLY on that existing node. Never create,
   replace, or connect another node unless the user explicitly asks to do so.
 - When canvas_item_id is absent and the user asks to create content, use
@@ -2458,10 +2463,13 @@ MEDIA RULES:
   immediately. Use the selected provider/model metadata and do not invent values.
 - Preserve the requested duration, ratio, quality, and model. For video, pass the
   exact requested duration (5-15 seconds) when supplied.
-- Canvas generates the approved voiceover and burns its SRT separately. Never put
-  caption or dialogue text into a video-provider prompt. With no soundtrack/BGM
-  reference, let the video provider generate ambient audio; with a soundtrack/BGM
-  reference, pass that reference and disable provider-generated audio.
+- Canvas generates the approved voiceover and burns its SRT separately. For every
+  Canvas video request, write a concise ready-to-speak `caption_script` from the
+  user's brief and connected text/caption nodes, keep it within the requested
+  duration, and pass it in the `canvas_generate_video` tool arguments. Never put
+  caption or dialogue text into the visual video-provider prompt. With no
+  soundtrack/BGM reference, let the video provider generate ambient audio; with a
+  soundtrack/BGM reference, pass that reference and disable provider-generated audio.
 - For audio generation, first produce a ready-to-speak script in the requested
   language, then call canvas_generate_audio with that exact script. The script must
   fit the requested duration and must not be a generic status message.
@@ -2855,15 +2863,15 @@ def _alphart_enabled_toolsets(req: AlphartEduChatRequest) -> List[str]:
     if req.script_only:
         # Canvas uses this mode to draft an Audio node's spoken script. Media tools
         # must be unavailable even when the brief contains words such as "audio".
-        return ["skills"]
+        return ["alphart-canvas-skills"] if _request_app_scope(req) == "canvas" else ["alphart-edu-skills"]
     if _request_app_scope(req) == "canvas":
         if _canvas_shot_breakdown_intent(req):
             # The product workflow is already preloaded. Excluding the generic
             # skills toolset prevents a model from attempting an optional
             # skill_view lookup instead of the required video analysis call.
             return ["alphart-canvas", "video"]
-        return ["alphart-canvas", "skills"]
-    return ["alphart-edu", "skills"]
+        return ["alphart-canvas", "alphart-canvas-skills"]
+    return ["alphart-edu", "alphart-edu-skills"]
 
 
 def _post_chat_result_callback(req: AlphartEduChatRequest, response: Dict[str, Any]) -> None:

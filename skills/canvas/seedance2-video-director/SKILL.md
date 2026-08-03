@@ -63,9 +63,11 @@ exist. Do not promise exact interpolation from an intermediate reference.
 ## Dispatch
 
 Call `canvas_generate_video` exactly once with the selected Canvas video node,
-its supplied image/audio references, the selected model, ratio, resolution, and
-the exact requested duration. The Canvas relay owns storage, task polling,
-billing, and provider-specific media roles.
+its supplied image/audio references, the selected model, ratio, resolution, exact
+requested duration, and a concise ready-to-speak `caption_script`. The caption
+script is used by Canvas to generate the voiceover and SRT; it is separate from
+the visual video prompt. The Canvas relay owns storage, task polling, billing,
+and provider-specific media roles.
 
 ## Upstream
 

@@ -68,6 +68,7 @@ Usage:
 
 import json
 import logging
+import posixpath
 
 from hermes_constants import get_hermes_home, display_hermes_home
 import os
@@ -93,6 +94,53 @@ SKILLS_DIR = HERMES_HOME / "skills"
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
+
+# Alphart requests run inside tools.alphart_tools.alphart_context(). The shared
+# Hermes process serves both products, so Canvas must not be able to discover
+# or load Edu-only skills such as gaming and storybook-generator. Keep this
+# allowlist name-based and deliberately narrow; non-Alphart Hermes sessions
+# continue to use the normal unrestricted skill catalog.
+_CANVAS_SKILL_PREFIXES = ("canvas-", "canvas/", "canvas:")
+_CANVAS_BARE_SKILL_NAMES = {"graph"}
+
+
+def _active_alphart_scope() -> str:
+    try:
+        from tools.alphart_tools import _ctx
+
+        return str(_ctx().get("app_scope") or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _skill_allowed_in_active_scope(name: str, category: str = "") -> bool:
+    scope = _active_alphart_scope()
+    if scope not in {"canvas", "edu"}:
+        return True
+    normalized = str(name or "").strip().lower().replace("\\", "/")
+    category = str(category or "").strip().lower()
+    normalized_path = posixpath.normpath(normalized)
+    is_canvas_name = normalized in _CANVAS_BARE_SKILL_NAMES or normalized.startswith(_CANVAS_SKILL_PREFIXES)
+    is_canvas_skill = is_canvas_name or category == "canvas"
+    if scope == "edu":
+        return not is_canvas_skill
+    if normalized in _CANVAS_BARE_SKILL_NAMES or category == "canvas":
+        return True
+    # Normalize before applying the prefix check so a path such as
+    # ``canvas/../storybook-generator`` cannot bypass the scope boundary.
+    if normalized_path != normalized:
+        return False
+    return normalized.startswith(_CANVAS_SKILL_PREFIXES)
+
+
+def _skills_visible_in_active_scope(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if _active_alphart_scope() not in {"canvas", "edu"}:
+        return skills
+    return [
+        skill
+        for skill in skills
+        if _skill_allowed_in_active_scope(skill.get("name", ""), skill.get("category", ""))
+    ]
 
 # Platform identifiers for the 'platforms' frontmatter field.
 # Maps user-friendly names to sys.platform prefixes.
@@ -657,7 +705,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
             )
 
         # Find all skills
-        all_skills = _find_all_skills()
+        all_skills = _skills_visible_in_active_scope(_find_all_skills())
 
         if not all_skills:
             return json.dumps(
@@ -826,6 +874,15 @@ def skill_view(
         JSON string with skill content or error message
     """
     try:
+        if not _skill_allowed_in_active_scope(name):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Skill '{name}' is not available in the Canvas app scope.",
+                    "hint": "Use skills_list to see Canvas skills available for this request.",
+                },
+                ensure_ascii=False,
+            )
         local_category_name: str | None = None
         # ── Qualified name dispatch (plugin skills) ──────────────────
         # Names containing ':' are routed to the plugin skill registry.
@@ -993,7 +1050,10 @@ def skill_view(
             skill_dir, skill_md = candidates[0]
 
         if not skill_md or not skill_md.exists():
-            available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
+            available = [
+                s["name"]
+                for s in _sort_skills(_skills_visible_in_active_scope(_find_all_skills()))[:20]
+            ]
             return json.dumps(
                 {
                     "success": False,
@@ -1063,6 +1123,16 @@ def skill_view(
 
         # Check if the skill is disabled by the user
         resolved_name = parsed_frontmatter.get("name", skill_md.parent.name)
+        resolved_category = _get_category_from_path(skill_md)
+        if not _skill_allowed_in_active_scope(resolved_name, resolved_category):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Skill '{resolved_name}' is not available in the {_active_alphart_scope().title()} app scope.",
+                    "hint": "Use skills_list to see skills available for this request.",
+                },
+                ensure_ascii=False,
+            )
         if _is_skill_disabled(resolved_name):
             return json.dumps(
                 {

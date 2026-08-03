@@ -10,7 +10,7 @@ This skill is loaded only for `app_scope=canvas`. It is the authoritative workfl
 - The backend may provide a graph inventory containing node ids, types, titles, content, media references, and existing lines. Node ids are tool-call-only values.
 - A graph `media_ref` is an opaque Canvas object reference. Copy it only into the matching tool's `s3_object_name` reference field when that node is an explicitly selected input; never turn it into a URL or mention it in the user-facing response.
 - User mentions such as `@Prompt`, `@Image node`, `@a.mp3`, or equivalent native-language references identify graph inputs. Match by title and graph context; never expose ids in the response.
-- Every newly created node gets a concise, human-readable title summarizing its role or content in 2-6 words. Preserve an explicit title from the user; avoid generic titles such as `Image node`, `Video node`, or `Prompt` when a meaningful summary is available.
+- Every newly created node gets a concise, human-readable title summarizing its role or content in 2-6 words, written in the user's language and writing system. Preserve an explicit title from the user; avoid generic English titles such as `Image node`, `Video node`, or `Prompt` when a meaningful native-language summary is available.
 - The Canvas backend owns persistence, S3 storage, provider relay, task polling, billing, and authorization. Do not use local files, local storage, direct provider credentials, or external storage.
 
 ## Intent And Target Selection
@@ -42,7 +42,7 @@ Choose the narrowest applicable workflow:
 3. `canvas-seedance2-video-director` is the default video workflow. Use it for all other video generation, including a new graph with text/image/audio references. Preserve reference roles and call exactly one `canvas_generate_video` for the output node.
 4. Image, audio, and text requests use the matching Canvas tool and do not load a video workflow.
 
-Capacity rules are explicit: video duration is supported from 5 to 15 seconds and must be clamped to that range; do not silently change a requested ratio, resolution, quality, language, or model to an invented value. A connected soundtrack/background-music node disables provider-generated audio; a voice-print reference is not a soundtrack. Caption/script text is passed as the production brief, but it is not an audio reference. Audio and caption artifacts are separate Canvas nodes when the user asks for them.
+Capacity rules are explicit: video duration is supported from 5 to 15 seconds and must be clamped to that range; do not silently change a requested ratio, resolution, quality, language, or model to an invented value. A connected soundtrack/background-music node disables provider-generated audio; a voice-print reference is not a soundtrack. Every video generation call includes a bounded ready-to-speak `caption_script`; Canvas uses it to create the voiceover and SRT separately from the visual prompt. Audio and caption artifacts are separate Canvas nodes when the user asks for them.
 
 For a new graph, create only the nodes needed for the selected workflow and connect them before generation. For an existing target, update only that target unless the user explicitly asks for a downstream result. Do not duplicate a task because a tool response is delayed or because a request is retried by the transport.
 
@@ -51,8 +51,8 @@ For a new graph, create only the nodes needed for the selected workflow and conn
 For a new image, video, or audio design, execute these steps in order. Use one tool call at a time and wait for each result.
 
 1. Comprehend the user's intent and write a production-ready prompt in the user's language or the language requested by the user.
-2. Create one text node with a concise summary title containing the enriched prompt with `canvas_create_node`.
-3. Create one output node of the requested type with a concise summary title using `canvas_create_node`. Keep its prompt/content empty or set it to the enriched prompt as appropriate.
+2. Create one text node with a concise summary title in that same language containing the enriched prompt with `canvas_create_node`.
+3. Create one output node of the requested type with a concise summary title in that same language using `canvas_create_node`. Keep its prompt/content empty or set it to the enriched prompt as appropriate.
 4. Pass every explicitly named input node id in `source_item_ids` when creating the Prompt and output nodes. The Canvas backend persists those source-to-target lines automatically. Also call `canvas_connect_nodes` when a semantic edge is needed that is not covered by those source ids, such as the Prompt-to-output edge. Do not create duplicate lines.
 5. Generate only into the output node using the matching Canvas generation tool and its returned `canvas_item_id`.
 6. Treat an accepted asynchronous task as started, not completed. Let the Go backend poll and persist the result.
@@ -65,7 +65,7 @@ When `canvas_item_id` is present:
 
 - Text/note: refine or replace only its text content. Preserve the previous content if the model or backend fails.
 - Image: call `canvas_generate_image` with the selected node id, the enriched prompt, selected quality/ratio, and only the requested upstream image references.
-- Video: call `canvas_generate_video` with the selected node id, exact duration (5-15 seconds), ratio, resolution, keyframes, soundtrack/voice-print roles, and caption script. Preserve first/intermediate/last frame roles.
+- Video: call `canvas_generate_video` with the selected node id, exact duration (5-15 seconds), ratio, resolution, keyframes, soundtrack/voice-print roles, and a bounded ready-to-speak `caption_script`. Preserve first/intermediate/last frame roles.
 - Audio: produce a ready-to-speak script first, then call `canvas_generate_audio` with the exact script and selected duration/model. Do not save a failure message as the script.
 - Do not create a Prompt node or downstream node for an existing-node request unless the user explicitly asks for a new graph.
 

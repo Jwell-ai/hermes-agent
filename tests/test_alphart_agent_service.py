@@ -1,6 +1,7 @@
 """Focused tests for shared Alphart agent service helpers."""
 
-from alphart_agent_service import _provider_config_for_domain
+from alphart_agent_service import AlphartEduChatRequest, _alphart_enabled_toolsets, _provider_config_for_domain
+from toolsets import resolve_toolset
 
 
 def test_canvas_flat_multimodal_config_is_used():
@@ -19,3 +20,33 @@ def test_canvas_flat_multimodal_config_is_used():
     )
 
     assert resolved == config
+
+
+def test_canvas_toolsets_exclude_edu_workflows():
+    request = AlphartEduChatRequest(app_scope="canvas")
+
+    assert _alphart_enabled_toolsets(request) == ["alphart-canvas", "alphart-canvas-skills"]
+
+
+def test_canvas_script_only_toolsets_exclude_edu_skill_management():
+    request = AlphartEduChatRequest(app_scope="canvas", script_only=True)
+
+    assert _alphart_enabled_toolsets(request) == ["alphart-canvas-skills"]
+
+
+def test_edu_toolsets_are_explicit():
+    request = AlphartEduChatRequest(app_scope="edu")
+
+    assert _alphart_enabled_toolsets(request) == ["alphart-edu", "alphart-edu-skills"]
+
+
+def test_edu_toolset_does_not_advertise_canvas_graph_mutations():
+    edu_tools = set(resolve_toolset("alphart-edu"))
+
+    assert {"canvas_create_node", "canvas_update_node", "canvas_connect_nodes"}.isdisjoint(edu_tools)
+
+
+def test_canvas_toolset_owns_canvas_graph_mutations():
+    canvas_tools = set(resolve_toolset("alphart-canvas"))
+
+    assert {"canvas_create_node", "canvas_update_node", "canvas_connect_nodes"}.issubset(canvas_tools)

@@ -84,9 +84,6 @@ _HERMES_WEBHOOK_SAFE_TOOLS = [
 
 _ALPHART_TOOLS = [
     "write_plan",
-    "canvas_create_node",
-    "canvas_update_node",
-    "canvas_connect_nodes",
     "generate_image",
     "generate_video",
     "generate_audio",
@@ -116,6 +113,17 @@ _ALPHART_CANVAS_TOOLS = [
     "canvas_transcribe_audio",
 ]
 
+_ALPHART_CANVAS_SKILLS_TOOLS = [
+    "skills_list",
+    "skill_view",
+]
+
+_ALPHART_EDU_SKILLS_TOOLS = [
+    "skills_list",
+    "skill_view",
+    "skill_manage",
+]
+
 
 # Core toolset definitions
 # These can include individual tools or reference other toolsets
@@ -128,6 +136,16 @@ TOOLSETS = {
     "alphart-canvas": {
         "description": "Alphart Canvas graph tools: create/update nodes, persist connections, and run Canvas media generation.",
         "tools": _ALPHART_CANVAS_TOOLS,
+        "includes": []
+    },
+    "alphart-canvas-skills": {
+        "description": "Canvas-only specialist skill discovery and viewing. Edu-only skill management and workflows are unavailable.",
+        "tools": _ALPHART_CANVAS_SKILLS_TOOLS,
+        "includes": []
+    },
+    "alphart-edu-skills": {
+        "description": "Edu-only skill discovery, viewing, and management. Canvas-owned skills are unavailable.",
+        "tools": _ALPHART_EDU_SKILLS_TOOLS,
         "includes": []
     },
 

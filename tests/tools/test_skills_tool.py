@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import tools.skills_tool as skills_tool_module
+from tools.alphart_tools import alphart_context
 from tools.skills_tool import (
     _get_required_environment_variables,
     _parse_frontmatter,
@@ -357,6 +358,28 @@ class TestSkillsList:
         assert result["categories"] == ["linked"]
         assert result["skills"][0]["name"] == "knowledge-brain"
 
+    def test_canvas_scope_only_lists_canvas_skills(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), alphart_context({"app_scope": "canvas"}):
+            _make_skill(tmp_path, "canvas-seedance2-video-director")
+            _make_skill(tmp_path, "storybook-generator")
+            _make_skill(tmp_path, "graph", category="canvas")
+            raw = skills_list()
+
+        result = json.loads(raw)
+        assert result["count"] == 2
+        assert {skill["name"] for skill in result["skills"]} == {
+            "canvas-seedance2-video-director",
+            "graph",
+        }
+
+    def test_edu_scope_hides_canvas_skill_catalog(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), alphart_context({"app_scope": "edu"}):
+            _make_skill(tmp_path, "canvas-seedance2-video-director")
+            _make_skill(tmp_path, "storybook-generator")
+            raw = skills_list()
+
+        assert {skill["name"] for skill in json.loads(raw)["skills"]} == {"storybook-generator"}
+
 
 # ---------------------------------------------------------------------------
 # skill_view
@@ -364,6 +387,56 @@ class TestSkillsList:
 
 
 class TestSkillView:
+    def test_canvas_scope_rejects_edu_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), alphart_context({"app_scope": "canvas"}):
+            _make_skill(tmp_path, "storybook-generator")
+            raw = skill_view("storybook-generator")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Canvas app scope" in result["error"]
+
+    def test_edu_scope_rejects_canvas_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), alphart_context({"app_scope": "edu"}):
+            _make_skill(tmp_path, "canvas-video-shotcraft")
+            raw = skill_view("canvas-video-shotcraft")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Edu app scope" in result["error"]
+
+    def test_edu_scope_rejects_bundled_canvas_graph_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), alphart_context({"app_scope": "edu"}):
+            _make_skill(tmp_path, "graph", category="canvas")
+            raw = skill_view("graph")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Edu app scope" in result["error"]
+
+    def test_canvas_scope_allows_canvas_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), alphart_context({"app_scope": "canvas"}):
+            _make_skill(tmp_path, "canvas-video-shotcraft")
+            raw = skill_view("canvas-video-shotcraft")
+
+        assert json.loads(raw)["success"] is True
+
+    def test_canvas_scope_allows_bundled_graph_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), alphart_context({"app_scope": "canvas"}):
+            _make_skill(tmp_path, "graph", category="canvas")
+            raw = skill_view("graph")
+
+        assert json.loads(raw)["success"] is True
+
+    def test_canvas_scope_rejects_path_traversal_to_edu_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), alphart_context({"app_scope": "canvas"}):
+            _make_skill(tmp_path, "storybook-generator")
+            raw = skill_view("canvas/../storybook-generator")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Canvas app scope" in result["error"]
+
     def test_view_existing_skill(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "my-skill")

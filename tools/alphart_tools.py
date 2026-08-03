@@ -351,7 +351,16 @@ def _handle_write_plan(args: Dict[str, Any], **_: Any) -> str:
     return "\n".join(lines)
 
 
+def _require_canvas_graph_scope() -> str:
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
+        return _tool_error("Canvas graph tools are only available in the Canvas app scope")
+    return ""
+
+
 def _handle_canvas_create_node(args: Dict[str, Any], **_: Any) -> str:
+    scope_error = _require_canvas_graph_scope()
+    if scope_error:
+        return scope_error
     args = dict(args or {})
     if not args.get("canvas_id"):
         args["canvas_id"] = _ctx().get("canvas_id")
@@ -416,6 +425,9 @@ def _handle_canvas_create_node(args: Dict[str, Any], **_: Any) -> str:
 
 
 def _handle_canvas_update_node(args: Dict[str, Any], **_: Any) -> str:
+    scope_error = _require_canvas_graph_scope()
+    if scope_error:
+        return scope_error
     args = dict(args or {})
     item_id = str(args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or "").strip()
     if not item_id:
@@ -445,6 +457,9 @@ def _handle_canvas_update_node(args: Dict[str, Any], **_: Any) -> str:
 
 
 def _handle_canvas_connect_nodes(args: Dict[str, Any], **_: Any) -> str:
+    scope_error = _require_canvas_graph_scope()
+    if scope_error:
+        return scope_error
     args = dict(args or {})
     if not args.get("canvas_id"):
         args["canvas_id"] = _ctx().get("canvas_id")
@@ -1266,10 +1281,20 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         "canvas_id": _ctx().get("canvas_id"),
         "canvas_item_id": args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or _ctx().get("canvas_item_id"),
         "generate_audio": bool(args.get("generate_audio")),
+        # Edu callers already use the request context for caption/voiceover
+        # scripts. Keep this field on the shared payload; Canvas may override
+        # it below when the tool supplied an explicit script.
         "caption_script": _ctx().get("video_caption_script"),
         "tool_call_id": kwargs.get("tool_call_id") or args.get("tool_call_id"),
     }
     if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
+        payload.update({
+            # The tool argument is authoritative when the model supplied one;
+            # the request-level value covers the selected-node composer path.
+            "caption_script": str(args.get("caption_script") or _ctx().get("video_caption_script") or "").strip(),
+            "audio_model": _ctx().get("audio_model"),
+            "language_type": _ctx().get("audio_language_type"),
+        })
         payload.update({
             "user_id": _ctx().get("user_id"),
             "user_uuid": _ctx().get("user_uuid"),
@@ -2166,6 +2191,10 @@ CANVAS_GENERATE_VIDEO_SCHEMA = {
             "resolution": {"type": "string", "description": "Video resolution, for example 480p, 720p, 1080p."},
             "aspect_ratio": {"type": "string", "description": "Video aspect ratio, for example 16:9 or 9:16."},
             "generate_audio": {"type": "boolean", "description": "Whether the generated video should include audio."},
+            "caption_script": {
+                "type": "string",
+                "description": "Ready-to-speak caption/voiceover script for Canvas. Keep it within the requested duration; do not put it in the visual video prompt.",
+            },
             "wait": {"type": "boolean", "default": False},
         },
         "required": ["prompt"],
@@ -2381,21 +2410,21 @@ registry.register(
 )
 registry.register(
     name="canvas_create_node",
-    toolset="alphart-edu",
+    toolset="alphart-canvas",
     schema=CANVAS_CREATE_NODE_SCHEMA,
     handler=_handle_canvas_create_node,
     is_async=False,
 )
 registry.register(
     name="canvas_update_node",
-    toolset="alphart-edu",
+    toolset="alphart-canvas",
     schema=CANVAS_UPDATE_NODE_SCHEMA,
     handler=_handle_canvas_update_node,
     is_async=False,
 )
 registry.register(
     name="canvas_connect_nodes",
-    toolset="alphart-edu",
+    toolset="alphart-canvas",
     schema=CANVAS_CONNECT_NODES_SCHEMA,
     handler=_handle_canvas_connect_nodes,
     is_async=False,

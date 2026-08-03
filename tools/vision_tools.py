@@ -1006,6 +1006,26 @@ def check_vision_requirements() -> bool:
     tool list whenever the explicit provider name was unresolvable, even
     when the auto chain would have served the request (issue #31179).
     """
+    # Canvas passes its multimodal provider from app_config through the
+    # request-scoped Hermes context. This must be checked before the shared
+    # auxiliary-client probe: the Canvas provider is intentionally not part of
+    # Edu's AUXILIARY_* environment fallback chain.
+    try:
+        from tools.alphart_tools import _ctx
+
+        context = _ctx()
+        if str(context.get("app_scope") or "").strip().lower() == "canvas":
+            runtime = context.get("multimodal_runtime")
+            if isinstance(runtime, dict) and all(
+                str(runtime.get(field) or "").strip()
+                for field in ("provider", "model", "base_url", "api_key")
+            ):
+                return True
+    except Exception:
+        # Fall through to the shared probe for normal Edu requests and for
+        # incomplete Canvas runtime context.
+        pass
+
     try:
         from agent.auxiliary_client import resolve_vision_provider_client
     except ImportError:
