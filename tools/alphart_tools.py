@@ -46,6 +46,22 @@ def _ctx() -> Dict[str, Any]:
     return _alphart_context.get() or {}
 
 
+def _latest_canvas_created_node_id(item_type: str) -> str:
+    """Return the newest node created during this Canvas agent turn."""
+    wanted = str(item_type or "").strip().lower()
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas" or not wanted:
+        return ""
+    for node in reversed(_ctx().get("_canvas_created_nodes") or []):
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("item_type") or "").strip().lower() != wanted:
+            continue
+        node_id = str(node.get("id") or "").strip()
+        if node_id:
+            return node_id
+    return ""
+
+
 def _tool_error(message: str, code: str = "") -> str:
     payload = {"success": False, "error": message}
     if code:
@@ -1121,7 +1137,13 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
         "resolution": args.get("resolution"),
         "session_id": _ctx().get("session_id"),
         "canvas_id": _ctx().get("canvas_id"),
-        "canvas_item_id": args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or _ctx().get("canvas_item_id"),
+        "canvas_item_id": (
+            args.get("canvas_item_id")
+            or args.get("item_id")
+            or args.get("node_id")
+            or _ctx().get("canvas_item_id")
+            or _latest_canvas_created_node_id("image")
+        ),
     }
     if args.get("quantity"):
         payload["n"] = args.get("quantity")
@@ -1177,14 +1199,16 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
         "type": "image",
         "provider": asset.get("provider") or args.get("provider"),
         "model": asset.get("model") or args.get("model"),
-        "url": asset.get("url"),
+        "url": asset.get("url") or asset.get("result_image_url"),
         "mime_type": asset.get("mime_type"),
         "width": asset.get("width"),
         "height": asset.get("height"),
         "filename": asset.get("filename"),
-        "s3_object_name": asset.get("s3_object_name"),
+        "s3_object_name": asset.get("s3_object_name") or asset.get("object_key") or asset.get("result_image_object_key"),
         "usage": asset.get("usage"),
     }
+    if is_canvas and not str(result.get("s3_object_name") or "").strip():
+        return _tool_error("Canvas image relay returned no stored image asset")
     return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
 
 

@@ -1953,6 +1953,39 @@ class TestAuxiliaryTaskExtraBody:
         kwargs = client.chat.completions.create.call_args.kwargs
         assert kwargs["extra_body"]["enable_thinking"] is True
 
+
+class TestAsyncFallbackControl:
+    """Explicit callers can keep a failed request on its configured backend."""
+
+    @pytest.mark.asyncio
+    async def test_async_call_can_disable_cross_provider_fallback(self):
+        client = MagicMock()
+        client.base_url = "http://127.0.0.1:9527/v1beta/models/gemini:generateContent"
+        client.chat.completions.create = AsyncMock(side_effect=Exception("Connection refused"))
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("custom", "gemini-3.5-flash", client.base_url, "canvas-key", None),
+            ),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(client, "gemini-3.5-flash")),
+            patch("agent.auxiliary_client._try_configured_fallback_chain") as configured_fallback,
+            patch("agent.auxiliary_client._try_main_agent_model_fallback") as main_fallback,
+        ):
+            with pytest.raises(Exception, match="Connection refused"):
+                await async_call_llm(
+                    task="compression",
+                    provider="custom",
+                    model="gemini-3.5-flash",
+                    base_url=client.base_url,
+                    api_key="canvas-key",
+                    messages=[{"role": "user", "content": "analyze this video"}],
+                    allow_fallback=False,
+                )
+
+        configured_fallback.assert_not_called()
+        main_fallback.assert_not_called()
+
     def test_no_warning_when_provider_is_custom(self, monkeypatch, caplog):
         """No warning when the provider is 'custom' — OPENAI_BASE_URL is expected."""
         import agent.auxiliary_client as mod

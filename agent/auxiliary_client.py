@@ -5348,6 +5348,7 @@ async def async_call_llm(
     timeout: float = None,
     extra_body: dict = None,
     native_gemini: bool = False,
+    allow_fallback: bool = True,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
@@ -5617,7 +5618,7 @@ async def async_call_llm(
         # See #26803: daily token quota must fall back like a 402 credit error.
         is_auto = resolved_provider in {"auto", "", None}
         is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err)
-        if should_fallback and (is_auto or is_capacity_error):
+        if allow_fallback and should_fallback and (is_auto or is_capacity_error):
             if _is_payment_error(first_err):
                 reason = "payment error"
                 _mark_provider_unhealthy(

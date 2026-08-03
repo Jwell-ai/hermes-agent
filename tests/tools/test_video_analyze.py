@@ -187,6 +187,30 @@ class TestHandleVideoAnalyze:
         assert kwargs["api_key"] == "canvas-key"
         assert kwargs["timeout"] == 300
         assert kwargs["native_gemini"] is True
+        assert kwargs["allow_fallback"] is False
+
+    def test_canvas_custom_provider_uses_native_gemini_endpoint(self):
+        from tools.alphart_tools import alphart_context
+
+        runtime = {
+            # Some Canvas app_configs use ``custom`` for a native Gemini proxy.
+            "provider": "custom",
+            "model": "gemini-3.5-flash",
+            "base_url": "http://127.0.0.1:9527/v1beta/models/%s:generateContent",
+            "api_key": "canvas-key",
+            "timeout": 300,
+        }
+        with patch("tools.vision_tools.video_analyze_tool", new_callable=AsyncMock) as mock_tool:
+            mock_tool.return_value = json.dumps({"success": True, "analysis": "ok"})
+            with alphart_context({"app_scope": "canvas", "multimodal_runtime": runtime}):
+                asyncio.get_event_loop().run_until_complete(
+                    _handle_video_analyze({"video_url": "/tmp/test.mp4", "question": "test"})
+                )
+
+        kwargs = mock_tool.call_args.kwargs
+        assert kwargs["provider"] == "custom"
+        assert kwargs["native_gemini"] is True
+        assert kwargs["allow_fallback"] is False
 
     def test_canvas_without_multimodal_runtime_does_not_use_auxiliary_providers(self):
         from tools.alphart_tools import alphart_context

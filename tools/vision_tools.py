@@ -1279,6 +1279,7 @@ async def video_analyze_tool(
     api_key: str = None,
     timeout: float = None,
     native_gemini: bool = False,
+    allow_fallback: bool = True,
 ) -> str:
     """Analyze a video via multimodal LLM. Returns JSON {success, analysis}."""
     if not isinstance(user_prompt, str):
@@ -1306,6 +1307,18 @@ async def video_analyze_tool(
 
         logger.info("Analyzing video: %s", video_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
+
+        # Canvas app_config endpoints may be labeled ``custom`` even when they
+        # expose Gemini's native generateContent wire format. Detect that from
+        # the endpoint before building the message, otherwise the video block
+        # is sent as an OpenAI ``video_url`` to a native Gemini endpoint.
+        if not native_gemini and base_url:
+            try:
+                from agent.gemini_native_adapter import is_native_gemini_base_url
+
+                native_gemini = is_native_gemini_base_url(base_url)
+            except Exception:
+                logger.debug("Could not detect native Gemini video endpoint", exc_info=True)
 
         # Resolve local path vs remote URL
         resolved_url = video_url
@@ -1404,6 +1417,7 @@ async def video_analyze_tool(
             "max_tokens": 4000,
             "timeout": vision_timeout,
             "native_gemini": native_gemini,
+            "allow_fallback": allow_fallback,
         }
         if model:
             call_kwargs["model"] = model
@@ -1568,7 +1582,7 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         return video_analyze_tool(video_url, full_prompt, model=model)
 
     native_gemini = False
-    if app_scope == "canvas" and str(runtime.get("provider") or "").strip().lower() in {"gemini", "google", "google-gemini", "google-ai-studio"}:
+    if app_scope == "canvas":
         try:
             from agent.gemini_native_adapter import is_native_gemini_base_url
 
@@ -1585,6 +1599,9 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         api_key=str(runtime.get("api_key") or "") or None,
         timeout=runtime.get("timeout"),
         native_gemini=native_gemini,
+        # A Canvas app_config is authoritative. Do not send a failed video
+        # analysis to Hermes' Edu/main-provider fallback chain.
+        allow_fallback=False,
     )
 
 
