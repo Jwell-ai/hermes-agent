@@ -5,15 +5,18 @@ description: Direct a Canvas video with video-shotcraft cinematic product-video 
 
 # Canvas Video Shotcraft
 
-Use this workflow only for generation or regeneration of the selected Canvas
-video node. It adapts video-shotcraft's product-video directing principles to
-Canvas and Seedance. Do not use Remotion, a local project, browser capture,
-external CLIs, the Ink Press template, or any bundled third-party assets.
+Use this workflow for generation or regeneration of the selected Canvas video
+node, or for the output video node that the Canvas graph skill just created for
+a new shotcraft brief. It adapts video-shotcraft's product-video directing
+principles to Canvas and Seedance. Do not use Remotion, a local project,
+browser capture, external CLIs, the Ink Press template, or any bundled
+third-party assets.
 
 ## Scope And Inputs
 
-- This is a Canvas-only workflow. Work on the selected video node; never create
-  a replacement node or alter a connected node unless the user explicitly asks.
+- This is a Canvas-only workflow. Work on the selected or newly created output
+  video node; never create a replacement node or alter a connected node unless
+  the graph skill explicitly created the new design for this request.
 - Connected text/note nodes establish the product story, feature, action, and
   ending. Connected image nodes establish product framing and visual continuity.
   Connected audio nodes keep their Canvas role: soundtrack, background music,

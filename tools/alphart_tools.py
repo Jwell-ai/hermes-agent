@@ -238,6 +238,21 @@ def _set_tool_defaults(args: Dict[str, Any], tool: Dict[str, Any]) -> None:
         args["model"] = model
 
 
+def _set_canvas_model_default(args: Dict[str, Any], media_type: str) -> None:
+    """Use the frontend-selected provider:model when the model omits tool args."""
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
+        return
+    selected = str(_ctx().get(f"{media_type}_model") or "").strip()
+    if not selected:
+        return
+    provider, separator, model = selected.partition(":")
+    if separator and provider and model:
+        args.setdefault("provider", provider)
+        args.setdefault("model", model)
+    else:
+        args.setdefault("model", selected)
+
+
 def _log_model_value(value: Any) -> str:
     text = str(value or "").strip()
     return text or "backend-selected"
@@ -1031,9 +1046,12 @@ def _handle_alphart_update_storybook_page(args: Dict[str, Any], **_: Any) -> str
 
 def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
+    _set_canvas_model_default(args, "image")
     if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
         if _ctx().get("aspect_ratio"):
             args["aspect_ratio"] = _ctx().get("aspect_ratio")
+        if _ctx().get("image_aspect_ratio"):
+            args["aspect_ratio"] = _ctx().get("image_aspect_ratio")
         if _ctx().get("image_quality"):
             args["quality"] = _ctx().get("image_quality")
     if args.get("image_quantity") and not args.get("quantity"):
@@ -1124,6 +1142,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
 
 def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     args = dict(args or {})
+    _set_canvas_model_default(args, "video")
     is_canvas = str(_ctx().get("app_scope") or "").strip().lower() == "canvas"
     if not str(args.get("prompt") or "").strip() and is_canvas:
         args["prompt"] = str(_ctx().get("canvas_prompt_context") or _ctx().get("user_message") or "").strip()
@@ -1278,6 +1297,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
 
 def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
+    _set_canvas_model_default(args, "audio")
     requested_duration = int(args.get("duration_seconds") or _ctx().get("duration_seconds") or 0)
     if _ctx().get("app_scope") == "canvas":
         requested_duration = max(5, min(15, requested_duration or 5))

@@ -103,6 +103,19 @@ _ALPHART_TOOLS = [
     "update_storybook_page",
 ]
 
+# Canvas intentionally exposes only graph primitives and Canvas-owned media
+# operations. Keep Edu storybook/game tools out of Canvas turns even though the
+# handlers live in the shared Alphart tool module.
+_ALPHART_CANVAS_TOOLS = [
+    "canvas_create_node",
+    "canvas_update_node",
+    "canvas_connect_nodes",
+    "canvas_generate_image",
+    "canvas_generate_video",
+    "canvas_generate_audio",
+    "canvas_transcribe_audio",
+]
+
 
 # Core toolset definitions
 # These can include individual tools or reference other toolsets
@@ -113,8 +126,8 @@ TOOLSETS = {
         "includes": []
     },
     "alphart-canvas": {
-        "description": "Alphart Canvas tools: planning plus canvas-node-aware media generation.",
-        "tools": _ALPHART_TOOLS,
+        "description": "Alphart Canvas graph tools: create/update nodes, persist connections, and run Canvas media generation.",
+        "tools": _ALPHART_CANVAS_TOOLS,
         "includes": []
     },
 

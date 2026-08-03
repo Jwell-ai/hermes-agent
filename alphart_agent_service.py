@@ -41,12 +41,16 @@ class AlphartEduChatRequest(BaseModel):
     session_id: str = ""
     canvas_id: str = ""
     canvas_item_id: str = ""
+    selected_canvas_item_id: str = ""
+    selected_canvas_item_type: str = ""
     canvas_item_type: str = ""
     force_media_intent: str = ""
     canvas_prompt_context: str = ""
     image_model: str = ""
+    image_aspect_ratio: str = ""
     image_quality: str = ""
     video_model: str = ""
+    audio_model: str = ""
     input_images: List[Any] = Field(default_factory=list)
     input_audio: List[Any] = Field(default_factory=list)
     reference_item_ids: List[str] = Field(default_factory=list)
@@ -2385,6 +2389,7 @@ def _canvas_agent_prompt(req: AlphartEduChatRequest) -> str:
         "- No configured Canvas tools are available. Return a concise configuration error "
         "instead of inventing a provider or model."
     )
+    graph_skill_guidance = _canvas_graph_skill_guidance(req)
     workflow_guidance = _canvas_workflow_guidance(req)
     shot_breakdown_instruction = ""
     if _canvas_shot_breakdown_intent(req):
@@ -2406,12 +2411,14 @@ NODE OWNERSHIP RULES:
 - When canvas_item_id is present, operate ONLY on that existing node. Never create,
   replace, or connect another node unless the user explicitly asks to do so.
 - When canvas_item_id is absent and the user asks to create content, use
-  canvas_create_node first, then generate into the returned node. Connect nodes only
-  when the user explicitly asks for a connection or the new node is a direct output
-  of a named reference.
+  the Canvas Graph Skill: understand the request, create a Prompt text node with the
+  enriched prompt, create the requested output node, connect the graph, and generate
+  only into the output node. Do not stop after creating nodes.
+- When canvas_item_id is absent but a selected text node is supplied in graph context
+  and the user asks for media, use it as an input and create a downstream media graph.
 - Treat reference_item_ids and the supplied connected node context as the complete
-  set of references. Do not create temporary text, image, or audio nodes merely to
-  hold a prompt, caption, or soundtrack.
+  set of references. A Prompt node is an intentional persisted design artifact for a
+  new media graph; do not create extra temporary caption or soundtrack nodes.
 - Use canvas_update_node only to change the requested existing node. Never expose
   internal ids, organisation ids, credentials, or storage keys in the user response.
 
@@ -2449,6 +2456,9 @@ CONVERSATION RULES:
 SELECTED CANVAS TOOLS:
 {selected_tools}
 
+CANVAS GRAPH SKILL:
+{graph_skill_guidance or 'No Canvas graph skill is available; follow the strict node ownership and API rules above.'}
+
 PRELOADED CANVAS WORKFLOW:
 {workflow_guidance or 'No specialised workflow applies to this node type.'}
 
@@ -2460,9 +2470,9 @@ _canvas_workflow_cache: Dict[str, str] = {}
 
 
 def _canvas_shot_breakdown_intent(req: AlphartEduChatRequest) -> bool:
-    if _string(req.canvas_item_type).strip().lower() != "video":
+    if _canvas_workflow_item_type(req) != "video":
         return False
-    text = "\n".join(_message_text(message) for message in req.messages if isinstance(message, dict)).lower()
+    text = _canvas_request_text(req).lower()
     return any(phrase in text for phrase in (
         "video-shot-breakdown", "shot breakdown", "shot-by-shot", "shot by shot",
         "拉片", "分镜分析", "镜头分析", "镜头拆解",
@@ -2470,9 +2480,9 @@ def _canvas_shot_breakdown_intent(req: AlphartEduChatRequest) -> bool:
 
 
 def _canvas_video_shotcraft_intent(req: AlphartEduChatRequest) -> bool:
-    if _request_app_scope(req) != "canvas" or _string(req.canvas_item_type).strip().lower() != "video":
+    if _request_app_scope(req) != "canvas" or _canvas_workflow_item_type(req) != "video":
         return False
-    text = "\n".join(_message_text(message) for message in req.messages if isinstance(message, dict)).lower()
+    text = _canvas_request_text(req).lower()
     return any(phrase in text for phrase in (
         "video-shotcraft", "shotcraft", "shot recipe", "shot card", "镜头配方", "镜头卡",
     ))
@@ -2486,7 +2496,7 @@ def _canvas_workflow_guidance(req: AlphartEduChatRequest) -> str:
         skill_by_item_type["video"] = ("canvas-video-shot-breakdown", "video-shot-breakdown")
     elif _canvas_video_shotcraft_intent(req):
         skill_by_item_type["video"] = ("canvas-video-shotcraft", "video-shotcraft")
-    skill = skill_by_item_type.get(_string(req.canvas_item_type).strip().lower())
+    skill = skill_by_item_type.get(_canvas_workflow_item_type(req))
     if not skill or req.script_only:
         return ""
     skill_name, skill_directory = skill
@@ -2513,6 +2523,55 @@ def _canvas_workflow_guidance(req: AlphartEduChatRequest) -> str:
             return content
     except OSError as exc:
         logger.warning("failed to read bundled Canvas workflow %s: %s", skill_name, exc)
+    return ""
+
+
+def _canvas_request_text(req: AlphartEduChatRequest) -> str:
+    return "\n".join(_message_text(message) for message in req.messages if isinstance(message, dict)).strip()
+
+
+def _canvas_workflow_item_type(req: AlphartEduChatRequest) -> str:
+    """Resolve Canvas workflow capacity without changing Edu intent routing."""
+    if _request_app_scope(req) != "canvas":
+        return ""
+    selected_type = _string(
+        getattr(req, "canvas_item_type", "") or getattr(req, "selected_canvas_item_type", "")
+    ).strip().lower()
+    text = _canvas_request_text(req)
+    if selected_type in {"text", "note"}:
+        requested = _media_intent(text, has_image_context=bool(req.input_images))
+        if requested:
+            return requested
+        return selected_type
+    if selected_type in {"image", "video", "audio"}:
+        return selected_type
+    lowered = text.lower()
+    if any(phrase in lowered for phrase in (
+        "video-shot-breakdown", "shot breakdown", "shot-by-shot", "shot by shot",
+        "拉片", "分镜分析", "镜头分析", "镜头拆解",
+    )):
+        return "video"
+    if any(phrase in lowered for phrase in (
+        "video-shotcraft", "shotcraft", "shot recipe", "shot card", "镜头配方", "镜头卡",
+    )):
+        return "video"
+    return _media_intent(text, has_image_context=bool(req.input_images), has_video_context=False)
+
+
+def _canvas_graph_skill_guidance(req: AlphartEduChatRequest) -> str:
+    if req.script_only:
+        return ""
+    cache_key = "canvas-graph"
+    if cache_key in _canvas_workflow_cache:
+        return _canvas_workflow_cache[cache_key]
+    bundled_skill = Path(__file__).resolve().parent / "skills" / "canvas" / "graph" / "SKILL.md"
+    try:
+        content = bundled_skill.read_text(encoding="utf-8").strip()
+        if content:
+            _canvas_workflow_cache[cache_key] = content
+            return content
+    except OSError as exc:
+        logger.warning("failed to read bundled Canvas graph skill: %s", exc)
     return ""
 
 
@@ -3484,9 +3543,14 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "session_id": req.session_id,
         "canvas_id": req.canvas_id,
         "canvas_item_id": req.canvas_item_id,
+        "selected_canvas_item_id": req.selected_canvas_item_id,
+        "selected_canvas_item_type": req.selected_canvas_item_type,
         "canvas_item_type": req.canvas_item_type,
         "force_media_intent": req.force_media_intent,
         "canvas_prompt_context": req.canvas_prompt_context,
+        "image_model": req.image_model,
+        "video_model": req.video_model,
+        "audio_model": req.audio_model,
         "user_id": req.user_id,
         "user_uuid": req.user_uuid,
         "storage_prefix": req.storage_prefix,
@@ -3503,6 +3567,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "aspect_ratio": req.aspect_ratio,
         "resolution": req.resolution,
         "image_quality": req.image_quality,
+        "image_aspect_ratio": req.image_aspect_ratio,
         "generate_audio": bool(req.generate_audio),
         "video_caption_script": req.video_caption_script,
         "script_only": bool(req.script_only),
