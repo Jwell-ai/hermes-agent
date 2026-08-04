@@ -901,6 +901,58 @@ def _media_intent(text: str, has_image_context: bool = False, has_video_context:
         return ""
     if _media_analysis_intent(value):
         return ""
+    text_refinement_words = (
+        "refine",
+        "rewrite",
+        "enrich",
+        "expand",
+        "polish",
+        "improve",
+        "edit",
+        "改写",
+        "润色",
+        "优化",
+        "扩展",
+        "丰富",
+        "精修",
+    )
+    text_target_words = (
+        "prompt",
+        "text",
+        "copy",
+        "script",
+        "caption",
+        "description",
+        "提示词",
+        "提示",
+        "文案",
+        "脚本",
+        "描述",
+    )
+    explicit_media_creation_words = (
+        "generate",
+        "create",
+        "make",
+        "draw",
+        "render",
+        "produce",
+        "paint",
+        "sketch",
+        "illustrate",
+        "生成",
+        "创建",
+        "制作",
+        "绘制",
+        "渲染",
+        "产出",
+        "画",
+    )
+    if (
+        any(word in value for word in text_refinement_words)
+        and any(word in value for word in text_target_words)
+        and not any(word in value for word in explicit_media_creation_words)
+    ):
+        return ""
     creation_words = (
         "generate",
         "create",
@@ -2451,6 +2503,10 @@ NODE OWNERSHIP RULES:
   new media graph; do not create extra temporary caption or soundtrack nodes.
 - Use canvas_update_node only to change the requested existing node. Never expose
   internal ids, organisation ids, credentials, or storage keys in the user response.
+- A request to refine, rewrite, enrich, expand, polish, or improve a prompt/text/
+  description without an explicit media-generation verb is text-only. Update the
+  selected text node when one is supplied; do not create an image, video, or audio
+  node and do not call a media-generation tool.
 
 MEDIA RULES:
 - The selected Canvas workflow is preloaded below. Apply it before dispatching

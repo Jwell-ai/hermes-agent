@@ -1,6 +1,6 @@
 """Focused tests for shared Alphart agent service helpers."""
 
-from alphart_agent_service import AlphartEduChatRequest, _alphart_enabled_toolsets, _provider_config_for_domain
+from alphart_agent_service import AlphartEduChatRequest, _alphart_enabled_toolsets, _media_intent, _provider_config_for_domain
 from toolsets import resolve_toolset
 
 
@@ -50,3 +50,10 @@ def test_canvas_toolset_owns_canvas_graph_mutations():
     canvas_tools = set(resolve_toolset("alphart-canvas"))
 
     assert {"canvas_create_node", "canvas_update_node", "canvas_connect_nodes"}.issubset(canvas_tools)
+
+
+def test_prompt_refinement_does_not_route_to_media_generation():
+    assert _media_intent(
+        "refine prompt which describe a breathtaking autumn dusk landscape of Yellowstone National Park"
+    ) == ""
+    assert _media_intent("refine the prompt and generate an image of Yellowstone at dusk") == "image"
