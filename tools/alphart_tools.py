@@ -73,6 +73,26 @@ def _system_busy_tool_error() -> str:
     return "generate fail"
 
 
+def _canvas_image_reference_key(value: Any) -> str:
+    """Return only the Canvas S3 identity for a media reference.
+
+    Canvas resolves these keys through its own storage service. A URL supplied
+    by the model can be stale, provider-inaccessible, or point outside the
+    Canvas document, so it must never be forwarded as a trusted keyframe.
+    """
+    if isinstance(value, dict):
+        return str(
+            value.get("s3_object_name")
+            or value.get("object_key")
+            or value.get("result_image_object_key")
+            or ""
+        ).strip()
+    raw = str(value or "").strip()
+    if raw.startswith(("http://", "https://")):
+        return ""
+    return raw
+
+
 def _strip_audio_preferences(text: str) -> str:
     return re.sub(r"\n*\s*<audio_preferences\b[^>]*/>\s*", "\n", str(text or ""), flags=re.I).strip()
 
@@ -1324,23 +1344,21 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         # Connected Canvas nodes are the user-selected keyframes. Keep them
         # ahead of any model-suggested images so an audio reference can never
         # reach the video relay without its visual counterpart.
-        canvas_images = [entry for entry in (_ctx().get("input_images") or []) if entry]
-        requested_images = [entry for entry in (args.get("input_images") or []) if entry]
+        canvas_images = [
+            entry for entry in (_ctx().get("input_images") or [])
+            if _canvas_image_reference_key(entry)
+        ]
+        requested_images = [
+            entry for entry in (args.get("input_images") or [])
+            if _canvas_image_reference_key(entry)
+        ]
         merged_images = list(canvas_images)
-        known_images = {
-            str(entry.get("s3_object_name") or entry.get("object_key") or entry.get("url") or entry)
-            if isinstance(entry, dict)
-            else str(entry)
-            for entry in canvas_images
-        }
+        known_images = {_canvas_image_reference_key(entry) for entry in canvas_images}
         for entry in requested_images:
-            identity = (
-                str(entry.get("s3_object_name") or entry.get("object_key") or entry.get("url") or entry)
-                if isinstance(entry, dict)
-                else str(entry)
-            )
+            identity = _canvas_image_reference_key(entry)
             if identity and identity not in known_images:
                 merged_images.append(entry)
+                known_images.add(identity)
         args["input_images"] = merged_images
     elif not args.get("input_images") and _ctx().get("input_images"):
         args["input_images"] = _ctx().get("input_images")
@@ -1449,6 +1467,14 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         flush=True,
     )
     if resp.status_code < 200 or resp.status_code >= 300:
+        if is_canvas:
+            detail = ""
+            if isinstance(decoded, dict):
+                detail = str(decoded.get("detail") or decoded.get("message") or decoded.get("error") or "").strip()
+            return _tool_error(
+                f"Canvas video relay failed (HTTP {resp.status_code}): "
+                f"{detail or response_preview or 'unknown relay error'}"
+            )
         return _system_busy_tool_error()
     selected_provider = decoded.get("provider") if isinstance(decoded, dict) else args.get("provider")
     selected_model = decoded.get("model") if isinstance(decoded, dict) else args.get("model")
