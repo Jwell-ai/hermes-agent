@@ -2505,8 +2505,11 @@ NODE OWNERSHIP RULES:
   internal ids, organisation ids, credentials, or storage keys in the user response.
 - A request to refine, rewrite, enrich, expand, polish, or improve a prompt/text/
   description without an explicit media-generation verb is text-only. Update the
-  selected text node when one is supplied; do not create an image, video, or audio
-  node and do not call a media-generation tool.
+  selected text node when one is supplied. If there is no selected text node and
+  canvas_item_id is absent, this is a new text-only Canvas result: call
+  canvas_create_node exactly once with item_type=text, a concise title, and the
+  enriched text in the node content. Do not answer with prose only, and do not
+  create an image, video, or audio node or call a media-generation tool.
 
 MEDIA RULES:
 - The selected Canvas workflow is preloaded below. Apply it before dispatching
