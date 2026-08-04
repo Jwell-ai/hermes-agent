@@ -154,6 +154,74 @@ def test_canvas_video_relay_drops_model_supplied_url_references():
     assert captured["json"]["image"] == [connected]
 
 
+def test_canvas_video_prompt_audio_preference_overrides_ui_fallback():
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "user_message": "Generate a 10s video without audio",
+            "generate_audio": True,
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "Animate the scene", "provider": "peanut-video", "model": "seedance"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["generate_audio"] is False
+
+
+def test_canvas_video_prompt_options_override_canvas_context():
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "duration_seconds": 5,
+            "aspect_ratio": "16:9",
+            "resolution": "720p",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {
+                    "prompt": "Animate the scene",
+                    "provider": "peanut-video",
+                    "model": "seedance",
+                    "duration_seconds": 10,
+                    "aspect_ratio": "9:16",
+                    "resolution": "1080p",
+                }
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["duration"] == 10
+    assert captured["json"]["aspect_ratio"] == "9:16"
+    assert captured["json"]["resolution"] == "1080p"
+
+
 def test_canvas_video_relay_returns_relay_error_instead_of_generic_retry():
     response = SimpleNamespace(
         status_code=400,

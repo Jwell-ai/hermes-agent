@@ -1080,7 +1080,7 @@ def _duration_seconds_from_text(text: str) -> int:
     patterns = (
         r"\b(\d{1,3})\s*(?:seconds?|secs?|s)\b",
         r"\b(\d{1,3})\s*(?:second|sec)s?\b",
-        r"\b(\d{1,3})\s*秒\b",
+        r"\b(\d{1,3})\s*秒",
     )
     for pattern in patterns:
         match = re.search(pattern, value, re.IGNORECASE)
@@ -2199,6 +2199,12 @@ def _forced_media_tool_messages(
             "tool_call_id": call_id,
             "language_type": language_type,
         }
+        # Canvas prompt values are authoritative over the UI fallback. Edu's
+        # legacy audio flow intentionally keeps its existing request behavior.
+        if _request_app_scope() == "canvas":
+            duration_seconds = _duration_seconds_from_text(user_message)
+            if duration_seconds:
+                args["duration_seconds"] = duration_seconds
         print(
             f"[alphart-agent] forcing audio generation session_intent={intent} tool_count={len(_selected_media_tools(intent))}",
             flush=True,

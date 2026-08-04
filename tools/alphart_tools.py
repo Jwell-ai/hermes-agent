@@ -289,6 +289,28 @@ def _set_canvas_model_default(args: Dict[str, Any], media_type: str) -> None:
         args.setdefault("model", selected)
 
 
+def _explicit_audio_preference(text: Any) -> Optional[bool]:
+    """Read an explicit audio on/off instruction without changing Edu defaults."""
+    value = str(text or "")
+    no_audio = re.search(
+        r"(?:without|no|mute|silent|disable(?:d)?|不要|无|無|没有|沒有|不含|不带|不帶)\s*(?:any\s+)?"
+        r"(?:audio|sound|music|sound\s+track|soundtrack|bgm|background\s+music|声音|聲音|音频|音訊|配乐|背景音乐)",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if no_audio:
+        return False
+    with_audio = re.search(
+        r"(?:with|include|including|enable(?:d)?|要|有)\s*(?:(?:an?|the)\s+)?"
+        r"(?:audio|sound|music|sound\s+track|soundtrack|bgm|background\s+music|声音|聲音|音频|音訊|配乐|背景音乐)",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if with_audio:
+        return True
+    return None
+
+
 def _log_model_value(value: Any) -> str:
     text = str(value or "").strip()
     return text or "backend-selected"
@@ -1197,13 +1219,13 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
     _set_canvas_model_default(args, "image")
     if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
-        if _ctx().get("aspect_ratio"):
-            args["aspect_ratio"] = _ctx().get("aspect_ratio")
-        if _ctx().get("image_aspect_ratio"):
+        if _ctx().get("image_aspect_ratio") and not args.get("aspect_ratio"):
             args["aspect_ratio"] = _ctx().get("image_aspect_ratio")
-        if _ctx().get("image_quality"):
+        elif _ctx().get("aspect_ratio") and not args.get("aspect_ratio"):
+            args["aspect_ratio"] = _ctx().get("aspect_ratio")
+        if _ctx().get("image_quality") and not args.get("quality"):
             args["quality"] = _ctx().get("image_quality")
-        if _ctx().get("image_resolution"):
+        if _ctx().get("image_resolution") and not args.get("resolution"):
             args["resolution"] = _ctx().get("image_resolution")
     if args.get("image_quantity") and not args.get("quantity"):
         args["quantity"] = args.get("image_quantity")
@@ -1330,11 +1352,11 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     is_canvas = str(_ctx().get("app_scope") or "").strip().lower() == "canvas"
     if not str(args.get("prompt") or "").strip() and is_canvas:
         args["prompt"] = str(_ctx().get("canvas_prompt_context") or _ctx().get("user_message") or "").strip()
-    if is_canvas and _ctx().get("duration_seconds"):
+    if is_canvas and _ctx().get("duration_seconds") and not args.get("duration") and not args.get("duration_seconds"):
         args["duration"] = _ctx().get("duration_seconds")
-    if is_canvas and _ctx().get("aspect_ratio"):
+    if is_canvas and _ctx().get("aspect_ratio") and not args.get("aspect_ratio"):
         args["aspect_ratio"] = _ctx().get("aspect_ratio")
-    if is_canvas and _ctx().get("resolution"):
+    if is_canvas and _ctx().get("resolution") and not args.get("resolution"):
         args["resolution"] = _ctx().get("resolution")
     if args.get("duration_seconds") and not args.get("duration"):
         args["duration"] = args.get("duration_seconds")
@@ -1392,10 +1414,13 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     if has_canvas_soundtrack:
         args["generate_audio"] = False
     elif str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
-        # Canvas owns captions and voiceover separately. Seedance should still
-        # create the ambient track whenever no BGM/soundtrack is attached,
-        # regardless of a model-supplied tool argument.
-        args["generate_audio"] = True
+        # The user's explicit audio instruction wins over the UI/default. When
+        # the prompt is silent, keep the selected Canvas option as the fallback.
+        preference = _explicit_audio_preference(_ctx().get("user_message"))
+        if preference is not None:
+            args["generate_audio"] = preference
+        elif "generate_audio" not in args:
+            args["generate_audio"] = bool(_ctx().get("generate_audio"))
     elif "generate_audio" not in args:
         args["generate_audio"] = bool(_ctx().get("generate_audio"))
     tool = _pick_tool("video", args)
