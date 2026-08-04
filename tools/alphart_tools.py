@@ -440,6 +440,76 @@ def _handle_canvas_create_node(args: Dict[str, Any], **_: Any) -> str:
     return json.dumps({"status": "success", "result": decoded}, ensure_ascii=False)
 
 
+def _ensure_canvas_image_generation_graph(prompt: str) -> Tuple[str, str]:
+    """Materialize the new-image graph before the relay is called.
+
+    Canvas requests without an explicit media target must leave behind both the
+    enriched prompt and the image output node. This is also the recovery path
+    when the model returns a prose conclusion instead of executing the graph
+    tools. The guard keeps Edu's legacy image flow unchanged.
+    """
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
+        return "", ""
+    if str(_ctx().get("canvas_item_id") or "").strip():
+        return "", ""
+
+    _ctx().setdefault("_canvas_created_nodes", [])
+    prompt_node_id = _latest_canvas_created_node_id("text") or _latest_canvas_created_node_id("note")
+    output_node_id = _latest_canvas_created_node_id("image")
+    prompt_created = False
+
+    if not prompt_node_id:
+        source_ids = _ctx().get("reference_item_ids") or []
+        if isinstance(source_ids, str):
+            source_ids = [source_ids]
+        result = _handle_canvas_create_node({
+            "canvas_id": _ctx().get("canvas_id"),
+            "item_type": "text",
+            "title": "Prompt",
+            "text": prompt,
+            "source_item_ids": list(dict.fromkeys(str(value).strip() for value in source_ids if str(value).strip())),
+        })
+        if not _canvas_tool_succeeded(result):
+            return "", "Canvas prompt node creation failed"
+        prompt_node_id = _latest_canvas_created_node_id("text") or _latest_canvas_created_node_id("note")
+        prompt_created = bool(prompt_node_id)
+
+    if not output_node_id:
+        result = _handle_canvas_create_node({
+            "canvas_id": _ctx().get("canvas_id"),
+            "item_type": "image",
+            "title": "Image",
+            "prompt": prompt,
+        })
+        if not _canvas_tool_succeeded(result):
+            return "", "Canvas image node creation failed"
+        output_node_id = _latest_canvas_created_node_id("image")
+    elif prompt_created:
+        result = _handle_canvas_connect_nodes({
+            "canvas_id": _ctx().get("canvas_id"),
+            "source_item_id": prompt_node_id,
+            "target_item_id": output_node_id,
+        })
+        if not _canvas_tool_succeeded(result):
+            return "", "Canvas prompt-to-image connection failed"
+
+    if not prompt_node_id or not output_node_id:
+        return "", "Canvas image graph was not created"
+    return output_node_id, ""
+
+
+def _canvas_tool_succeeded(result: str) -> bool:
+    try:
+        decoded = json.loads(result)
+    except (TypeError, ValueError):
+        return False
+    return (
+        isinstance(decoded, dict)
+        and decoded.get("success") is not False
+        and decoded.get("status") not in {"failed", "error", "failure"}
+    )
+
+
 def _handle_canvas_update_node(args: Dict[str, Any], **_: Any) -> str:
     scope_error = _require_canvas_graph_scope()
     if scope_error:
@@ -1125,6 +1195,28 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
     # Canvas owns a generation-only relay. Reference nodes remain structured
     # Canvas context for prompt composition; do not send them to Edu's edit API.
     is_canvas = str(_ctx().get("app_scope") or "").strip().lower() == "canvas"
+    explicit_canvas_item_id = str(_ctx().get("canvas_item_id") or "").strip()
+    selected_canvas_item_id = str(_ctx().get("selected_canvas_item_id") or "").strip()
+    selected_canvas_item_type = str(_ctx().get("selected_canvas_item_type") or "").strip().lower()
+    candidate_item_id = str(
+        args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or ""
+    ).strip()
+    if (
+        is_canvas
+        and not explicit_canvas_item_id
+        and candidate_item_id
+        and candidate_item_id == selected_canvas_item_id
+        and selected_canvas_item_type in {"text", "note"}
+    ):
+        # A selected text node is graph context, never the image execution target.
+        for key in ("canvas_item_id", "item_id", "node_id"):
+            args.pop(key, None)
+    if is_canvas and not str(args.get("canvas_item_id") or "").strip() and not str(_ctx().get("canvas_item_id") or "").strip():
+        image_item_id, graph_error = _ensure_canvas_image_generation_graph(str(args.get("prompt") or "").strip())
+        if graph_error:
+            return _tool_error(graph_error)
+        if image_item_id:
+            args["canvas_item_id"] = image_item_id
     relay_url = _internal_relay_url("images/generations" if is_canvas or not args.get("input_images") else "images/edits")
     if not relay_url:
         return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
