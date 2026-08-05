@@ -1019,6 +1019,81 @@ class TestAnthropicStreamCallbacks:
         assert response is final_message
         agent._anthropic_client.messages.create.assert_called_once_with()
 
+    def test_canvas_anthropic_partial_text_does_not_replay_request(self):
+        """A missing message_stop after text delivery must not duplicate text."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="http://canvas-relay/internal",
+            provider="anthropic",
+            model="claude-opus-4-6",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        agent._alphart_app_scope = "canvas"
+
+        events = [SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="text_delta", text="already delivered"),
+        )]
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.__iter__ = MagicMock(return_value=iter(events))
+        mock_stream.get_final_message.side_effect = AssertionError()
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.return_value = mock_stream
+
+        response = agent._interruptible_streaming_api_call({})
+        assert response.choices[0].finish_reason == "length"
+        agent._anthropic_client.messages.create.assert_not_called()
+
+    def test_canvas_anthropic_tool_stream_does_not_replay_request(self):
+        """A missing message_stop after tool use must not replay the turn."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="http://canvas-relay/internal",
+            provider="anthropic",
+            model="claude-opus-4-6",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        agent._alphart_app_scope = "canvas"
+
+        events = [
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="text_delta", text="I will generate that."),
+            ),
+            SimpleNamespace(
+                type="content_block_start",
+                content_block=SimpleNamespace(type="tool_use", name="canvas_generate_image"),
+            ),
+        ]
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.__iter__ = MagicMock(return_value=iter(events))
+        mock_stream.get_final_message.side_effect = AssertionError()
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.return_value = mock_stream
+
+        response = agent._interruptible_streaming_api_call({})
+        assert response.choices[0].finish_reason == "length"
+        assert response._dropped_tool_names == ["canvas_generate_image"]
+        agent._anthropic_client.messages.create.assert_not_called()
+
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_anthropic_stream_parser_valueerror_retries_before_delivery(
         self, mock_replace, monkeypatch,
