@@ -3819,6 +3819,10 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                         request_overrides={"extra_headers": relay_headers} if relay_headers else None,
                         reasoning_config=_canvas_reasoning_config(req),
                     )
+                    # Keep the app scope on the agent instance so transport
+                    # recovery can remain explicitly Canvas-only. Do not
+                    # infer product behavior from the shared `platform` field.
+                    agent._alphart_app_scope = _request_app_scope(req)
                     if agent_api_mode == "anthropic_messages":
                         _install_internal_relay_anthropic_headers(agent, relay_headers)
                     if not stream_enabled:

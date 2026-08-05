@@ -2037,8 +2037,26 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 _fire_first_delta()
                                 agent._fire_reasoning_delta(thinking_text)
 
-            # Return the native Anthropic Message for downstream processing
-            return stream.get_final_message()
+            # Return the native Anthropic Message for downstream processing.
+            # Anthropic SDK 0.86 asserts here when a compatible relay closes
+            # without a final message_stop event. Canvas requests use a relay
+            # that can occasionally do this while still accepting the same
+            # request through the non-streaming Messages endpoint. Recover
+            # only that Canvas-specific transport shape; Edu keeps its
+            # existing assertion behavior and all other exceptions still
+            # follow the normal retry path.
+            try:
+                return stream.get_final_message()
+            except AssertionError:
+                if getattr(agent, "_alphart_app_scope", "") != "canvas":
+                    raise
+                logger.warning(
+                    "%sAnthropic Canvas stream ended without a final message; "
+                    "retrying once through non-streaming Messages API",
+                    getattr(agent, "log_prefix", ""),
+                    exc_info=True,
+                )
+                return agent._anthropic_messages_create(dict(api_kwargs))
 
     def _call():
         import httpx as _httpx

@@ -986,6 +986,39 @@ class TestAnthropicStreamCallbacks:
 
         assert touch_calls.count("receiving stream response") == len(events)
 
+    def test_canvas_anthropic_empty_stream_falls_back_to_non_streaming(self):
+        """Canvas relays recover when SDK stream completion has no message_stop."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="http://canvas-relay/internal",
+            provider="anthropic",
+            model="claude-opus-4-6",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        agent._alphart_app_scope = "canvas"
+
+        final_message = SimpleNamespace(content=[], stop_reason="end_turn")
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.__iter__ = MagicMock(return_value=iter([]))
+        mock_stream.get_final_message.side_effect = AssertionError()
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.return_value = mock_stream
+        agent._anthropic_client.messages.create.return_value = final_message
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response is final_message
+        agent._anthropic_client.messages.create.assert_called_once_with()
+
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_anthropic_stream_parser_valueerror_retries_before_delivery(
         self, mock_replace, monkeypatch,
