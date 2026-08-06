@@ -540,6 +540,73 @@ def _ensure_canvas_image_generation_graph(prompt: str) -> Tuple[str, str]:
     return output_node_id, ""
 
 
+def _ensure_canvas_video_generation_graph(prompt: str) -> Tuple[str, str]:
+    """Materialize a new Canvas prompt/video graph before video relay.
+
+    The video relay updates an existing video node, so a homepage request (or a
+    model tool call that omitted the newly-created id) must create the target
+    node before submitting the provider task. This is Canvas-only; Edu keeps its
+    existing relay contract.
+    """
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
+        return "", ""
+    if str(_ctx().get("canvas_item_id") or "").strip():
+        return "", ""
+    if not str(_ctx().get("canvas_id") or "").strip():
+        return "", "Canvas canvas_id is required before creating a video node"
+
+    _ctx().setdefault("_canvas_created_nodes", [])
+    prompt_node_id = _latest_canvas_created_node_id("text") or _latest_canvas_created_node_id("note")
+    output_node_id = _latest_canvas_created_node_id("video")
+    prompt_created = False
+    source_ids = _ctx().get("reference_item_ids") or []
+    if isinstance(source_ids, str):
+        source_ids = [source_ids]
+    source_ids = [str(value).strip() for value in source_ids if str(value).strip()]
+    selected_id = str(_ctx().get("selected_canvas_item_id") or "").strip()
+    selected_type = str(_ctx().get("selected_canvas_item_type") or "").strip().lower()
+    if selected_id and selected_type in {"text", "note", "image", "audio"}:
+        source_ids.append(selected_id)
+    source_ids = list(dict.fromkeys(source_ids))
+
+    if not prompt_node_id:
+        result = _handle_canvas_create_node({
+            "canvas_id": _ctx().get("canvas_id"),
+            "item_type": "text",
+            "title": "Prompt",
+            "text": prompt,
+            "source_item_ids": source_ids,
+        })
+        if not _canvas_tool_succeeded(result):
+            return "", "Canvas prompt node creation failed"
+        prompt_node_id = _latest_canvas_created_node_id("text") or _latest_canvas_created_node_id("note")
+        prompt_created = bool(prompt_node_id)
+
+    if not output_node_id:
+        result = _handle_canvas_create_node({
+            "canvas_id": _ctx().get("canvas_id"),
+            "item_type": "video",
+            "title": "Video",
+            "prompt": prompt,
+            "source_item_ids": source_ids,
+        })
+        if not _canvas_tool_succeeded(result):
+            return "", "Canvas video node creation failed"
+        output_node_id = _latest_canvas_created_node_id("video")
+    elif prompt_created:
+        result = _handle_canvas_connect_nodes({
+            "canvas_id": _ctx().get("canvas_id"),
+            "source_item_id": prompt_node_id,
+            "target_item_id": output_node_id,
+        })
+        if not _canvas_tool_succeeded(result):
+            return "", "Canvas prompt-to-video connection failed"
+
+    if not output_node_id:
+        return "", "Canvas video graph was not created"
+    return output_node_id, ""
+
+
 def _canvas_tool_succeeded(result: str) -> bool:
     try:
         decoded = json.loads(result)
@@ -1426,6 +1493,23 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     tool = _pick_tool("video", args)
     _set_tool_defaults(args, tool)
     args.setdefault("wait", False)
+    canvas_item_id = str(
+        args.get("canvas_item_id")
+        or args.get("item_id")
+        or args.get("node_id")
+        or _ctx().get("canvas_item_id")
+        or (
+            _ctx().get("selected_canvas_item_id")
+            if str(_ctx().get("selected_canvas_item_type") or "").strip().lower() == "video"
+            else ""
+        )
+        or ""
+    ).strip()
+    if is_canvas and not canvas_item_id:
+        canvas_item_id, graph_error = _ensure_canvas_video_generation_graph(str(args.get("prompt") or "").strip())
+        if graph_error:
+            return _tool_error(graph_error)
+        args["canvas_item_id"] = canvas_item_id
     relay_url = _internal_relay_url("videos")
     if not relay_url:
         return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
@@ -1438,7 +1522,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         "duration": args.get("duration"),
         "session_id": _ctx().get("session_id"),
         "canvas_id": _ctx().get("canvas_id"),
-        "canvas_item_id": args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or _ctx().get("canvas_item_id"),
+        "canvas_item_id": canvas_item_id,
         "generate_audio": bool(args.get("generate_audio")),
         # Edu callers already use the request context for caption/voiceover
         # scripts. Keep this field on the shared payload; Canvas may override

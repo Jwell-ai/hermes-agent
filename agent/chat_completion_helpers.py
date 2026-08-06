@@ -2063,7 +2063,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     "%sAnthropic Canvas stream ended without a final message; "
                     "retrying once through non-streaming Messages API",
                     getattr(agent, "log_prefix", ""),
-                    exc_info=True,
                 )
                 return agent._anthropic_messages_create(dict(api_kwargs))
 

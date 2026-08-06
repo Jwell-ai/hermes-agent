@@ -136,6 +136,7 @@ def test_canvas_video_relay_drops_model_supplied_url_references():
         {
             "app_scope": "canvas",
             "backend_url": "http://canvas-backend",
+            "canvas_item_id": "video-node",
             "input_images": [connected],
         }
     ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
@@ -154,6 +155,76 @@ def test_canvas_video_relay_drops_model_supplied_url_references():
     assert captured["json"]["image"] == [connected]
 
 
+def test_canvas_video_relay_targets_new_graph_video_node():
+    captured = {}
+    created = []
+
+    def fake_post(url, **kwargs):
+        body = kwargs["json"]
+        if url.endswith("/internal/api/v1/canvas/nodes"):
+            item_type = body["item_type"]
+            item_id = f"{item_type}-node"
+            created.append(item_type)
+            return SimpleNamespace(
+                status_code=201,
+                text=json.dumps({"item": {"id": item_id}}),
+                json=lambda: {"item": {"id": item_id}},
+            )
+        captured["json"] = body
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "Animate the scene", "provider": "peanut-video", "model": "seedance"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert created == ["text", "video"]
+    assert captured["json"]["canvas_item_id"] == "video-node"
+
+
+def test_canvas_video_relay_uses_selected_video_node():
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "selected_canvas_item_id": "video-node",
+            "selected_canvas_item_type": "video",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "Animate the scene", "provider": "peanut-video", "model": "seedance"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["canvas_item_id"] == "video-node"
+
+
 def test_canvas_video_prompt_audio_preference_overrides_ui_fallback():
     captured = {}
 
@@ -169,6 +240,7 @@ def test_canvas_video_prompt_audio_preference_overrides_ui_fallback():
         {
             "app_scope": "canvas",
             "backend_url": "http://canvas-backend",
+            "canvas_item_id": "video-node",
             "user_message": "Generate a 10s video without audio",
             "generate_audio": True,
         }
@@ -198,6 +270,7 @@ def test_canvas_video_prompt_options_override_canvas_context():
         {
             "app_scope": "canvas",
             "backend_url": "http://canvas-backend",
+            "canvas_item_id": "video-node",
             "duration_seconds": 5,
             "aspect_ratio": "16:9",
             "resolution": "720p",
@@ -228,7 +301,9 @@ def test_canvas_video_relay_returns_relay_error_instead_of_generic_retry():
         text='{"detail":"video keyframe object not found"}',
         json=lambda: {"detail": "video keyframe object not found"},
     )
-    with alphart_context({"app_scope": "canvas", "backend_url": "http://canvas-backend"}), patch(
+    with alphart_context(
+        {"app_scope": "canvas", "backend_url": "http://canvas-backend", "canvas_item_id": "video-node"}
+    ), patch(
         "tools.alphart_tools.requests.post", return_value=response
     ):
         result = json.loads(
