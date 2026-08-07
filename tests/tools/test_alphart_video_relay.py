@@ -195,6 +195,59 @@ def test_canvas_video_relay_targets_new_graph_video_node():
     assert captured["json"]["canvas_item_id"] == "video-node"
 
 
+def test_canvas_video_relay_creates_fresh_graph_for_each_automatic_request():
+    captured = []
+    created = []
+    node_number = {"text": 0, "video": 0}
+
+    def fake_post(url, **kwargs):
+        body = kwargs["json"]
+        if url.endswith("/internal/api/v1/canvas/nodes"):
+            item_type = body["item_type"]
+            node_number[item_type] += 1
+            item_id = f"{item_type}-node-{node_number[item_type]}"
+            created.append((item_type, item_id))
+            return SimpleNamespace(
+                status_code=201,
+                text=json.dumps({"item": {"id": item_id}}),
+                json=lambda item_id=item_id: {"item": {"id": item_id}},
+            )
+        captured.append(body)
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        first = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "Animate the first scene", "provider": "peanut-video", "model": "seedance"}
+            )
+        )
+        second = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "Animate the second scene", "provider": "peanut-video", "model": "seedance"}
+            )
+        )
+
+    assert first["status"] == "success"
+    assert second["status"] == "success"
+    assert created == [
+        ("text", "text-node-1"),
+        ("video", "video-node-1"),
+        ("text", "text-node-2"),
+        ("video", "video-node-2"),
+    ]
+    assert [item["canvas_item_id"] for item in captured] == ["video-node-1", "video-node-2"]
+
+
 def test_canvas_video_relay_uses_selected_video_node():
     captured = {}
 

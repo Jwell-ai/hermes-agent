@@ -556,9 +556,11 @@ def _ensure_canvas_video_generation_graph(prompt: str) -> Tuple[str, str]:
         return "", "Canvas canvas_id is required before creating a video node"
 
     _ctx().setdefault("_canvas_created_nodes", [])
-    prompt_node_id = _latest_canvas_created_node_id("text") or _latest_canvas_created_node_id("note")
-    output_node_id = _latest_canvas_created_node_id("video")
-    prompt_created = False
+    # Do not reuse the last nodes from this agent turn. Each automatic
+    # generation request needs its own prompt/output pair; an explicit target
+    # is resolved by the caller before reaching this helper.
+    prompt_node_id = ""
+    output_node_id = ""
     source_ids = _ctx().get("reference_item_ids") or []
     if isinstance(source_ids, str):
         source_ids = [source_ids]
@@ -580,7 +582,6 @@ def _ensure_canvas_video_generation_graph(prompt: str) -> Tuple[str, str]:
         if not _canvas_tool_succeeded(result):
             return "", "Canvas prompt node creation failed"
         prompt_node_id = _latest_canvas_created_node_id("text") or _latest_canvas_created_node_id("note")
-        prompt_created = bool(prompt_node_id)
 
     if not output_node_id:
         result = _handle_canvas_create_node({
@@ -593,15 +594,6 @@ def _ensure_canvas_video_generation_graph(prompt: str) -> Tuple[str, str]:
         if not _canvas_tool_succeeded(result):
             return "", "Canvas video node creation failed"
         output_node_id = _latest_canvas_created_node_id("video")
-    elif prompt_created:
-        result = _handle_canvas_connect_nodes({
-            "canvas_id": _ctx().get("canvas_id"),
-            "source_item_id": prompt_node_id,
-            "target_item_id": output_node_id,
-        })
-        if not _canvas_tool_succeeded(result):
-            return "", "Canvas prompt-to-video connection failed"
-
     if not output_node_id:
         return "", "Canvas video graph was not created"
     return output_node_id, ""
