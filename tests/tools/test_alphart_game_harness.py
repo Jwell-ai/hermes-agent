@@ -3,7 +3,11 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tools.alphart_tools import _game_artifact_harness_feedback, _game_runtime_harness_feedback
+from tools.alphart_tools import (
+    CANVAS_GENERATE_GAME_SCHEMA,
+    _game_artifact_harness_feedback,
+    _game_runtime_harness_feedback,
+)
 
 
 VALID_GAME = """<!DOCTYPE html>
@@ -22,6 +26,13 @@ document.getElementById('start').addEventListener('click', () => {
 
 def test_game_artifact_harness_accepts_a_complete_self_contained_2d_game():
     assert _game_artifact_harness_feedback(VALID_GAME) == ""
+
+
+def test_game_tool_requires_prompt_and_accepts_any_supported_artifact_source():
+    parameters = CANVAS_GENERATE_GAME_SCHEMA["parameters"]
+
+    assert parameters["required"] == ["prompt"]
+    assert {"html", "artifact_dir", "artifact_path", "files"}.issubset(parameters["properties"])
 
 
 def test_game_artifact_harness_rejects_external_dependencies():

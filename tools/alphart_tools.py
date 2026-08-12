@@ -3068,8 +3068,8 @@ CANVAS_GENERATE_GAME_SCHEMA = {
         "relationships must stay correct. Use this for 'make a game that teaches/explains ...' or "
         "'create a quiz/game about ...' requests. Before calling, create a strict plan internally. "
         "Do not call file-writing/coding tools such as Write, Edit, MultiEdit, Bash, write_file, patch, "
-        "terminal, or process; put the complete HTML directly in this tool's html argument, "
-        "or pass artifact_dir/artifact_path when a game skill produced a directory containing index.html and assets. "
+        "terminal, or process; provide one complete playable artifact in html, artifact_dir, "
+        "artifact_path, or files. Do not call this tool with only a prompt. "
         "The HTML must implement its own exact 1920x1080 logical stage plus scale-to-fit logic so the public game URL "
         "shows the whole game in a normal browser tab without scrollbars; do not rely on Canvas iframe wrapping. "
         "After the tool returns, review content, UI layout, and interactions; if the result "
@@ -3196,6 +3196,8 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                 ),
             },
         },
+        # The handler accepts one of html, artifact_dir/artifact_path, or files and
+        # uploads that artifact bundle to the game's public S3 prefix.
         "required": ["prompt"],
     },
 }
