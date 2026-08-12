@@ -2060,7 +2060,7 @@ def _game_browserless_harness_source() -> str:
         };
         const playfields = Array.from(document.querySelectorAll("canvas,svg")).filter(visible);
         const controls = Array.from(document.querySelectorAll("button,input[type=button],input[type=submit]")).filter(visible);
-        const root = document.querySelector("main, [data-game-stage], #stage, #game, canvas, svg");
+        const root = document.querySelector("[data-game-stage], #stage, #game, main, canvas, svg");
         const rootRect = root ? root.getBoundingClientRect() : null;
         const doc = document.documentElement;
         const body = document.body;
@@ -2075,6 +2075,12 @@ def _game_browserless_harness_source() -> str:
           rootOutsideViewport: !!rootRect && (rootRect.right < 0 || rootRect.bottom < 0 || rootRect.left > window.innerWidth || rootRect.top > window.innerHeight),
           rootClippedByViewport: !!rootRect && outsideViewport(root),
           clippedGameElementCount: [root, ...playfields, ...controls].filter((element) => element && outsideViewport(element)).length,
+          outsideStageElementCount: !!rootRect
+            ? [...playfields, ...controls].filter((element) => {
+                const rect = element.getBoundingClientRect();
+                return rect.left < rootRect.left - 1 || rect.top < rootRect.top - 1 || rect.right > rootRect.right + 1 || rect.bottom > rootRect.bottom + 1;
+              }).length
+            : 0,
           horizontalOverflow: Math.max(doc.scrollWidth, body ? body.scrollWidth : 0) > window.innerWidth + 1,
           verticalOverflow: Math.max(doc.scrollHeight, body ? body.scrollHeight : 0) > window.innerHeight + 1,
         };
@@ -2108,6 +2114,7 @@ def _game_browserless_harness_source() -> str:
       if (audit.rootOutsideViewport) violations.push(`${viewport.name}: game stage is outside the viewport`);
       if (audit.rootClippedByViewport) violations.push(`${viewport.name}: game stage is clipped by the viewport`);
       if (audit.clippedGameElementCount) violations.push(`${viewport.name}: visible game controls or playfield are clipped by the viewport`);
+      if (audit.outsideStageElementCount) violations.push(`${viewport.name}: visible game controls or playfield exceed the game stage bounds`);
       if (audit.horizontalOverflow || audit.verticalOverflow) violations.push(`${viewport.name}: document scroll/overflow detected`);
     } catch (error) {
       violations.push(`${viewport.name}: ${String(error && error.message || error)}`);
@@ -2177,12 +2184,6 @@ def _prepare_game_html_for_upload(html: str) -> str:
     value = str(html or "")
     if "alphart-game-fit-stage" in value or "__ALPHART_GAME_FIT__" in value:
         return value
-    if (
-        re.search(r"(?<!\d)1920(?!\d)", value)
-        and re.search(r"(?<!\d)1080(?!\d)", value)
-        and re.search(r"transform\s*:\s*scale|scale\s*\(", value, re.I)
-    ):
-        return value
 
     style = """<style id="alphart-game-fit-style">
 html,body{margin:0!important;width:100%!important;height:100%!important;overflow:hidden!important;}
@@ -2190,6 +2191,7 @@ body{background:#0b1020;display:block!important;}
 *,*::before,*::after{box-sizing:border-box;}
 #alphart-game-fit-stage{position:absolute;inset:0;overflow:hidden;background:inherit;}
 #alphart-game-fit-content{position:absolute;left:50%;top:50%;width:1920px!important;height:1080px!important;transform-origin:center center;overflow:hidden;max-width:none!important;max-height:none!important;will-change:transform;}
+#alphart-game-fit-content > #stage,#alphart-game-fit-content > #game,#alphart-game-fit-content > [data-game-stage]{margin:0!important;left:0!important;top:0!important;transform:none!important;}
 </style>"""
     script = """<script id="alphart-game-fit-script">
 (function(){

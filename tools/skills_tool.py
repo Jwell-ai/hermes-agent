@@ -90,6 +90,7 @@ logger = logging.getLogger(__name__)
 # skills all coexist here without polluting the git repo.
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
+BUNDLED_CANVAS_SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills" / "canvas"
 
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
@@ -102,6 +103,13 @@ MAX_DESCRIPTION_LENGTH = 1024
 # continue to use the normal unrestricted skill catalog.
 _CANVAS_SKILL_PREFIXES = ("canvas-", "canvas/", "canvas:")
 _CANVAS_BARE_SKILL_NAMES = {"graph"}
+
+
+def _canvas_skill_search_dirs() -> List[Path]:
+    """Expose bundled Canvas workflows only to Canvas-scoped requests."""
+    if _active_alphart_scope() == "canvas" and BUNDLED_CANVAS_SKILLS_DIR.is_dir():
+        return [BUNDLED_CANVAS_SKILLS_DIR]
+    return []
 
 
 def _active_alphart_scope() -> str:
@@ -619,6 +627,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     if SKILLS_DIR.exists():
         dirs_to_scan.append(SKILLS_DIR)
     dirs_to_scan.extend(get_external_skills_dirs())
+    dirs_to_scan.extend(_canvas_skill_search_dirs())
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
@@ -694,15 +703,6 @@ def skills_list(category: str = None, task_id: str = None) -> str:
     try:
         if not SKILLS_DIR.exists():
             SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-            return json.dumps(
-                {
-                    "success": True,
-                    "skills": [],
-                    "categories": [],
-                    "message": f"No skills found. Skills directory created at {display_hermes_home()}/skills/",
-                },
-                ensure_ascii=False,
-            )
 
         # Find all skills
         all_skills = _skills_visible_in_active_scope(_find_all_skills())
@@ -958,6 +958,7 @@ def skill_view(
         if SKILLS_DIR.exists():
             all_dirs.append(SKILLS_DIR)
         all_dirs.extend(get_external_skills_dirs())
+        all_dirs.extend(_canvas_skill_search_dirs())
 
         if not all_dirs:
             return json.dumps(
@@ -1021,6 +1022,38 @@ def skill_view(
             for found_md in search_dir.rglob(f"{name}.md"):
                 if found_md.name != "SKILL.md":
                     _record(None, found_md)
+
+        # The Canvas bundle is a fallback for deployments that have not yet
+        # seeded it into ~/.hermes/skills. Prefer the installed/external copy
+        # when both exist, while keeping collision detection for those normal
+        # user-configured directories intact.
+        bundled_dirs = _canvas_skill_search_dirs()
+        if bundled_dirs:
+            bundled_roots = []
+            for bundled_dir in bundled_dirs:
+                try:
+                    bundled_roots.append(bundled_dir.resolve())
+                except Exception:
+                    bundled_roots.append(bundled_dir)
+
+            def _is_bundled_canvas_candidate(candidate: Tuple[Optional[Path], Path]) -> bool:
+                try:
+                    candidate_path = candidate[1].resolve()
+                except Exception:
+                    candidate_path = candidate[1]
+                for bundled_root in bundled_roots:
+                    try:
+                        candidate_path.relative_to(bundled_root)
+                        return True
+                    except ValueError:
+                        continue
+                return False
+
+            installed_candidates = [
+                candidate for candidate in candidates if not _is_bundled_canvas_candidate(candidate)
+            ]
+            if installed_candidates:
+                candidates = installed_candidates
 
         if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]

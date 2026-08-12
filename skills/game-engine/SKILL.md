@@ -71,7 +71,10 @@ without scrollbars.
 
 - Set `html`, `body`, and the game stage to `overflow:hidden`.
 - Center and scale the 1920x1080 stage with JavaScript using
-  `min(innerWidth / 1920, innerHeight / 1080)`.
+  `min(innerWidth / 1920, innerHeight / 1080)`: position the stage at
+  `left:50%; top:50%` with `transform-origin:center` and apply
+  `translate(-50%,-50%) scale(scale)`. Do not combine flex/grid centering
+  with post-scale margins, which can crop the right or bottom edge.
 - Keep all controls, HUD panels, dialogs, sprites, labels, and tooltips inside
   the stage safe area: x=40..1880, y=40..1040.
 - Do not use `position: fixed`, negative offsets, oversized viewport panels,

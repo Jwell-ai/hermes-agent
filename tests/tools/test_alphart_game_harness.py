@@ -41,6 +41,15 @@ def test_game_fit_wrapper_normalizes_an_unscaled_game_before_validation():
     assert _game_artifact_harness_feedback(prepared) == ""
 
 
+def test_game_fit_wrapper_replaces_unmarked_legacy_scale_layouts():
+    prepared = _prepare_game_html_for_upload(VALID_GAME)
+
+    assert "alphart-game-fit-stage" in prepared
+    assert "__ALPHART_GAME_FIT__" in prepared
+    assert "#alphart-game-fit-content > #stage" in prepared
+    assert "transform:none!important" in prepared
+
+
 def test_game_tool_requires_a_complete_html_artifact_in_the_agent_flow():
     parameters = CANVAS_GENERATE_GAME_SCHEMA["parameters"]
 
@@ -91,6 +100,7 @@ def test_game_runtime_harness_uses_browserless_when_configured(monkeypatch):
     assert "connect-src 'none'" in captured["json"]["code"]
     assert "__ALPHART_GAME_TEST__" in captured["json"]["code"]
     assert "game stage is clipped by the viewport" in captured["json"]["code"]
+    assert "exceed the game stage bounds" in captured["json"]["code"]
     assert "alphart-game.local" in captured["json"]["code"]
     assert "Access-Control-Allow-Origin" in captured["json"]["code"]
 

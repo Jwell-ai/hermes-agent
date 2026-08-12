@@ -2423,7 +2423,7 @@ GAME CREATION RULES:
 - Do not ship fake gameplay: no static-only cards, placeholder TODO logic, decorative sprites that never affect state, stub handlers, fake progress, or instructions that describe controls/mechanics missing from the code.
 - The layout requirements must explicitly require all content, labels, controls, sprites, dialogs, score panels, and buttons to stay inside the visible frame and their parent borders.
 - Use an exact fixed 1920x1080 logical game window/stage. The game HTML itself must scale that exact stage to fit the actual browser/iframe viewport, so opening the public game URL in a new tab shows the complete game without scrolling.
-- Use a single visible stage/root container with CSS/JS like: html/body width:100%, height:100%, margin:0, overflow:hidden; * box-sizing:border-box; body display:grid/place-items:center; stage width:1920px, height:1080px, overflow:hidden, transform-origin:top left; compute scale = min(innerWidth/1920, innerHeight/1080) and apply transform:scale(scale).
+- Use a single visible stage/root container with CSS/JS like: html/body width:100%, height:100%, margin:0, overflow:hidden; * box-sizing:border-box; body position:relative; stage position:absolute, left:50%, top:50%, width:1920px, height:1080px, overflow:hidden, transform-origin:center; compute scale = min(innerWidth/1920, innerHeight/1080) and apply transform:translate(-50%,-50%) scale(scale). Do not combine flex/grid centering with manual margins after scaling.
 - Keep every sprite, row/column, HUD panel, dialog, modal/window, widget, tooltip, button, and label inside its visible game frame. Include padding and borders in that budget.
 - Avoid negative offsets, position:fixed, fixed-position overlays, viewport-sized panels, oversized absolute dialogs, or transforms that push UI outside the game frame.
 - Review the result for content correctness, readable instructions, no clipped text, no overlapping elements, no overflow outside cards/frame/borders, usable controls, start/restart flow, win/fail state, and fit at 1920x1080, 1366x768, 1024x768, and phone-sized iframe viewports.
@@ -2520,9 +2520,8 @@ MEDIA RULES:
 - The selected Canvas workflow is preloaded below. Apply it before dispatching
   media; do not skip it, expose it as a planning document, or substitute an
   external CLI, API key, local file, or non-Canvas storage path.
-- Do not call skills_list or skill_view for Canvas image/video workflows: their
-  guidance is already embedded below and may not appear in the user's optional
-  skill inventory.
+- Canvas-only workflows are available through skills_list and skill_view in the
+  Canvas app scope. Do not load Edu-only skills for a Canvas request.
 - For an image, video, or audio generation request, call the matching Canvas tool
   immediately. Use the selected provider/model metadata and do not invent values.
 - Preserve the requested duration, ratio, quality, and model. For video, pass the
