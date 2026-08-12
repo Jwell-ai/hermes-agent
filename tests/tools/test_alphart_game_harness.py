@@ -7,6 +7,7 @@ from tools.alphart_tools import (
     CANVAS_GENERATE_GAME_SCHEMA,
     _game_artifact_harness_feedback,
     _game_runtime_harness_feedback,
+    _prepare_game_html_for_upload,
 )
 
 
@@ -28,11 +29,26 @@ def test_game_artifact_harness_accepts_a_complete_self_contained_2d_game():
     assert _game_artifact_harness_feedback(VALID_GAME) == ""
 
 
-def test_game_tool_requires_prompt_and_accepts_any_supported_artifact_source():
+def test_game_fit_wrapper_normalizes_an_unscaled_game_before_validation():
+    unscaled_game = VALID_GAME.replace(
+        "#stage{width:1920px;height:1080px;transform:scale(1)}", "#stage{}"
+    )
+
+    prepared = _prepare_game_html_for_upload(unscaled_game)
+
+    assert "#alphart-game-fit-stage{position:absolute" in prepared
+    assert "translate(-50%,-50%) scale(" in prepared
+    assert _game_artifact_harness_feedback(prepared) == ""
+
+
+def test_game_tool_requires_a_complete_html_artifact_in_the_agent_flow():
     parameters = CANVAS_GENERATE_GAME_SCHEMA["parameters"]
 
-    assert parameters["required"] == ["prompt"]
-    assert {"html", "artifact_dir", "artifact_path", "files"}.issubset(parameters["properties"])
+    assert parameters["required"] == ["prompt", "html"]
+    assert "html" in parameters["properties"]
+    assert "artifact_dir" not in parameters["properties"]
+    assert "artifact_path" not in parameters["properties"]
+    assert "files" not in parameters["properties"]
 
 
 def test_game_artifact_harness_rejects_external_dependencies():
@@ -74,6 +90,7 @@ def test_game_runtime_harness_uses_browserless_when_configured(monkeypatch):
     assert "page.setRequestInterception(true)" in captured["json"]["code"]
     assert "connect-src 'none'" in captured["json"]["code"]
     assert "__ALPHART_GAME_TEST__" in captured["json"]["code"]
+    assert "game stage is clipped by the viewport" in captured["json"]["code"]
     assert "alphart-game.local" in captured["json"]["code"]
     assert "Access-Control-Allow-Origin" in captured["json"]["code"]
 

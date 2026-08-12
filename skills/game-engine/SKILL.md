@@ -54,7 +54,7 @@ The final artifact must be sent through `canvas_generate_game` or
 `generate_game`.
 
 - Do not use file-writing, shell, patch, or terminal tools.
-- Do not stop at a plan and do not call the game tool with only a prompt.
+- Do not stop at a plan and do not call the game tool until the complete HTML artifact is ready. Never make a preliminary tool call to submit a plan, request an upload target, or test the tool.
 - Pass a compact, complete, self-contained HTML document through `html`.
 - Do not depend on external CDNs, third-party game libraries, remote assets,
   build steps, or a local development server.

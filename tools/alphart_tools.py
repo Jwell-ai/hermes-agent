@@ -2064,11 +2064,17 @@ def _game_browserless_harness_source() -> str:
         const rootRect = root ? root.getBoundingClientRect() : null;
         const doc = document.documentElement;
         const body = document.body;
+        const outsideViewport = (element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.left < -1 || rect.top < -1 || rect.right > window.innerWidth + 1 || rect.bottom > window.innerHeight + 1;
+        };
         return {
           playfieldCount: playfields.length,
           controlCount: controls.length,
           hasVisibleRoot: visible(root),
           rootOutsideViewport: !!rootRect && (rootRect.right < 0 || rootRect.bottom < 0 || rootRect.left > window.innerWidth || rootRect.top > window.innerHeight),
+          rootClippedByViewport: !!rootRect && outsideViewport(root),
+          clippedGameElementCount: [root, ...playfields, ...controls].filter((element) => element && outsideViewport(element)).length,
           horizontalOverflow: Math.max(doc.scrollWidth, body ? body.scrollWidth : 0) > window.innerWidth + 1,
           verticalOverflow: Math.max(doc.scrollHeight, body ? body.scrollHeight : 0) > window.innerHeight + 1,
         };
@@ -2100,6 +2106,8 @@ def _game_browserless_harness_source() -> str:
       if (!interaction.invoked) violations.push(`${viewport.name}: no start, restart, or test control could be invoked`);
       if (!stateChanged) violations.push(`${viewport.name}: invoking the game control did not change game state`);
       if (audit.rootOutsideViewport) violations.push(`${viewport.name}: game stage is outside the viewport`);
+      if (audit.rootClippedByViewport) violations.push(`${viewport.name}: game stage is clipped by the viewport`);
+      if (audit.clippedGameElementCount) violations.push(`${viewport.name}: visible game controls or playfield are clipped by the viewport`);
       if (audit.horizontalOverflow || audit.verticalOverflow) violations.push(`${viewport.name}: document scroll/overflow detected`);
     } catch (error) {
       violations.push(`${viewport.name}: ${String(error && error.message || error)}`);
@@ -2180,8 +2188,8 @@ def _prepare_game_html_for_upload(html: str) -> str:
 html,body{margin:0!important;width:100%!important;height:100%!important;overflow:hidden!important;}
 body{background:#0b1020;display:block!important;}
 *,*::before,*::after{box-sizing:border-box;}
-#alphart-game-fit-stage{position:fixed;inset:0;display:grid;place-items:center;overflow:hidden;background:inherit;}
-#alphart-game-fit-content{position:relative;width:1920px!important;height:1080px!important;transform-origin:top left;overflow:hidden;max-width:none!important;max-height:none!important;will-change:transform;}
+#alphart-game-fit-stage{position:absolute;inset:0;overflow:hidden;background:inherit;}
+#alphart-game-fit-content{position:absolute;left:50%;top:50%;width:1920px!important;height:1080px!important;transform-origin:center center;overflow:hidden;max-width:none!important;max-height:none!important;will-change:transform;}
 </style>"""
     script = """<script id="alphart-game-fit-script">
 (function(){
@@ -2210,14 +2218,13 @@ body{background:#0b1020;display:block!important;}
     });
     observer.observe(document.body,{childList:true});
     function layout(){
-      content.style.transform="none";
       var logicalW=1920;
       var logicalH=1080;
       content.style.width=logicalW+"px";
       content.style.height=logicalH+"px";
       var scale=Math.min(window.innerWidth/logicalW,window.innerHeight/logicalH);
       if(!isFinite(scale)||scale<=0)scale=1;
-      content.style.transform="scale("+scale+")";
+      content.style.transform="translate(-50%,-50%) scale("+scale+")";
     }
     window.addEventListener("resize",layout);
     if("ResizeObserver" in window)new ResizeObserver(layout).observe(content);
@@ -2367,6 +2374,9 @@ def _upload_game_object(target: Dict[str, Any], key: str, body: bytes, content_t
 def _upload_game_html(target: Dict[str, Any], html: str) -> None:
     s3, bucket, key = _game_s3_client(target)
     html = _prepare_game_html_for_upload(html)
+    feedback = _game_artifact_harness_feedback(html)
+    if feedback:
+        raise RuntimeError(feedback)
     feedback = _game_runtime_harness_feedback(html)
     if feedback:
         raise RuntimeError(feedback)
@@ -2401,7 +2411,7 @@ def _upload_game_directory(target: Dict[str, Any], artifact_dir: Path) -> str:
     index_path = root / "index.html"
     if not index_path.is_file():
         raise RuntimeError("game artifact directory must contain index.html")
-    html = index_path.read_text(encoding="utf-8")
+    html = _prepare_game_html_for_upload(index_path.read_text(encoding="utf-8"))
     feedback = _game_artifact_harness_feedback(html)
     if feedback:
         raise RuntimeError(feedback)
@@ -2415,9 +2425,8 @@ def _upload_game_directory(target: Dict[str, Any], artifact_dir: Path) -> str:
         rel = resolved.relative_to(root).as_posix()
         body = resolved.read_bytes()
         artifact_files.append((rel, body, _guess_content_type(rel)))
-    prepared_index_html = _prepare_game_html_for_upload(html)
     runtime_feedback = _game_runtime_harness_feedback(
-        prepared_index_html, _game_runtime_asset_payload(artifact_files)
+        html, _game_runtime_asset_payload(artifact_files)
     )
     if runtime_feedback:
         raise RuntimeError(runtime_feedback)
@@ -2427,7 +2436,7 @@ def _upload_game_directory(target: Dict[str, Any], artifact_dir: Path) -> str:
     uploaded = 0
     for rel, original_body, content_type in artifact_files:
         key = f"{prefix}/{_safe_game_rel_path(rel)}"
-        body = prepared_index_html.encode("utf-8") if rel == "index.html" else original_body
+        body = html.encode("utf-8") if rel == "index.html" else original_body
         s3.put_object(
             Bucket=bucket,
             Key=key,
@@ -2467,10 +2476,10 @@ def _upload_game_files(target: Dict[str, Any], files: List[Any]) -> str:
             index_html = body.decode("utf-8", errors="replace")
     if not index_html:
         raise RuntimeError("game files list must contain index.html")
-    feedback = _game_artifact_harness_feedback(index_html)
+    prepared_index_html = _prepare_game_html_for_upload(index_html)
+    feedback = _game_artifact_harness_feedback(prepared_index_html)
     if feedback:
         raise RuntimeError(feedback)
-    prepared_index_html = _prepare_game_html_for_upload(index_html)
     runtime_feedback = _game_runtime_harness_feedback(
         prepared_index_html, _game_runtime_asset_payload(normalized)
     )
@@ -2509,18 +2518,12 @@ def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
                 _upload_game_directory(target, path)
             elif path.is_file():
                 html = path.read_text(encoding="utf-8")
-                feedback = _game_artifact_harness_feedback(html)
-                if feedback:
-                    return _tool_error(feedback, code="GAME_VALIDATION_ERROR")
                 _upload_game_html(target, html)
             else:
                 return _tool_error(f"game artifact path does not exist: {artifact_path}")
         elif has_files:
             _upload_game_files(target, files)
         else:
-            feedback = _game_artifact_harness_feedback(html)
-            if feedback:
-                return _tool_error(feedback, code="GAME_VALIDATION_ERROR")
             _upload_game_html(target, html)
     except Exception as exc:
         code = "GAME_VALIDATION_ERROR" if str(exc).lower().startswith(("game artifact harness:", "game runtime harness:")) else ""
@@ -3068,8 +3071,8 @@ CANVAS_GENERATE_GAME_SCHEMA = {
         "relationships must stay correct. Use this for 'make a game that teaches/explains ...' or "
         "'create a quiz/game about ...' requests. Before calling, create a strict plan internally. "
         "Do not call file-writing/coding tools such as Write, Edit, MultiEdit, Bash, write_file, patch, "
-        "terminal, or process; provide one complete playable artifact in html, artifact_dir, "
-        "artifact_path, or files. Do not call this tool with only a prompt. "
+        "terminal, or process; provide the complete self-contained playable document in html "
+        "on the first call. Do not call this tool with only a prompt, a plan, or placeholder HTML. "
         "The HTML must implement its own exact 1920x1080 logical stage plus scale-to-fit logic so the public game URL "
         "shows the whole game in a normal browser tab without scrollbars; do not rely on Canvas iframe wrapping. "
         "After the tool returns, review content, UI layout, and interactions; if the result "
@@ -3104,37 +3107,6 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                     "to the iframe/browser viewport with no page scroll, clipped controls, or overlapping panels. "
                     "Do not use position:fixed; position every HUD/dialog/control inside the 1920x1080 stage."
                 ),
-            },
-            "artifact_dir": {
-                "type": "string",
-                "description": (
-                    "Optional local directory artifact containing index.html and any asset files. "
-                    "When provided, the tool uploads every file recursively under the same public game S3 prefix."
-                ),
-            },
-            "artifact_path": {
-                "type": "string",
-                "description": (
-                    "Optional local artifact path. If it is a directory, it must contain index.html and assets are uploaded recursively. "
-                    "If it is a file, it is treated as index.html."
-                ),
-            },
-            "files": {
-                "type": "array",
-                "description": (
-                    "Optional in-memory artifact files. Must include path='index.html'. "
-                    "Each file may provide content text or base64 bytes plus optional content_type."
-                ),
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "content": {"type": "string"},
-                        "base64": {"type": "string"},
-                        "content_type": {"type": "string"},
-                    },
-                    "required": ["path"],
-                },
             },
             "game_plan": {
                 "type": "object",
@@ -3196,9 +3168,7 @@ CANVAS_GENERATE_GAME_SCHEMA = {
                 ),
             },
         },
-        # The handler accepts one of html, artifact_dir/artifact_path, or files and
-        # uploads that artifact bundle to the game's public S3 prefix.
-        "required": ["prompt"],
+        "required": ["prompt", "html"],
     },
 }
 
