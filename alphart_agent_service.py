@@ -4030,7 +4030,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         final_response = _last_assistant_text(response_messages)
     empty_result_error = ""
     if not _has_visible_agent_output(response_messages, final_response):
-        empty_result_error = "Hermes agent completed without returning a response."
+        empty_result_error = "Alphart agent completed without returning a response."
         response_messages.append({"role": "assistant", "content": empty_result_error})
         final_response = empty_result_error
     events = [*_events_from_messages(response_messages), *events]
@@ -4076,9 +4076,24 @@ def title(req: AlphartEduTitleRequest, authorization: Optional[str] = Header(def
     endpoint = _endpoint(config)
     api_key = _api_key(config)
     config_providers = list(req.model_configs.keys()) if isinstance(req.model_configs, dict) else []
+    use_internal_relay = _use_internal_relay(req)
+    wire_format = _text_model_wire_format(provider, model, config)
+    effective_endpoint = endpoint
+    if use_internal_relay:
+        effective_endpoint = (
+            _internal_relay_gemini_base_url(req)
+            if wire_format == "gemini"
+            else _internal_relay_base_url(req)
+        )
     logger.info(
-        "title request provider=%r model=%r endpoint=%r has_key=%s config_providers=%s",
-        provider, model, endpoint, bool(api_key), config_providers,
+        "title request provider=%r model=%r transport=%s configured_endpoint=%r effective_endpoint=%r has_key=%s config_providers=%s",
+        provider,
+        model,
+        "internal" if use_internal_relay else "direct",
+        endpoint,
+        effective_endpoint,
+        bool(api_key),
+        config_providers,
     )
     if not provider or not model:
         logger.warning("title: primary text_model missing provider/model provider=%r model=%r", provider, model)
