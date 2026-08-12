@@ -21,7 +21,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -398,6 +398,22 @@ def _backend_tool_timeout(default: int = 900) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return default
+
+
+def _game_browserless_url() -> str:
+    return str(
+        os.getenv("ALPHART_EDU_BROWSERLESS_URL")
+        or os.getenv("BROWSERLESS_URL")
+        or ""
+    ).strip().rstrip("/")
+
+
+def _game_browserless_token() -> str:
+    return str(
+        os.getenv("ALPHART_EDU_BROWSERLESS_TOKEN")
+        or os.getenv("BROWSERLESS_TOKEN")
+        or ""
+    ).strip()
 
 
 def _internal_relay_headers() -> Dict[str, str]:
@@ -1880,43 +1896,273 @@ def _default_game_review_checklist() -> Dict[str, Any]:
     }
 
 
-def _game_html_feedback(html: str) -> str:
+def _game_artifact_harness_feedback(html: str) -> str:
+    """Return the first actionable failure from the 2D game upload harness.
+
+    The agent cannot reliably visually inspect every generated document before
+    uploading it. Keep this gate structural and deterministic: it validates the
+    self-contained artifact contract and the minimum signals of a playable 2D
+    game without trying to prescribe one particular game implementation.
+    """
     value = str(html or "").strip()
     lower = value.lower()
     if not value:
-        return "game HTML is empty"
-    if not (lower.startswith("<!doctype html") or lower.startswith("<html")):
-        return "game HTML must start with <!DOCTYPE html> or <html"
+        return "game artifact harness: HTML is empty"
+    if not lower.startswith("<!doctype html"):
+        return "game artifact harness: HTML must start with <!DOCTYPE html>"
     if "<body" not in lower:
-        return "game HTML must include a <body> with visible content"
+        return "game artifact harness: HTML must include a <body> with visible content"
     if "</body>" not in lower:
-        return "game HTML is truncated: missing </body>"
+        return "game artifact harness: HTML is truncated: missing </body>"
     if "</html>" not in lower:
-        return "game HTML is truncated: missing </html>"
+        return "game artifact harness: HTML is truncated: missing </html>"
+    if re.search(r"<(?:script|link)\b[^>]+(?:src|href)\s*=\s*['\"]https?://", value, re.I):
+        return "game artifact harness: external scripts or stylesheets are not allowed; include all game code locally"
+    if re.search(r"<(?:img|audio|video|source)\b[^>]+src\s*=\s*['\"]https?://", value, re.I):
+        return "game artifact harness: external media assets are not allowed; use inline or local artifact assets"
     if "<script" not in lower and "onclick=" not in lower and "addeventlistener" not in lower:
-        return "game HTML must include inline JavaScript interaction code"
+        return "game artifact harness: game must include inline JavaScript interaction code"
     body_start = lower.find("<body")
     body_end = lower.rfind("</body>")
     body_open_end = lower.find(">", body_start)
     if body_start < 0 or body_end <= body_start or body_open_end < 0:
-        return "game HTML must include a valid <body> element"
-    body = value[body_start + body_open_end + 1 : body_end].strip()
+        return "game artifact harness: HTML must include a valid <body> element"
+    body = value[body_open_end + 1 : body_end].strip()
     visible_body = _strip_invisible_game_html(body)
     if not visible_body.strip():
-        return "game HTML body must include visible game DOM content directly in <body>, such as a root stage, HUD, playfield/canvas/SVG, instructions, and controls"
+        return "game artifact harness: body must include visible game DOM content directly in <body>"
     if not re.search(r"<(main|section|article|div|canvas|svg|button|input|label|h[1-6]|p|span)\b", visible_body, re.I | re.S):
-        return "game HTML body must include visible game DOM elements directly in <body>, such as a root stage, HUD, playfield/canvas/SVG, instructions, and controls"
+        return "game artifact harness: body must include visible game DOM elements directly in <body>"
+    if not re.search(r"<(canvas|svg)\b", visible_body, re.I):
+        return "game artifact harness: game must include a visible Canvas or SVG playfield"
+    if not re.search(r"<(button|input)\b", visible_body, re.I):
+        return "game artifact harness: game must include reachable start, restart, or play controls"
+    if "addeventlistener" not in lower and "onclick=" not in lower:
+        return "game artifact harness: controls must have a real event handler"
+    if not re.search(r"\b(?:requestanimationframe|setinterval|settimeout|classlist\.(?:add|remove|toggle)|textcontent\s*=|innerhtml\s*=)\b", lower):
+        return "game artifact harness: interaction must visibly update game state or UI"
     if re.search(r"position\s*:\s*fixed", value, re.I):
-        return "game CSS must not use position:fixed because it can escape the 1920x1080 game stage; use absolute positioning inside the stage instead"
+        return "game artifact harness: CSS must not use position:fixed because it can escape the 1920x1080 game stage"
     if re.search(r"(?:width|min-width|max-width)\s*:\s*(?:19[3-9]\d|[2-9]\d{3,})px", value, re.I):
-        return "game CSS has an element wider than the 1920px stage; keep every panel/widget inside the 1920x1080 safe area"
+        return "game artifact harness: CSS has an element wider than the 1920px stage"
     if re.search(r"(?:height|min-height|max-height)\s*:\s*(?:10[9]\d|1[1-9]\d{2}|[2-9]\d{3,})px", value, re.I):
-        return "game CSS has an element taller than the 1080px stage; keep every panel/widget inside the 1920x1080 safe area"
-    if not re.search(r"\b1920\b", value) or not re.search(r"\b1080\b", value):
-        return "game HTML must define an exact 1920x1080 logical stage and scale that whole stage to the viewport"
+        return "game artifact harness: CSS has an element taller than the 1080px stage"
+    if not re.search(r"(?<!\d)1920(?!\d)", value) or not re.search(r"(?<!\d)1080(?!\d)", value):
+        return "game artifact harness: HTML must define an exact 1920x1080 logical stage"
     if not re.search(r"transform\s*:\s*scale|scale\s*\(", value, re.I):
-        return "game HTML must include scale-to-fit logic for the 1920x1080 stage so it shows completely in a new tab and iframe"
+        return "game artifact harness: HTML must include scale-to-fit logic for the 1920x1080 stage"
+    if re.search(r"\b(?:todo|fixme|placeholder)\b", value, re.I):
+        return "game artifact harness: remove TODO, FIXME, and placeholder game content before upload"
     return ""
+
+
+def _game_browserless_harness_source() -> str:
+    """Return the Browserless function used to exercise a generated game."""
+    return r'''module.exports = async ({ page, context }) => {
+  const html = String(context.html || "");
+  const timeout = Math.max(1000, Number(context.timeout) || 30000);
+  const assetOrigin = "https://alphart-game.local";
+  const assets = context.assets && typeof context.assets === "object" ? context.assets : {};
+  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' ${assetOrigin}; style-src 'unsafe-inline' ${assetOrigin}; img-src data: blob: ${assetOrigin}; media-src data: blob: ${assetOrigin}; font-src data: ${assetOrigin}; connect-src 'none';">`;
+  const base = `<base href="${assetOrigin}/">`;
+  const sandboxedHTML = /<head\b[^>]*>/i.test(html)
+    ? html.replace(/<head\b[^>]*>/i, (head) => head + base + csp)
+    : '<!doctype html><head>' + base + csp + '</head>' + html;
+  const viewports = [
+    { name: "stage", width: 1920, height: 1080 },
+    { name: "laptop", width: 1366, height: 768 },
+    { name: "mobile", width: 390, height: 844 },
+  ];
+  const violations = [];
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(String(error && error.message || error)));
+  await page.setRequestInterception(true);
+  page.on("request", (request) => {
+    const url = String(request.url() || "");
+    try {
+      const parsed = new URL(url);
+      if (parsed.origin === assetOrigin) {
+        const key = decodeURIComponent(parsed.pathname).replace(/^\\/+/, "");
+        const asset = assets[key];
+        if (asset && typeof asset.body === "string") {
+          request.respond({
+            status: 200,
+            contentType: String(asset.content_type || "application/octet-stream"),
+            headers: { "Access-Control-Allow-Origin": "*" },
+            body: Buffer.from(asset.body, "base64"),
+          }).catch(() => {});
+          return;
+        }
+      }
+    } catch (_) {}
+    const allowLocal = /^(?:about:|data:|blob:)/i.test(url);
+    const action = allowLocal ? request.continue() : request.abort("blockedbyclient");
+    action.catch(() => {});
+  });
+
+  for (const viewport of viewports) {
+    try {
+      await page.setViewport({ width: viewport.width, height: viewport.height, deviceScaleFactor: 1 });
+      await page.setContent(sandboxedHTML, { waitUntil: "domcontentloaded", timeout });
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      const interaction = await page.evaluate(async () => {
+        const visible = (element) => {
+          if (!element) return false;
+          const rect = element.getBoundingClientRect();
+          const style = window.getComputedStyle(element);
+          return rect.width > 1 && rect.height > 1 && style.display !== "none" && style.visibility !== "hidden";
+        };
+        const signature = () => {
+          const root = document.querySelector("main, [data-game-stage], #stage, #game, canvas, svg");
+          const text = `${root ? root.innerHTML : document.body.innerHTML}`;
+          let hash = 5381;
+          for (let index = 0; index < text.length; index += 1) hash = ((hash * 33) ^ text.charCodeAt(index)) >>> 0;
+          const canvasHash = Array.from(document.querySelectorAll("canvas")).map((canvas) => {
+            try {
+              const context = canvas.getContext("2d");
+              if (!context) return `${canvas.width}x${canvas.height}:non-2d`;
+              const width = Math.min(canvas.width, 16);
+              const height = Math.min(canvas.height, 16);
+              const pixels = context.getImageData(0, 0, width, height).data;
+              let pixelHash = 5381;
+              for (const pixel of pixels) pixelHash = ((pixelHash * 33) ^ pixel) >>> 0;
+              return `${canvas.width}x${canvas.height}:${pixelHash}`;
+            } catch (_) {
+              return `${canvas.width}x${canvas.height}:unreadable`;
+            }
+          }).join("|");
+          return `${hash}:${canvasHash}`;
+        };
+        const control = Array.from(document.querySelectorAll("button,input[type=button],input[type=submit]")).find((element) => visible(element) && !element.disabled);
+        const before = signature();
+        const hook = window.__ALPHART_GAME_TEST__;
+        if (typeof hook === "function") {
+          await hook();
+          return { invoked: true, before };
+        }
+        if (hook && typeof hook.start === "function") {
+          await hook.start();
+          return { invoked: true, before };
+        }
+        if (control) {
+          control.click();
+          return { invoked: true, before };
+        }
+        return { invoked: false, before };
+      });
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const audit = await page.evaluate(() => {
+        const visible = (element) => {
+          if (!element) return false;
+          const rect = element.getBoundingClientRect();
+          const style = window.getComputedStyle(element);
+          return rect.width > 1 && rect.height > 1 && style.display !== "none" && style.visibility !== "hidden";
+        };
+        const playfields = Array.from(document.querySelectorAll("canvas,svg")).filter(visible);
+        const controls = Array.from(document.querySelectorAll("button,input[type=button],input[type=submit]")).filter(visible);
+        const root = document.querySelector("main, [data-game-stage], #stage, #game, canvas, svg");
+        const rootRect = root ? root.getBoundingClientRect() : null;
+        const doc = document.documentElement;
+        const body = document.body;
+        return {
+          playfieldCount: playfields.length,
+          controlCount: controls.length,
+          hasVisibleRoot: visible(root),
+          rootOutsideViewport: !!rootRect && (rootRect.right < 0 || rootRect.bottom < 0 || rootRect.left > window.innerWidth || rootRect.top > window.innerHeight),
+          horizontalOverflow: Math.max(doc.scrollWidth, body ? body.scrollWidth : 0) > window.innerWidth + 1,
+          verticalOverflow: Math.max(doc.scrollHeight, body ? body.scrollHeight : 0) > window.innerHeight + 1,
+        };
+      });
+      const stateChanged = await page.evaluate((before) => {
+        const root = document.querySelector("main, [data-game-stage], #stage, #game, canvas, svg");
+        const text = `${root ? root.innerHTML : document.body.innerHTML}`;
+        let hash = 5381;
+        for (let index = 0; index < text.length; index += 1) hash = ((hash * 33) ^ text.charCodeAt(index)) >>> 0;
+        const canvasHash = Array.from(document.querySelectorAll("canvas")).map((canvas) => {
+          try {
+            const context = canvas.getContext("2d");
+            if (!context) return `${canvas.width}x${canvas.height}:non-2d`;
+            const width = Math.min(canvas.width, 16);
+            const height = Math.min(canvas.height, 16);
+            const pixels = context.getImageData(0, 0, width, height).data;
+            let pixelHash = 5381;
+            for (const pixel of pixels) pixelHash = ((pixelHash * 33) ^ pixel) >>> 0;
+            return `${canvas.width}x${canvas.height}:${pixelHash}`;
+          } catch (_) {
+            return `${canvas.width}x${canvas.height}:unreadable`;
+          }
+        }).join("|");
+        return `${hash}:${canvasHash}` !== before;
+      }, interaction.before);
+      if (!audit.hasVisibleRoot) violations.push(`${viewport.name}: no visible game stage`);
+      if (!audit.playfieldCount) violations.push(`${viewport.name}: no visible Canvas or SVG playfield`);
+      if (!audit.controlCount) violations.push(`${viewport.name}: no reachable controls`);
+      if (!interaction.invoked) violations.push(`${viewport.name}: no start, restart, or test control could be invoked`);
+      if (!stateChanged) violations.push(`${viewport.name}: invoking the game control did not change game state`);
+      if (audit.rootOutsideViewport) violations.push(`${viewport.name}: game stage is outside the viewport`);
+      if (audit.horizontalOverflow || audit.verticalOverflow) violations.push(`${viewport.name}: document scroll/overflow detected`);
+    } catch (error) {
+      violations.push(`${viewport.name}: ${String(error && error.message || error)}`);
+    }
+  }
+  for (const error of pageErrors) violations.push(`runtime: ${error}`);
+  return { ok: violations.length === 0, violations };
+};'''
+
+
+def _game_runtime_asset_payload(files: Iterable[Tuple[str, bytes, str]]) -> Dict[str, Dict[str, str]]:
+    return {
+        _safe_game_rel_path(path): {
+            "body": base64.b64encode(body).decode("ascii"),
+            "content_type": content_type,
+        }
+        for path, body, content_type in files
+        if _safe_game_rel_path(path) != "index.html"
+    }
+
+
+def _game_runtime_harness_feedback(
+    html: str, assets: Optional[Dict[str, Dict[str, str]]] = None
+) -> str:
+    """Run the optional Browserless render harness before a game is uploaded."""
+    browserless_url = _game_browserless_url()
+    if not browserless_url:
+        return ""
+
+    endpoint = f"{browserless_url}/function"
+    token = _game_browserless_token()
+    if token:
+        endpoint = f"{endpoint}?token={quote(token, safe='')}"
+    timeout = min(max(_backend_tool_timeout(45), 5), 60)
+    try:
+        response = requests.post(
+            endpoint,
+            json={
+                "code": _game_browserless_harness_source(),
+                "context": {"html": html, "assets": assets or {}, "timeout": timeout * 1000},
+            },
+            timeout=timeout + 5,
+        )
+    except requests.RequestException as exc:
+        return f"game runtime harness: Browserless request failed: {exc}"
+    if response.status_code < 200 or response.status_code >= 300:
+        return f"game runtime harness: Browserless returned HTTP {response.status_code}: {response.text[:300]}"
+    try:
+        report = response.json()
+    except ValueError:
+        return "game runtime harness: Browserless returned an invalid response"
+    if isinstance(report, dict) and isinstance(report.get("data"), dict):
+        report = report["data"]
+    if not isinstance(report, dict):
+        return "game runtime harness: Browserless returned an invalid report"
+    if report.get("ok") is True:
+        return ""
+    violations = report.get("violations")
+    if isinstance(violations, list):
+        detail = "; ".join(str(item).strip() for item in violations if str(item).strip())
+    else:
+        detail = str(report.get("error") or report.get("message") or "runtime validation failed").strip()
+    return f"game runtime harness: {detail[:800] or 'runtime validation failed'}"
 
 
 def _prepare_game_html_for_upload(html: str) -> str:
@@ -1924,8 +2170,8 @@ def _prepare_game_html_for_upload(html: str) -> str:
     if "alphart-game-fit-stage" in value or "__ALPHART_GAME_FIT__" in value:
         return value
     if (
-        re.search(r"\b1920\b", value)
-        and re.search(r"\b1080\b", value)
+        re.search(r"(?<!\d)1920(?!\d)", value)
+        and re.search(r"(?<!\d)1080(?!\d)", value)
         and re.search(r"transform\s*:\s*scale|scale\s*\(", value, re.I)
     ):
         return value
@@ -2121,6 +2367,9 @@ def _upload_game_object(target: Dict[str, Any], key: str, body: bytes, content_t
 def _upload_game_html(target: Dict[str, Any], html: str) -> None:
     s3, bucket, key = _game_s3_client(target)
     html = _prepare_game_html_for_upload(html)
+    feedback = _game_runtime_harness_feedback(html)
+    if feedback:
+        raise RuntimeError(feedback)
     s3.put_object(
         Bucket=bucket,
         Key=key,
@@ -2153,14 +2402,10 @@ def _upload_game_directory(target: Dict[str, Any], artifact_dir: Path) -> str:
     if not index_path.is_file():
         raise RuntimeError("game artifact directory must contain index.html")
     html = index_path.read_text(encoding="utf-8")
-    feedback = _game_html_feedback(html)
+    feedback = _game_artifact_harness_feedback(html)
     if feedback:
         raise RuntimeError(feedback)
-    prepared_index_html = _prepare_game_html_for_upload(html)
-
-    s3, bucket, index_key = _game_s3_client(target)
-    prefix = _game_object_prefix(target)
-    uploaded = 0
+    artifact_files: List[Tuple[str, bytes, str]] = []
     for path in root.rglob("*"):
         if path.is_symlink():
             continue
@@ -2168,13 +2413,26 @@ def _upload_game_directory(target: Dict[str, Any], artifact_dir: Path) -> str:
         if not resolved.is_file():
             continue
         rel = resolved.relative_to(root).as_posix()
+        body = resolved.read_bytes()
+        artifact_files.append((rel, body, _guess_content_type(rel)))
+    prepared_index_html = _prepare_game_html_for_upload(html)
+    runtime_feedback = _game_runtime_harness_feedback(
+        prepared_index_html, _game_runtime_asset_payload(artifact_files)
+    )
+    if runtime_feedback:
+        raise RuntimeError(runtime_feedback)
+
+    s3, bucket, index_key = _game_s3_client(target)
+    prefix = _game_object_prefix(target)
+    uploaded = 0
+    for rel, original_body, content_type in artifact_files:
         key = f"{prefix}/{_safe_game_rel_path(rel)}"
-        body = prepared_index_html.encode("utf-8") if rel == "index.html" else resolved.read_bytes()
+        body = prepared_index_html.encode("utf-8") if rel == "index.html" else original_body
         s3.put_object(
             Bucket=bucket,
             Key=key,
             Body=body,
-            ContentType=_guess_content_type(rel),
+            ContentType=content_type,
             ACL="public-read",
         )
         uploaded += 1
@@ -2209,10 +2467,15 @@ def _upload_game_files(target: Dict[str, Any], files: List[Any]) -> str:
             index_html = body.decode("utf-8", errors="replace")
     if not index_html:
         raise RuntimeError("game files list must contain index.html")
-    feedback = _game_html_feedback(index_html)
+    feedback = _game_artifact_harness_feedback(index_html)
     if feedback:
         raise RuntimeError(feedback)
     prepared_index_html = _prepare_game_html_for_upload(index_html)
+    runtime_feedback = _game_runtime_harness_feedback(
+        prepared_index_html, _game_runtime_asset_payload(normalized)
+    )
+    if runtime_feedback:
+        raise RuntimeError(runtime_feedback)
     s3, bucket, _ = _game_s3_client(target)
     for rel, body, content_type in normalized:
         if rel == "index.html":
@@ -2246,7 +2509,7 @@ def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
                 _upload_game_directory(target, path)
             elif path.is_file():
                 html = path.read_text(encoding="utf-8")
-                feedback = _game_html_feedback(html)
+                feedback = _game_artifact_harness_feedback(html)
                 if feedback:
                     return _tool_error(feedback, code="GAME_VALIDATION_ERROR")
                 _upload_game_html(target, html)
@@ -2255,12 +2518,12 @@ def _handle_alphart_generate_game(args: Dict[str, Any], **_: Any) -> str:
         elif has_files:
             _upload_game_files(target, files)
         else:
-            feedback = _game_html_feedback(html)
+            feedback = _game_artifact_harness_feedback(html)
             if feedback:
                 return _tool_error(feedback, code="GAME_VALIDATION_ERROR")
             _upload_game_html(target, html)
     except Exception as exc:
-        code = "GAME_VALIDATION_ERROR" if str(exc).lower().startswith("game html") or str(exc).lower().startswith("game css") or str(exc).lower().startswith("game javascript") or str(exc).lower().startswith("game must") else ""
+        code = "GAME_VALIDATION_ERROR" if str(exc).lower().startswith(("game artifact harness:", "game runtime harness:")) else ""
         return _tool_error(str(exc), code=code)
     result = {
         "status": "success",
