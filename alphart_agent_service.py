@@ -2632,14 +2632,19 @@ def _canvas_workflow_item_type(req: AlphartEduChatRequest) -> str:
     """Resolve Canvas workflow capacity without changing Edu intent routing."""
     if _request_app_scope(req) != "canvas":
         return ""
+    text = _canvas_request_text(req)
+    # An explicit native-language media request or Canvas skill is stronger
+    # than the current UI selection. A selected image is often the keyframe
+    # for a new downstream video and must not force the image workflow.
+    requested = _media_intent(text, has_image_context=bool(req.input_images))
+    if requested:
+        return requested
+    if re.search(r"\[skill:video-[^\]]+\]", text, flags=re.IGNORECASE):
+        return "video"
     selected_type = _string(
         getattr(req, "canvas_item_type", "") or getattr(req, "selected_canvas_item_type", "")
     ).strip().lower()
-    text = _canvas_request_text(req)
     if selected_type in {"text", "note"}:
-        requested = _media_intent(text, has_image_context=bool(req.input_images))
-        if requested:
-            return requested
         return selected_type
     if selected_type in {"image", "video", "audio"}:
         return selected_type
@@ -2654,6 +2659,22 @@ def _canvas_workflow_item_type(req: AlphartEduChatRequest) -> str:
     )):
         return "video"
     return _media_intent(text, has_image_context=bool(req.input_images), has_video_context=False)
+
+
+def _canvas_video_recovery_needed(req: AlphartEduChatRequest, messages: List[Any]) -> bool:
+    """Recover an explicit Canvas video turn after a speculative image tool call."""
+    if _request_app_scope(req) != "canvas" or req.script_only:
+        return False
+    if _canvas_workflow_item_type(req) != "video":
+        return False
+    # The image guard in the Canvas tool bridge intentionally returns a
+    # structured failure. Treat that failure as routing feedback and submit
+    # the requested video once, rather than leaving the turn in a failed state.
+    return (
+        _generation_tool_attempted(messages, "image")
+        and _generation_tool_effectively_failed(messages, "image")
+        and not _generation_tool_attempted(messages, "video")
+    )
 
 
 def _canvas_graph_skill_guidance(req: AlphartEduChatRequest) -> str:
@@ -3957,7 +3978,13 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     f"input_images={len(input_images)} input_audio={len(canvas_input_audio)}",
                     flush=True,
                 )
-            if not forced_messages and not current_media_attempted and not req.script_only:
+            canvas_video_recovery = _canvas_video_recovery_needed(req, current_turn_messages)
+            if canvas_video_recovery:
+                print(
+                    f"[alphart-agent] recovering Canvas video after speculative image attempt session_id={req.session_id}",
+                    flush=True,
+                )
+            if not forced_messages and (not current_media_attempted or canvas_video_recovery) and not req.script_only:
                 forced_messages = _forced_media_tool_messages(
                     user_message,
                     response_messages,
@@ -3968,11 +3995,25 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     # A Canvas composer is bound to a selected media node. Its type is
                     # a stronger signal than whether the user's descriptive prompt
                     # happens to contain a word such as "generate".
-                    forced_intent="audio" if req.approved_audio_script else canvas_forced_intent,
+                    forced_intent=(
+                        "audio" if req.approved_audio_script
+                        else ("video" if canvas_video_recovery else canvas_forced_intent)
+                    ),
                 )
             response_messages.extend(forced_messages)
     current_turn_messages = _messages_after_latest_user(response_messages)
-    current_media_failed = current_media_failed or _generation_tool_effectively_failed(current_turn_messages)
+    canvas_video_completed = (
+        _request_app_scope(req) == "canvas"
+        and _canvas_workflow_item_type(req) == "video"
+        and _generation_tool_completed(current_turn_messages, "video")
+    )
+    if canvas_video_completed:
+        # A rejected speculative image is not the outcome of the requested
+        # Canvas turn once the forced video submission succeeds.
+        current_media_failed = False
+        final_response = _last_assistant_text_after_last_tool(current_turn_messages) or "Video generation has been submitted."
+    else:
+        current_media_failed = current_media_failed or _generation_tool_effectively_failed(current_turn_messages)
     current_game_failed = current_game_failed or _game_tool_failed(current_turn_messages)
     current_tool_failed = current_media_failed or current_game_failed
     canvas_tool_error = _generation_tool_error(current_turn_messages) if _request_app_scope(req) == "canvas" else ""

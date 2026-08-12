@@ -1,6 +1,6 @@
 """Focused tests for shared Alphart agent service helpers."""
 
-from alphart_agent_service import AlphartEduChatRequest, _alphart_enabled_toolsets, _media_intent, _provider_config_for_domain
+from alphart_agent_service import AlphartEduChatRequest, _alphart_enabled_toolsets, _canvas_video_recovery_needed, _canvas_workflow_item_type, _media_intent, _provider_config_for_domain
 from toolsets import resolve_toolset
 
 
@@ -57,3 +57,41 @@ def test_prompt_refinement_does_not_route_to_media_generation():
         "refine prompt which describe a breathtaking autumn dusk landscape of Yellowstone National Park"
     ) == ""
     assert _media_intent("refine the prompt and generate an image of Yellowstone at dusk") == "image"
+
+
+def test_canvas_explicit_video_request_overrides_selected_image():
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        selected_canvas_item_type="image",
+        messages=[{
+            "role": "user",
+            "content": "[skill:video-cinematic-shot] @text node as prompt, @image node as keyframe, generate a 15s video",
+        }],
+    )
+
+    assert _canvas_workflow_item_type(request) == "video"
+
+
+def test_canvas_video_recovery_routes_after_speculative_image_failure():
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        messages=[{
+            "role": "user",
+            "content": "[skill:video-cinematic-shot] @text node as prompt, @image node as keyframe, generate a 15s video",
+        }],
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "image-call", "function": {"name": "canvas_generate_image"}}],
+        },
+        {
+            "role": "tool",
+            "name": "canvas_generate_image",
+            "content": '{"success": false, "error": "Canvas video request already has a video workflow"}',
+        },
+    ]
+
+    assert _canvas_video_recovery_needed(request, messages) is True
+    messages.append({"role": "assistant", "tool_calls": [{"id": "video-call", "function": {"name": "canvas_generate_video"}}]})
+    assert _canvas_video_recovery_needed(request, messages) is False

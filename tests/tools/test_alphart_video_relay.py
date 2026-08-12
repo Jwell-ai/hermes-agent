@@ -1,10 +1,11 @@
 """Regression tests for the shared video relay payload."""
 
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tools.alphart_tools import _handle_alphart_generate_image, _handle_alphart_generate_video, alphart_context
+from tools.alphart_tools import _backend_tool_timeout, _handle_alphart_generate_image, _handle_alphart_generate_video, alphart_context
 
 
 def test_edu_video_relay_preserves_context_caption_script():
@@ -91,6 +92,26 @@ def test_canvas_image_relay_without_asset_is_failure():
     assert "no stored image asset" in result["error"]
 
 
+def test_canvas_video_request_does_not_generate_speculative_image():
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "user_message": "[skill:video-cinematic-shot] @text node as prompt, @image node as keyframe, generate a 15s video",
+        }
+    ), patch("tools.alphart_tools.requests.post") as post:
+        result = json.loads(
+            _handle_alphart_generate_image(
+                {"prompt": "A speculative keyframe", "provider": "peanut-image-gemini", "model": "gemini-image"}
+            )
+        )
+
+    assert result["success"] is False
+    assert "video workflow" in result["error"]
+    post.assert_not_called()
+
+
 def test_canvas_image_relay_accepts_object_key_asset():
     response = SimpleNamespace(
         status_code=200,
@@ -158,6 +179,7 @@ def test_canvas_video_relay_drops_model_supplied_url_references():
 def test_canvas_video_relay_targets_new_graph_video_node():
     captured = {}
     created = []
+    created_bodies = []
 
     def fake_post(url, **kwargs):
         body = kwargs["json"]
@@ -165,6 +187,7 @@ def test_canvas_video_relay_targets_new_graph_video_node():
             item_type = body["item_type"]
             item_id = f"{item_type}-node"
             created.append(item_type)
+            created_bodies.append(body)
             return SimpleNamespace(
                 status_code=201,
                 text=json.dumps({"item": {"id": item_id}}),
@@ -193,6 +216,51 @@ def test_canvas_video_relay_targets_new_graph_video_node():
     assert result["status"] == "success"
     assert created == ["text", "video"]
     assert captured["json"]["canvas_item_id"] == "video-node"
+
+
+def test_canvas_video_graph_keeps_references_on_output_only():
+    captured = {}
+    created_bodies = []
+
+    def fake_post(url, **kwargs):
+        body = kwargs["json"]
+        if url.endswith("/internal/api/v1/canvas/nodes"):
+            created_bodies.append(body)
+            item_type = body["item_type"]
+            return SimpleNamespace(
+                status_code=201,
+                text=json.dumps({"item": {"id": f"{item_type}-node"}}),
+                json=lambda item_type=item_type: {"item": {"id": f"{item_type}-node"}},
+            )
+        captured["json"] = body
+        return SimpleNamespace(status_code=202, text='{"id":"task-1"}', json=lambda: {"id": "task-1"})
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "reference_item_ids": ["text-ref", "image-ref"],
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "Animate the scene", "provider": "peanut-video", "model": "seedance"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert "source_item_ids" not in created_bodies[0]
+    assert created_bodies[1]["source_item_ids"] == ["text-ref", "image-ref", "text-node"]
+    assert captured["json"]["canvas_item_id"] == "video-node"
+
+
+def test_canvas_timeout_does_not_inherit_edu_only_value():
+    with patch.dict(os.environ, {"ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS": "180"}, clear=True):
+        with alphart_context({"app_scope": "canvas"}):
+            assert _backend_tool_timeout() == 900
+        with alphart_context({"app_scope": "edu"}):
+            assert _backend_tool_timeout() == 180
 
 
 def test_canvas_video_relay_creates_fresh_graph_for_each_automatic_request():

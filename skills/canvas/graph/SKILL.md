@@ -54,7 +54,7 @@ For a new image, video, or audio design, execute these steps in order. Use one t
 1. Comprehend the user's intent and write a production-ready prompt in the user's language or the language requested by the user.
 2. Create one text node with a concise summary title in that same language containing the enriched prompt with `canvas_create_node`.
 3. Create one output node of the requested type with a concise summary title in that same language using `canvas_create_node`. Keep its prompt/content empty or set it to the enriched prompt as appropriate.
-4. Pass every explicitly named input node id in `source_item_ids` when creating the Prompt and output nodes. The Canvas backend persists those source-to-target lines automatically. Also call `canvas_connect_nodes` when a semantic edge is needed that is not covered by those source ids, such as the Prompt-to-output edge. Do not create duplicate lines.
+4. Pass every explicitly named input node id in `source_item_ids` on the output node. Keep the enriched Prompt node free of duplicate input edges unless the user explicitly asks to preserve that relationship on the Prompt itself; the Canvas backend persists source-to-target lines automatically and links the Prompt to the output. Also call `canvas_connect_nodes` only for a semantic edge not covered by those source ids. Do not create duplicate lines.
 5. Generate only into the output node using the matching Canvas generation tool and its returned `canvas_item_id`.
 6. Treat an accepted asynchronous task as started, not completed. Let the Go backend poll and persist the result.
 

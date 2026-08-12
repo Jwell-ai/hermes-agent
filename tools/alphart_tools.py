@@ -93,6 +93,25 @@ def _canvas_image_reference_key(value: Any) -> str:
     return raw
 
 
+def _canvas_explicit_video_request() -> bool:
+    """Keep speculative keyframe generation out of an explicit video turn."""
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
+        return False
+    text = str(_ctx().get("user_message") or _ctx().get("canvas_prompt_context") or "").strip()
+    if not text:
+        return False
+    if re.search(r"\[skill:video-[^\]]+\]", text, flags=re.IGNORECASE):
+        return True
+    return bool(
+        re.search(
+            r"(?:generate|create|make|render|produce|animate|生成|创建|製作|制作|渲染)"
+            r"[^.!?。！？]{0,80}(?:video|clip|animation|视频|动画|短片)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def _strip_audio_preferences(text: str) -> str:
     return re.sub(r"\n*\s*<audio_preferences\b[^>]*/>\s*", "\n", str(text or ""), flags=re.I).strip()
 
@@ -360,12 +379,21 @@ def _internal_api_url(path: str) -> str:
 
 
 def _backend_tool_timeout(default: int = 900) -> int:
-    raw = (
-        os.getenv("ALPHART_BACKEND_TOOL_TIMEOUT_SECONDS")
-        or os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
-        or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS")
-        or str(default)
-    )
+    # Keep the shared timeout opt-in explicit. A stale Edu-only value must not
+    # shorten Canvas media relays, while Edu continues to honor its legacy
+    # setting until the shared variable is adopted everywhere.
+    if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
+        raw = (
+            os.getenv("ALPHART_BACKEND_TOOL_TIMEOUT_SECONDS")
+            or os.getenv("CANVAS_BACKEND_TOOL_TIMEOUT_SECONDS")
+            or str(default)
+        )
+    else:
+        raw = (
+            os.getenv("ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS")
+            or os.getenv("ALPHART_BACKEND_TOOL_TIMEOUT_SECONDS")
+            or str(default)
+        )
     try:
         return int(raw)
     except (TypeError, ValueError):
@@ -420,6 +448,7 @@ def _handle_canvas_create_node(args: Dict[str, Any], **_: Any) -> str:
     if scope_error:
         return scope_error
     args = dict(args or {})
+    suppress_context_connections = bool(args.pop("_suppress_canvas_reference_connections", False))
     if not args.get("canvas_id"):
         args["canvas_id"] = _ctx().get("canvas_id")
     if not args.get("item_type") and args.get("type"):
@@ -432,10 +461,11 @@ def _handle_canvas_create_node(args: Dict[str, Any], **_: Any) -> str:
             if isinstance(raw_sources, str):
                 raw_sources = [raw_sources]
             source_ids.extend(str(value).strip() for value in raw_sources if str(value).strip())
-        context_sources = _ctx().get("reference_item_ids") or []
-        if isinstance(context_sources, str):
-            context_sources = [context_sources]
-        source_ids.extend(str(value).strip() for value in context_sources if str(value).strip())
+        if not suppress_context_connections:
+            context_sources = _ctx().get("reference_item_ids") or []
+            if isinstance(context_sources, str):
+                context_sources = [context_sources]
+            source_ids.extend(str(value).strip() for value in context_sources if str(value).strip())
         # A new media node follows the newly created Prompt node. Persist both
         # the user's referenced inputs and that prompt-to-output edge in the
         # backend, even if the model forgets a separate connect tool call.
@@ -556,9 +586,9 @@ def _ensure_canvas_video_generation_graph(prompt: str) -> Tuple[str, str]:
         return "", "Canvas canvas_id is required before creating a video node"
 
     _ctx().setdefault("_canvas_created_nodes", [])
-    # Do not reuse the last nodes from this agent turn. Each automatic
-    # generation request needs its own prompt/output pair; an explicit target
-    # is resolved by the caller before reaching this helper.
+    # Reuse nodes the model created earlier in this same turn. Once a relay has
+    # been submitted, a second automatic request gets a fresh pair instead of
+    # overwriting the first generation.
     prompt_node_id = ""
     output_node_id = ""
     source_ids = _ctx().get("reference_item_ids") or []
@@ -571,17 +601,23 @@ def _ensure_canvas_video_generation_graph(prompt: str) -> Tuple[str, str]:
         source_ids.append(selected_id)
     source_ids = list(dict.fromkeys(source_ids))
 
+    if not _ctx().get("_canvas_generation_submitted"):
+        prompt_node_id = _latest_canvas_created_node_id("text") or _latest_canvas_created_node_id("note")
+        output_node_id = _latest_canvas_created_node_id("video")
+
+    prompt_created = False
     if not prompt_node_id:
         result = _handle_canvas_create_node({
             "canvas_id": _ctx().get("canvas_id"),
             "item_type": "text",
             "title": "Prompt",
             "text": prompt,
-            "source_item_ids": source_ids,
+            "_suppress_canvas_reference_connections": True,
         })
         if not _canvas_tool_succeeded(result):
             return "", "Canvas prompt node creation failed"
         prompt_node_id = _latest_canvas_created_node_id("text") or _latest_canvas_created_node_id("note")
+        prompt_created = bool(prompt_node_id)
 
     if not output_node_id:
         result = _handle_canvas_create_node({
@@ -594,6 +630,14 @@ def _ensure_canvas_video_generation_graph(prompt: str) -> Tuple[str, str]:
         if not _canvas_tool_succeeded(result):
             return "", "Canvas video node creation failed"
         output_node_id = _latest_canvas_created_node_id("video")
+    elif prompt_created:
+        result = _handle_canvas_connect_nodes({
+            "canvas_id": _ctx().get("canvas_id"),
+            "source_item_id": prompt_node_id,
+            "target_item_id": output_node_id,
+        })
+        if not _canvas_tool_succeeded(result):
+            return "", "Canvas prompt-to-video connection failed"
     if not output_node_id:
         return "", "Canvas video graph was not created"
     return output_node_id, ""
@@ -1276,6 +1320,10 @@ def _handle_alphart_update_storybook_page(args: Dict[str, Any], **_: Any) -> str
 
 def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
     args = dict(args or {})
+    if _canvas_explicit_video_request():
+        return _tool_error(
+            "Canvas video request already has a video workflow; use the supplied image references as keyframes instead of generating an image"
+        )
     _set_canvas_model_default(args, "image")
     if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
         if _ctx().get("image_aspect_ratio") and not args.get("aspect_ratio"):
@@ -1377,6 +1425,8 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
             detail = " ".join((detail or f"relay returned HTTP {resp.status_code}").split())[:500]
             return _tool_error(f"Canvas image relay failed (HTTP {resp.status_code}): {detail}")
         return _system_busy_tool_error()
+    if is_canvas and not str(_ctx().get("canvas_item_id") or "").strip():
+        _ctx()["_canvas_generation_submitted"] = True
     data = decoded.get("data") if isinstance(decoded, dict) else None
     if isinstance(data, list) and data and isinstance(data[0], dict):
         asset = data[0]
