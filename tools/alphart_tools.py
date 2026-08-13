@@ -1334,7 +1334,7 @@ def _handle_alphart_update_storybook_page(args: Dict[str, Any], **_: Any) -> str
     return json.dumps({"status": "success", "result": {"type": "storybook_page_update", "storybook_id": storybook_id, **payload}}, ensure_ascii=False)
 
 
-def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
+def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
     args = dict(args or {})
     if _canvas_explicit_video_request():
         return _tool_error(
@@ -1401,6 +1401,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
             or _ctx().get("canvas_item_id")
             or _latest_canvas_created_node_id("image")
         ),
+        "tool_call_id": kwargs.get("tool_call_id") or args.get("tool_call_id"),
     }
     if args.get("quantity"):
         payload["n"] = args.get("quantity")
@@ -1465,6 +1466,8 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **_: Any) -> str:
         "filename": asset.get("filename"),
         "s3_object_name": asset.get("s3_object_name") or asset.get("object_key") or asset.get("result_image_object_key"),
         "usage": asset.get("usage"),
+        "_credit_settled": bool(asset.get("_credit_settled")),
+        "_credit_reference_id": asset.get("_credit_reference_id"),
     }
     if is_canvas and not str(result.get("s3_object_name") or "").strip():
         return _tool_error("Canvas image relay returned no stored image asset")
@@ -1582,10 +1585,6 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         "canvas_id": _ctx().get("canvas_id"),
         "canvas_item_id": canvas_item_id,
         "generate_audio": bool(args.get("generate_audio")),
-        # Edu callers already use the request context for caption/voiceover
-        # scripts. Keep this field on the shared payload; Canvas may override
-        # it below when the tool supplied an explicit script.
-        "caption_script": _ctx().get("video_caption_script"),
         "tool_call_id": kwargs.get("tool_call_id") or args.get("tool_call_id"),
     }
     if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
@@ -1662,7 +1661,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
 
 
-def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
+def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
     args = dict(args or {})
     _set_canvas_model_default(args, "audio")
     canvas_audio_duration = _ctx().get("audio_duration_seconds") if _ctx().get("app_scope") == "canvas" else 0
@@ -1701,6 +1700,7 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
         "user_id": _ctx().get("user_id"),
         "user_uuid": _ctx().get("user_uuid"),
         "org_no": _ctx().get("org_no"),
+        "idempotency_key": kwargs.get("tool_call_id") or args.get("tool_call_id"),
     }
     if _ctx().get("app_scope") == "canvas":
         payload["reference_item_ids"] = _ctx().get("reference_item_ids") or []
@@ -1803,6 +1803,8 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **_: Any) -> str:
         "filename": asset.get("filename"),
         "s3_object_name": asset.get("s3_object_name"),
         "usage": asset.get("usage"),
+        "_credit_settled": bool(asset.get("_credit_settled")),
+        "_credit_reference_id": asset.get("_credit_reference_id"),
     }
     return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
 
@@ -2762,6 +2764,24 @@ CANVAS_GENERATE_VIDEO_SCHEMA = {
     },
 }
 
+# Voiceover and soundtrack wiring belongs to Canvas. Edu receives the same
+# video capability without Canvas-only caption metadata or audio-node inputs.
+GENERATE_VIDEO_SCHEMA = {
+    "name": "generate_video",
+    "description": (
+        "Submit a video generation task through the selected Alphart video model. "
+        "Use this for text-to-video and image-to-video tasks. Video result polling stays in the Go backend."
+    ),
+    "parameters": {
+        **CANVAS_GENERATE_VIDEO_SCHEMA["parameters"],
+        "properties": {
+            key: value
+            for key, value in CANVAS_GENERATE_VIDEO_SCHEMA["parameters"]["properties"].items()
+            if key not in {"caption_script", "input_audio"}
+        },
+    },
+}
+
 CANVAS_GENERATE_AUDIO_SCHEMA = {
     "name": "canvas_generate_audio",
     "description": (
@@ -3034,7 +3054,7 @@ registry.register(
 )
 registry.register(
     name="canvas_generate_video",
-    toolset="alphart-edu",
+    toolset="alphart-canvas",
     schema=CANVAS_GENERATE_VIDEO_SCHEMA,
     handler=_handle_alphart_generate_video,
     is_async=False,
@@ -3042,7 +3062,7 @@ registry.register(
 registry.register(
     name="generate_video",
     toolset="alphart-edu",
-    schema={**CANVAS_GENERATE_VIDEO_SCHEMA, "name": "generate_video"},
+    schema=GENERATE_VIDEO_SCHEMA,
     handler=_handle_alphart_generate_video,
     is_async=False,
 )

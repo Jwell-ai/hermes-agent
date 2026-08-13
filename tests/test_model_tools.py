@@ -84,6 +84,19 @@ class TestHandleFunctionCall:
             ),
         ]
 
+    def test_dispatch_forwards_tool_call_and_session_ids(self):
+        with patch("model_tools.registry.dispatch", return_value='{"ok":true}') as mock_dispatch:
+            result = handle_function_call(
+                "web_search",
+                {"q": "test"},
+                tool_call_id="call-1",
+                session_id="session-1",
+            )
+
+        assert result == '{"ok":true}'
+        assert mock_dispatch.call_args.kwargs["tool_call_id"] == "call-1"
+        assert mock_dispatch.call_args.kwargs["session_id"] == "session-1"
+
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):
         """Regression: post_tool_call and transform_tool_result hooks must
         receive a non-negative integer ``duration_ms`` kwarg measuring

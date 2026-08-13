@@ -8,7 +8,7 @@ from unittest.mock import patch
 from tools.alphart_tools import _backend_tool_timeout, _handle_alphart_generate_image, _handle_alphart_generate_video, alphart_context
 
 
-def test_edu_video_relay_preserves_context_caption_script():
+def test_edu_video_relay_does_not_send_canvas_caption_script():
     captured = {}
 
     def fake_post(url, **kwargs):
@@ -35,6 +35,35 @@ def test_edu_video_relay_preserves_context_caption_script():
 
     assert result["status"] == "success"
     assert captured["url"] == "http://edu-backend/internal/v1/videos"
+    assert "caption_script" not in captured["json"]
+
+
+def test_canvas_video_relay_keeps_canvas_caption_script():
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_item_id": "video-node",
+            "video_caption_script": "Keep walking toward the sunrise.",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "A cinematic sunrise", "provider": "peanut-video", "model": "seedance"}
+            )
+        )
+
+    assert result["status"] == "success"
     assert captured["json"]["caption_script"] == "Keep walking toward the sunrise."
 
 
@@ -59,12 +88,14 @@ def test_canvas_image_relay_targets_newly_created_image_node():
     ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
         result = json.loads(
             _handle_alphart_generate_image(
-                {"prompt": "A warm autumn sunset", "provider": "peanut-image-gpt", "model": "gpt-image-2"}
+                {"prompt": "A warm autumn sunset", "provider": "peanut-image-gpt", "model": "gpt-image-2"},
+                tool_call_id="image-call-1",
             )
         )
 
     assert result["status"] == "success"
     assert captured["json"]["canvas_item_id"] == "image-node"
+    assert captured["json"]["tool_call_id"] == "image-call-1"
 
 
 def test_canvas_image_relay_without_asset_is_failure():
