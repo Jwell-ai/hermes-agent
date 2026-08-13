@@ -526,7 +526,33 @@ def _backend_url_from_req(req: Any) -> str:
             or explicit
             or "http://localhost:9999"
         ).rstrip("/")
+    jwell_relay_url = _jwell_relay_base_url()
+    jwell_relay_secret = _jwell_relay_app_secret()
+    if jwell_relay_url and jwell_relay_secret:
+        return jwell_relay_url
     return _string(os.getenv("ALPHART_EDU_BACKEND_URL") or explicit or "http://localhost:57988").rstrip("/")
+
+
+def _uses_jwell_internal_relay(req: Any) -> bool:
+    return (
+        _request_app_scope(req) == "edu"
+        and bool(_jwell_relay_base_url())
+        and bool(_jwell_relay_app_secret())
+    )
+
+
+def _jwell_relay_base_url() -> str:
+    raw = _string(os.getenv("JWELL_SERVICE_GRPC_ADDRS") or os.getenv("JWELL_SERVICE_GRPC_ADDR"))
+    address = raw.split(",", 1)[0].strip().rstrip("/")
+    if not address:
+        return ""
+    if address.startswith(("http://", "https://")):
+        return address
+    return "http://" + address
+
+
+def _jwell_relay_app_secret() -> str:
+    return _string(os.getenv("JWELL_APP_SECRET"))
 
 
 def _internal_relay_base_url(req: Any) -> str:
@@ -557,6 +583,8 @@ def _internal_relay_headers(req: Any) -> Dict[str, str]:
     org_no = _string(getattr(req, "org_no", "")) or _string(getattr(req, "storage_prefix", ""))
     if org_no:
         headers["X-Org-No"] = org_no
+    if _uses_jwell_internal_relay(req):
+        headers["X-App-Secret"] = _jwell_relay_app_secret()
     return headers
 
 
@@ -4055,6 +4083,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "total_tokens": result.get("total_tokens") or 0,
         "input_tokens": result.get("input_tokens") or 0,
         "output_tokens": result.get("output_tokens") or 0,
+        "relay_billing_settled": _uses_jwell_internal_relay(req),
         "interrupted": bool(result.get("interrupted") or current_tool_failed),
         "failed": bool(result.get("failed") or current_tool_failed or empty_result_error),
         "error": empty_result_error or ((canvas_tool_error or SYSTEM_BUSY_MESSAGE) if current_tool_failed else _string(result.get("error"))),

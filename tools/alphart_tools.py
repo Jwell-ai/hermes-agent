@@ -371,6 +371,34 @@ def _internal_relay_url(path: str) -> str:
     return f"{backend_url}/internal/v1/{normalized_path}"
 
 
+def _jwell_relay_enabled() -> bool:
+    return (
+        str(_ctx().get("app_scope") or "edu").strip().lower() != "canvas"
+        and bool(_jwell_relay_base_url())
+        and bool(_jwell_relay_app_secret())
+    )
+
+
+def _jwell_relay_base_url() -> str:
+    raw = str(os.getenv("JWELL_SERVICE_GRPC_ADDRS") or os.getenv("JWELL_SERVICE_GRPC_ADDR") or "").strip()
+    address = raw.split(",", 1)[0].strip().rstrip("/")
+    if not address:
+        return ""
+    if address.startswith(("http://", "https://")):
+        return address
+    return "http://" + address
+
+
+def _jwell_relay_app_secret() -> str:
+    return str(os.getenv("JWELL_APP_SECRET") or "").strip()
+
+
+def _relay_url(path: str) -> str:
+    if _jwell_relay_enabled():
+        return f"{_jwell_relay_base_url()}/internal/v1/{path.lstrip('/')}"
+    return _internal_relay_url(path)
+
+
 def _internal_api_url(path: str) -> str:
     backend_url = _backend_url()
     if not backend_url:
@@ -433,6 +461,66 @@ def _internal_relay_headers() -> Dict[str, str]:
     if _ctx().get("canvas_id"):
         headers["X-Canvas-ID"] = str(_ctx().get("canvas_id"))
     return headers
+
+
+def _relay_headers() -> Dict[str, str]:
+    headers = _internal_relay_headers()
+    if _jwell_relay_enabled():
+        headers["X-App-Secret"] = _jwell_relay_app_secret()
+    return headers
+
+
+def _resolve_jwell_media_urls(media_type: str, references: Any) -> list[str]:
+    if not _jwell_relay_enabled() or not references:
+        return list(references or [])
+    if not isinstance(references, list):
+        references = [references]
+    url = _internal_api_url("agent/relay-media-urls")
+    if not url:
+        raise RuntimeError("ALPHART_EDU_BACKEND_URL is not configured")
+    response = requests.post(
+        url,
+        json={"media_type": media_type, "references": references},
+        headers=_internal_relay_headers(),
+        timeout=_backend_tool_timeout(),
+    )
+    response.raise_for_status()
+    data = response.json().get("data")
+    if not isinstance(data, list) or not all(isinstance(item, str) and item for item in data):
+        raise RuntimeError("Edu media bridge returned invalid provider URLs")
+    return data
+
+
+def _import_jwell_media(asset: Dict[str, Any], media_type: str) -> Dict[str, Any]:
+    if not _jwell_relay_enabled():
+        return asset
+    media_url = str(asset.get("url") or asset.get(f"{media_type}_url") or "").strip()
+    if not media_url:
+        raise RuntimeError("Jwell relay returned no media URL")
+    url = _internal_api_url("agent/relay-media-import")
+    if not url:
+        raise RuntimeError("ALPHART_EDU_BACKEND_URL is not configured")
+    response = requests.post(
+        url,
+        json={
+            "url": media_url,
+            "mime_type": asset.get("mime_type") or "",
+            "media_type": media_type,
+            "canvas_id": _ctx().get("canvas_id") or "",
+        },
+        headers=_internal_relay_headers(),
+        timeout=_backend_tool_timeout(),
+    )
+    response.raise_for_status()
+    stored = response.json().get("data")
+    if not isinstance(stored, dict) or not str(stored.get("s3_object_name") or "").strip():
+        raise RuntimeError("Edu media bridge returned no stored asset")
+    merged = dict(asset)
+    merged.update(stored)
+    merged["provider"] = asset.get("provider") or merged.get("provider")
+    merged["model"] = asset.get("model") or merged.get("model")
+    merged["_credit_settled"] = True
+    return merged
 
 
 def _handle_write_plan(args: Dict[str, Any], **_: Any) -> str:
@@ -1382,7 +1470,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
             return _tool_error(graph_error)
         if image_item_id:
             args["canvas_item_id"] = image_item_id
-    relay_url = _internal_relay_url("images/generations" if is_canvas or not args.get("input_images") else "images/edits")
+    relay_url = _relay_url("images/generations" if is_canvas or not args.get("input_images") else "images/edits")
     if not relay_url:
         return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
     payload = {
@@ -1406,7 +1494,10 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
     if args.get("quantity"):
         payload["n"] = args.get("quantity")
     if args.get("input_images"):
-        payload["images"] = args.get("input_images")
+        try:
+            payload["images"] = _resolve_jwell_media_urls("image", args.get("input_images"))
+        except (requests.RequestException, RuntimeError) as exc:
+            return _tool_error(f"Unable to prepare image references: {exc}")
     if is_canvas:
         payload["reference_item_ids"] = _ctx().get("reference_item_ids") or []
     print(
@@ -1417,7 +1508,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
         resp = requests.post(
             relay_url,
             json=payload,
-            headers=_internal_relay_headers(),
+            headers=_relay_headers(),
             timeout=_backend_tool_timeout(),
         )
     except requests.RequestException as exc:
@@ -1455,6 +1546,11 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
         asset = decoded
     else:
         asset = {}
+    if _jwell_relay_enabled():
+        try:
+            asset = _import_jwell_media(asset, "image")
+        except (requests.RequestException, RuntimeError) as exc:
+            return _tool_error(f"Unable to store generated image: {exc}")
     result = {
         "type": "image",
         "provider": asset.get("provider") or args.get("provider"),
@@ -1571,7 +1667,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         if graph_error:
             return _tool_error(graph_error)
         args["canvas_item_id"] = canvas_item_id
-    relay_url = _internal_relay_url("videos")
+    relay_url = _relay_url("videos")
     if not relay_url:
         return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
     payload = {
@@ -1605,9 +1701,15 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         images = args.get("input_images")
         # Edu's video relay accepts image-to-video references under `image`;
         # the value itself may be a list for multi-reference providers.
-        payload["image"] = images if isinstance(images, list) else [images]
+        try:
+            payload["image"] = _resolve_jwell_media_urls("image", images)
+        except (requests.RequestException, RuntimeError) as exc:
+            return _tool_error(f"Unable to prepare video image references: {exc}")
     if args.get("input_audio"):
-        payload["audio"] = args.get("input_audio")
+        try:
+            payload["audio"] = _resolve_jwell_media_urls("audio", args.get("input_audio"))
+        except (requests.RequestException, RuntimeError) as exc:
+            return _tool_error(f"Unable to prepare video audio references: {exc}")
     print(
         f"[alphart-agent] calling internal relay video session_id={_ctx().get('session_id')} "
         f"provider={_log_model_value(payload.get('provider'))} "
@@ -1618,7 +1720,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         resp = requests.post(
             relay_url,
             json=payload,
-            headers=_internal_relay_headers(),
+            headers=_relay_headers(),
             timeout=_backend_tool_timeout(),
         )
     except requests.RequestException as exc:
@@ -1644,6 +1746,26 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         return _system_busy_tool_error()
     selected_provider = decoded.get("provider") if isinstance(decoded, dict) else args.get("provider")
     selected_model = decoded.get("model") if isinstance(decoded, dict) else args.get("model")
+    task_id = decoded.get("id") if isinstance(decoded, dict) else ""
+    if _jwell_relay_enabled():
+        try:
+            tracked = requests.post(
+                _internal_api_url("agent/jwell-video-tasks"),
+                json={
+                    "task_id": task_id,
+                    "provider": selected_provider,
+                    "model": selected_model,
+                    "resolution": payload.get("resolution"),
+                    "canvas_id": payload.get("canvas_id"),
+                    "session_id": payload.get("session_id"),
+                    "tool_call_id": payload.get("tool_call_id"),
+                },
+                headers=_internal_relay_headers(),
+                timeout=_backend_tool_timeout(),
+            )
+            tracked.raise_for_status()
+        except requests.RequestException as exc:
+            return _tool_error(f"Unable to track Jwell video task: {exc}")
     print(
         f"[alphart-agent] internal relay video selected "
         f"provider={_log_model_value(selected_provider)} model={_log_model_value(selected_model)}",
@@ -1654,7 +1776,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         "type": "generate_video_task",
         "status": decoded.get("status") if isinstance(decoded, dict) else "queued",
         "message": "Create generation task success",
-        "task_id": decoded.get("id") if isinstance(decoded, dict) else "",
+        "task_id": task_id,
         "provider": selected_provider,
         "model": selected_model,
     }
@@ -1675,7 +1797,7 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
     if not selected_provider or not selected_model:
         return _tool_error("No configured audio generation model is available.", "AUDIO_MODEL_NOT_CONFIGURED")
     args["language_type"] = _normalize_audio_language_type(args.get("language_type")) or _normalize_audio_language_type(_ctx().get("audio_language_type"))
-    relay_url = _internal_relay_url("audio/speech")
+    relay_url = _relay_url("audio/speech")
     if not relay_url:
         return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
     text = str(args.get("input") or args.get("text") or args.get("script") or args.get("prompt") or "").strip()
@@ -1723,7 +1845,7 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
             resp = requests.post(
                 relay_url,
                 json=payload,
-                headers=_internal_relay_headers(),
+                headers=_relay_headers(),
                 timeout=timeout,
             )
         except requests.RequestException as exc:
@@ -1780,6 +1902,11 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
         asset = decoded
     else:
         asset = {}
+    if _jwell_relay_enabled():
+        try:
+            asset = _import_jwell_media(asset, "audio")
+        except (requests.RequestException, RuntimeError) as exc:
+            return _tool_error(f"Unable to store generated audio: {exc}")
     audio_url = asset.get("url") or asset.get("audio_url")
     if not audio_url:
         return _system_busy_tool_error()
