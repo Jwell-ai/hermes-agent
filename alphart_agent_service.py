@@ -534,6 +534,8 @@ def _backend_url_from_req(req: Any) -> str:
 
 
 def _uses_jwell_internal_relay(req: Any) -> bool:
+    # Canvas provider requests stay on the Canvas backend. Only Edu requests
+    # are settled by the shared Jwell relay in this service.
     return (
         _request_app_scope(req) == "edu"
         and bool(_jwell_relay_base_url())

@@ -1,6 +1,6 @@
 """Focused tests for shared Alphart agent service helpers."""
 
-from alphart_agent_service import AlphartEduChatRequest, _alphart_enabled_toolsets, _canvas_video_recovery_needed, _canvas_workflow_item_type, _media_intent, _provider_config_for_domain
+from alphart_agent_service import AlphartEduChatRequest, _alphart_enabled_toolsets, _canvas_video_recovery_needed, _canvas_workflow_item_type, _media_intent, _provider_config_for_domain, _uses_jwell_internal_relay
 from toolsets import resolve_toolset
 
 
@@ -38,6 +38,14 @@ def test_edu_toolsets_are_explicit():
     request = AlphartEduChatRequest(app_scope="edu")
 
     assert _alphart_enabled_toolsets(request) == ["alphart-edu", "alphart-edu-skills"]
+
+
+def test_jwell_billing_ownership_stays_edu_scoped(monkeypatch):
+    monkeypatch.setenv("JWELL_SERVICE_GRPC_ADDR", "http://jwell.test")
+    monkeypatch.setenv("JWELL_APP_SECRET", "secret")
+
+    assert _uses_jwell_internal_relay(AlphartEduChatRequest(app_scope="edu")) is True
+    assert _uses_jwell_internal_relay(AlphartEduChatRequest(app_scope="canvas")) is False
 
 
 def test_edu_toolset_does_not_advertise_canvas_graph_mutations():

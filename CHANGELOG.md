@@ -2,6 +2,8 @@
 
 ## Unreleased - 2026-08-04
 
+- Kept Jwell provider-relay billing ownership Edu-scoped; Canvas provider and
+  graph/storage callbacks remain Canvas-scoped.
 - Canvas video generation now materializes a prompt/output graph and propagates the video node id before submitting relay tasks; Edu video requests are unchanged.
 - Kept Canvas Anthropic stream recovery at warning level without emitting a misleading SDK assertion traceback; Edu streaming behavior is unchanged.
 - Added Canvas-only recovery for Anthropic-compatible relay streams that close without a final `message_stop`; Edu retains its existing streaming behavior.
