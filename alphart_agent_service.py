@@ -1371,16 +1371,20 @@ def _generation_tool_attempted(messages: List[Any], media_type: str = "") -> boo
                 if expected == "video" and ("generate_video" in name or "canvas_generate_video" in name):
                     return True
                 if expected == "audio" and ("generate_audio" in name or "canvas_generate_audio" in name):
-                    return True
+                    if _audio_tool_call_has_input(tool_call):
+                        return True
+                    continue
                 if expected == "game" and ("generate_game" in name or "canvas_generate_game" in name):
                     return True
+                is_audio_tool = "generate_audio" in name or "canvas_generate_audio" in name
+                if not expected and is_audio_tool and not _audio_tool_call_has_input(tool_call):
+                    continue
                 if not expected and (
                     "generate_image" in name
                     or "canvas_generate_image" in name
                     or "generate_video" in name
                     or "canvas_generate_video" in name
-                    or "generate_audio" in name
-                    or "canvas_generate_audio" in name
+                    or is_audio_tool
                     or "generate_game" in name
                     or "canvas_generate_game" in name
                 ):
@@ -1391,13 +1395,41 @@ def _generation_tool_attempted(messages: List[Any], media_type: str = "") -> boo
                 return True
             if expected == "video" and "video" in name:
                 return True
-            if expected == "audio" and "audio" in name:
+            if expected == "audio" and "audio" in name and not _audio_input_validation_failed(msg.get("content")):
                 return True
             if expected == "game" and "game" in name:
                 return True
+            if not expected and "audio" in name and _audio_input_validation_failed(msg.get("content")):
+                continue
             if not expected and ("image" in name or "video" in name or "audio" in name or "game" in name):
                 return True
     return False
+
+
+def _audio_tool_call_has_input(tool_call: Any) -> bool:
+    try:
+        arguments = json.loads(_tool_call_arguments(tool_call))
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(arguments, dict):
+        return False
+    return any(
+        _string(arguments.get(key)).strip()
+        for key in ("input", "text", "script", "prompt")
+    )
+
+
+def _audio_input_validation_failed(content: Any) -> bool:
+    try:
+        decoded = json.loads(content) if isinstance(content, str) else content
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(decoded, dict):
+        return False
+    error = _string(decoded.get("error"))
+    if not error and isinstance(decoded.get("result"), dict):
+        error = _string(decoded["result"].get("error") or decoded["result"].get("message"))
+    return error.strip().lower() == "audio input text is required"
 
 
 def _generation_tool_failed(messages: List[Any], media_type: str = "") -> bool:
@@ -2225,7 +2257,7 @@ def _forced_media_tool_messages(
         }
         # Canvas prompt values are authoritative over the UI fallback. Edu's
         # legacy audio flow intentionally keeps its existing request behavior.
-        if _request_app_scope() == "canvas":
+        if _string(_ctx().get("app_scope")).lower() == "canvas":
             duration_seconds = _video_duration_seconds_from_text(user_message)
             if duration_seconds:
                 args["duration_seconds"] = duration_seconds
@@ -3959,10 +3991,10 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                 or _last_assistant_text(raw_result_messages)
             )
     user_audio_urls = _audio_urls_from_content(user_content)
+    forced_messages: List[Dict[str, Any]] = []
     if not model_failed:
         with alphart_context(context):
             current_turn_messages = _messages_after_latest_user(response_messages)
-            forced_messages = []
             if user_audio_urls and not _generation_tool_attempted(current_turn_messages, "audio"):
                 forced_messages = _forced_audio_to_media_pipeline(
                     user_audio_urls,
@@ -4042,7 +4074,11 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         current_media_failed = False
         final_response = _last_assistant_text_after_last_tool(current_turn_messages) or "Video generation has been submitted."
     else:
-        current_media_failed = current_media_failed or _generation_tool_effectively_failed(current_turn_messages)
+        repaired_media_attempt = _generation_tool_attempted(forced_messages)
+        if repaired_media_attempt:
+            current_media_failed = _generation_tool_effectively_failed(current_turn_messages)
+        else:
+            current_media_failed = current_media_failed or _generation_tool_effectively_failed(current_turn_messages)
     current_game_failed = current_game_failed or _game_tool_failed(current_turn_messages)
     current_tool_failed = current_media_failed or current_game_failed
     canvas_tool_error = _generation_tool_error(current_turn_messages) if _request_app_scope(req) == "canvas" else ""
