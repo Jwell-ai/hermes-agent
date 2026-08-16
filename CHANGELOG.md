@@ -11,6 +11,7 @@
   install so the Docker build does not require an isolated PyPI download.
 - Include the Jwell app secret on Edu chat result and event callbacks routed
   through the shared internal relay.
+- Keep Jwell's app secret off callbacks sent to the application backend.
 - Use Jwell's native Seedance v3 task endpoint for Dreamina/Doubao Seedance video generation;
   non-Seedance video providers keep the compatibility relay path.
 

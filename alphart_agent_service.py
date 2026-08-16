@@ -291,7 +291,7 @@ def _backend_media_url(req: AlphartEduChatRequest, ref: Dict[str, Any]) -> str:
     object_name = _string(ref.get("s3_object_name") or ref.get("object_name") or ref.get("key"))
     if not object_name:
         return ""
-    backend_url = _backend_url_from_req(req)
+    backend_url = _application_backend_url_from_req(req)
     file_id = _string(ref.get("file_id"))
     route_file_id = (object_name.rstrip("/").rsplit("/", 1)[-1] or file_id.rstrip("/").rsplit("/", 1)[-1] or "media")
     return f"{backend_url}/api/v1/files/{quote(route_file_id, safe='')}?s3_object_name={quote(object_name, safe='')}"
@@ -518,6 +518,18 @@ def _canvas_reasoning_config(req: Any) -> Optional[Dict[str, Any]]:
 
 
 def _backend_url_from_req(req: Any) -> str:
+    application_url = _application_backend_url_from_req(req)
+    if _request_app_scope(req) == "canvas":
+        return application_url
+    jwell_relay_url = _jwell_relay_base_url()
+    jwell_relay_secret = _jwell_relay_app_secret()
+    if jwell_relay_url and jwell_relay_secret:
+        return jwell_relay_url
+    return application_url
+
+
+def _application_backend_url_from_req(req: Any) -> str:
+    """Return the app backend URL, excluding the optional Jwell relay target."""
     explicit = _string(getattr(req, "backend_url", "")).rstrip("/")
     if _request_app_scope(req) == "canvas":
         return _string(
@@ -526,11 +538,11 @@ def _backend_url_from_req(req: Any) -> str:
             or explicit
             or "http://localhost:9999"
         ).rstrip("/")
-    jwell_relay_url = _jwell_relay_base_url()
-    jwell_relay_secret = _jwell_relay_app_secret()
-    if jwell_relay_url and jwell_relay_secret:
-        return jwell_relay_url
-    return _string(os.getenv("ALPHART_EDU_BACKEND_URL") or explicit or "http://localhost:57988").rstrip("/")
+    return _string(
+        os.getenv("ALPHART_EDU_BACKEND_URL")
+        or explicit
+        or "http://localhost:57988"
+    ).rstrip("/")
 
 
 def _uses_jwell_internal_relay(req: Any) -> bool:
@@ -2962,7 +2974,7 @@ def _has_visible_agent_output(messages: List[Any], final_response: str) -> bool:
 
 
 def _callback_backend_url(req: AlphartEduChatRequest) -> str:
-    return _backend_url_from_req(req)
+    return _application_backend_url_from_req(req)
 
 
 def _callback_service_token() -> str:
@@ -2975,6 +2987,9 @@ def _callback_service_token() -> str:
 
 def _callback_headers(req: AlphartEduChatRequest) -> Dict[str, str]:
     headers = _internal_relay_headers(req)
+    # These callbacks target the application backend, not Jwell's relay. Do
+    # not forward the Jwell service credential across that boundary.
+    headers.pop("X-App-Secret", None)
     token = _callback_service_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"

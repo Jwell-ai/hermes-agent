@@ -54,6 +54,7 @@ def test_jwell_billing_ownership_stays_edu_scoped(monkeypatch):
 def test_jwell_callbacks_include_app_secret(monkeypatch):
     monkeypatch.setenv("JWELL_SERVICE_GRPC_ADDR", "http://jwell.test")
     monkeypatch.setenv("JWELL_APP_SECRET", "secret")
+    monkeypatch.setenv("ALPHART_EDU_BACKEND_URL", "http://edu-backend")
     request = AlphartEduChatRequest(app_scope="edu", session_id="session-1")
     response = SimpleNamespace(status_code=200, text="{}")
 
@@ -62,8 +63,10 @@ def test_jwell_callbacks_include_app_secret(monkeypatch):
         _post_chat_event_callback(request, {"type": "progress"})
 
     assert post.call_count == 2
+    assert post.call_args_list[0].args[0] == "http://edu-backend/internal/api/v1/agent/chat-results"
+    assert post.call_args_list[1].args[0] == "http://edu-backend/internal/api/v1/agent/events"
     for call in post.call_args_list:
-        assert call.kwargs["headers"]["X-App-Secret"] == "secret"
+        assert "X-App-Secret" not in call.kwargs["headers"]
 
 
 def test_edu_toolset_does_not_advertise_canvas_graph_mutations():
