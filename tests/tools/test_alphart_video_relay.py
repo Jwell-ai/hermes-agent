@@ -38,6 +38,160 @@ def test_edu_video_relay_does_not_send_canvas_caption_script():
     assert "caption_script" not in captured["json"]
 
 
+def test_video_relay_extracts_duration_from_user_message():
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "edu",
+            "backend_url": "http://edu-backend",
+            "user_message": "Generate a 5s 720p video with @image as keyframe",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "Animate the keyframe", "provider": "peanut-video", "model": "seedance"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["duration"] == 5
+
+
+def test_video_relay_defaults_duration_to_five_seconds():
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "edu",
+            "backend_url": "http://edu-backend",
+            "user_message": "Generate a video with @image as keyframe",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "Animate the keyframe", "provider": "peanut-video", "model": "seedance"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["duration"] == 5
+
+
+def test_video_relay_prefers_canvas_duration_option():
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "canvas_item_id": "video-1",
+            "duration_seconds": 11,
+            "user_message": "Generate a 5s video with @image as keyframe",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "Animate the keyframe", "provider": "peanut-video", "model": "seedance"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["duration"] == 11
+
+
+def test_video_relay_prefers_llm_duration_over_canvas_option():
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "canvas_item_id": "video-1",
+            "duration_seconds": 11,
+            "user_message": "Generate a 5s video with @image as keyframe",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {
+                    "prompt": "Animate the keyframe",
+                    "provider": "peanut-video",
+                    "model": "seedance",
+                    "duration_seconds": 7,
+                }
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["duration"] == 7
+
+
+def test_video_relay_defaults_canvas_duration_without_option():
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "canvas_item_id": "video-1",
+            "duration_seconds": 0,
+            "user_message": "Generate a video with @image as keyframe",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "Animate the keyframe", "provider": "peanut-video", "model": "seedance"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["duration"] == 5
+
+
 def test_seedance_video_relay_uses_native_jwell_route():
     captured = {}
 

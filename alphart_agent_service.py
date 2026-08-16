@@ -33,6 +33,7 @@ from tools.alphart_tools import (
     _handle_alphart_transcribe_audio,
     _handle_alphart_update_storybook_page,
     _selected_tools,
+    _video_duration_seconds_from_text,
     alphart_context,
 )
 
@@ -56,6 +57,7 @@ class AlphartEduChatRequest(BaseModel):
     input_audio: List[Any] = Field(default_factory=list)
     reference_item_ids: List[str] = Field(default_factory=list)
     duration_seconds: int = 0
+    duration: int = 0
     audio_duration_seconds: int = 0
     aspect_ratio: str = ""
     resolution: str = ""
@@ -1115,26 +1117,6 @@ def _media_intent(text: str, has_image_context: bool = False, has_video_context:
     if any(word in value for word in ("draw", "render", "paint", "sketch", "illustrate", "画", "绘制")):
         return "image"
     return ""
-
-
-def _duration_seconds_from_text(text: str) -> int:
-    value = text or ""
-    patterns = (
-        r"\b(\d{1,3})\s*(?:seconds?|secs?|s)\b",
-        r"\b(\d{1,3})\s*(?:second|sec)s?\b",
-        r"\b(\d{1,3})\s*秒",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, value, re.IGNORECASE)
-        if not match:
-            continue
-        try:
-            seconds = int(match.group(1))
-        except (TypeError, ValueError):
-            continue
-        if seconds > 0:
-            return seconds
-    return 0
 
 
 def _audio_language_type_from_text(text: str) -> str:
@@ -2244,7 +2226,7 @@ def _forced_media_tool_messages(
         # Canvas prompt values are authoritative over the UI fallback. Edu's
         # legacy audio flow intentionally keeps its existing request behavior.
         if _request_app_scope() == "canvas":
-            duration_seconds = _duration_seconds_from_text(user_message)
+            duration_seconds = _video_duration_seconds_from_text(user_message)
             if duration_seconds:
                 args["duration_seconds"] = duration_seconds
         print(
@@ -2287,7 +2269,7 @@ def _forced_media_tool_messages(
     }
     if has_image_context and input_images:
         args["input_images"] = input_images
-    duration_seconds = _duration_seconds_from_text(user_message)
+    duration_seconds = _video_duration_seconds_from_text(user_message)
     if duration_seconds:
         args["duration_seconds"] = duration_seconds
     aspect_ratio = _aspect_ratio_from_text(user_message)
@@ -3727,7 +3709,9 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "input_images": input_images,
         "input_audio": canvas_input_audio,
         "reference_item_ids": list(req.reference_item_ids or []),
-        "duration_seconds": int(req.duration_seconds or 0),
+        # Canvas historically sends video duration as `duration`, while
+        # direct agent callers use `duration_seconds`. Preserve either form.
+        "duration_seconds": int(req.duration_seconds or req.duration or 0),
         # Canvas keeps audio duration independent from video duration. Edu
         # requests intentionally receive zero here and retain their legacy path.
         "audio_duration_seconds": int(req.audio_duration_seconds or 0) if _request_app_scope(req) == "canvas" else 0,

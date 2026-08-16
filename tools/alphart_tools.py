@@ -112,6 +112,36 @@ def _canvas_explicit_video_request() -> bool:
     )
 
 
+def _video_duration_seconds_from_text(text: Any) -> int:
+    """Extract an explicit video duration from the user's request."""
+    value = str(text or "")
+    for pattern in (
+        r"\b(\d{1,3})\s*(?:seconds?|secs?|s)\b",
+        r"\b(\d{1,3})\s*秒",
+    ):
+        match = re.search(pattern, value, re.IGNORECASE)
+        if not match:
+            continue
+        try:
+            seconds = int(match.group(1))
+        except (TypeError, ValueError):
+            continue
+        if seconds > 0:
+            return seconds
+    return 0
+
+
+def _positive_video_duration(value: Any) -> Optional[int]:
+    """Return a valid whole-second duration, treating zero as omitted."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
 def _strip_audio_preferences(text: str) -> str:
     return re.sub(r"\n*\s*<audio_preferences\b[^>]*/>\s*", "\n", str(text or ""), flags=re.I).strip()
 
@@ -1609,14 +1639,22 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     is_canvas = str(_ctx().get("app_scope") or "").strip().lower() == "canvas"
     if not str(args.get("prompt") or "").strip() and is_canvas:
         args["prompt"] = str(_ctx().get("canvas_prompt_context") or _ctx().get("user_message") or "").strip()
-    if is_canvas and _ctx().get("duration_seconds") and not args.get("duration") and not args.get("duration_seconds"):
-        args["duration"] = _ctx().get("duration_seconds")
     if is_canvas and _ctx().get("aspect_ratio") and not args.get("aspect_ratio"):
         args["aspect_ratio"] = _ctx().get("aspect_ratio")
     if is_canvas and _ctx().get("resolution") and not args.get("resolution"):
         args["resolution"] = _ctx().get("resolution")
-    if args.get("duration_seconds") and not args.get("duration"):
-        args["duration"] = args.get("duration_seconds")
+    # Tool arguments are the LLM's explicit decision. Canvas options are the
+    # fallback when the model omitted a duration, followed by the request text
+    # parser and the five-second default.
+    requested_duration = _positive_video_duration(args.get("duration"))
+    if requested_duration is None:
+        requested_duration = _positive_video_duration(args.get("duration_seconds"))
+    if requested_duration is None and is_canvas:
+        requested_duration = _positive_video_duration(_ctx().get("duration_seconds"))
+    if requested_duration is None:
+        request_text = _ctx().get("user_message") or _ctx().get("canvas_prompt_context")
+        requested_duration = _video_duration_seconds_from_text(request_text) or 5
+    args["duration"] = requested_duration
     if args.get("image_url") and not args.get("input_images"):
         args["input_images"] = [args.get("image_url")]
     if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
@@ -1817,6 +1855,11 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
                 f"{detail or response_preview or 'unknown relay error'}"
             )
         return _system_busy_tool_error()
+    if is_canvas:
+        # A successful relay submission completes this automatic graph's
+        # lifecycle. The next automatic request must create a fresh pair
+        # instead of updating the previous video node.
+        _ctx()["_canvas_generation_submitted"] = True
     selected_provider = decoded.get("provider") if isinstance(decoded, dict) else args.get("provider")
     selected_model = decoded.get("model") if isinstance(decoded, dict) else args.get("model")
     task_id = decoded.get("id") if isinstance(decoded, dict) else ""

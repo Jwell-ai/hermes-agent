@@ -18,6 +18,11 @@
   and log the underlying SDK error instead of silently returning `generate fail`.
 - Use Jwell's native Seedance v3 task endpoint for Dreamina/Doubao Seedance video generation;
   non-Seedance video providers keep the compatibility relay path.
+- Treat zero-valued Canvas video duration options as omitted so text extraction
+  and the five-second default remain effective; cover the Canvas relay fallback
+  in the focused tool tests.
+- Mark successful Canvas video submissions so the next automatic request creates
+  a fresh prompt/video graph instead of reusing the completed one.
 
 ## Unreleased - 2026-08-04
 
