@@ -3720,6 +3720,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "org_no": req.org_no,
         "auth_token": req.auth_token,
         "backend_url": _backend_url_from_req(req),
+        "application_backend_url": _application_backend_url_from_req(req),
         "app_scope": _request_app_scope(req),
         "user_message": user_message,
         "tool_list": req.tool_list,

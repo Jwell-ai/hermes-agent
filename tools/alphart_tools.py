@@ -336,7 +336,11 @@ def _log_model_value(value: Any) -> str:
 
 
 def _backend_url() -> str:
-    context_url = str(_ctx().get("backend_url") or "").strip()
+    context_url = str(
+        _ctx().get("application_backend_url")
+        or _ctx().get("backend_url")
+        or ""
+    ).strip()
     app_scope = str(_ctx().get("app_scope") or "edu").strip().lower()
     if app_scope == "canvas":
         value = str(os.getenv("ALPHART_CANVAS_BACKEND_URL") or os.getenv("CANVAS_BACKEND_URL") or context_url or "").strip()
@@ -1795,6 +1799,11 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
             )
             response_status = resp.status_code
     except Exception as exc:  # SDK provider errors are version-specific classes.
+        print(
+            f"[alphart-agent] Seedance video relay failed session_id={_ctx().get('session_id')} "
+            f"error_type={type(exc).__name__} error={exc}",
+            flush=True,
+        )
         if is_canvas:
             return _tool_error(f"Canvas video relay failed: {exc}")
         return _system_busy_tool_error()

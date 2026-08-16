@@ -6,10 +6,14 @@ from tools.lazy_deps import FeatureUnavailable
 from tools.seedance_sdk import _get_ark_class, _native_content, create_seedance_task
 
 
-def test_native_content_keeps_single_image_without_forced_role():
+def test_native_content_assigns_first_frame_role_to_single_image():
     assert _native_content("Animate this", ["https://example.test/a.png"], []) == [
         {"type": "text", "text": "Animate this"},
-        {"type": "image_url", "image_url": {"url": "https://example.test/a.png"}},
+        {
+            "type": "image_url",
+            "image_url": {"url": "https://example.test/a.png"},
+            "role": "first_frame",
+        },
     ]
 
 
@@ -22,6 +26,18 @@ def test_native_content_assigns_reference_role_for_multiple_images():
     )
     assert content[1]["role"] == "first_frame"
     assert content[2]["role"] == "reference_image"
+
+
+def test_native_content_keeps_unlabelled_multiple_images_as_references():
+    content = _native_content(
+        "Use both as visual references",
+        ["https://example.test/a.png", "https://example.test/b.png"],
+        [],
+    )
+    assert [item["role"] for item in content[1:]] == [
+        "reference_image",
+        "reference_image",
+    ]
 
 
 def test_native_content_assigns_soundtrack_role_for_audio():

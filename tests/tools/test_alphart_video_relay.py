@@ -53,7 +53,8 @@ def test_seedance_video_relay_uses_native_jwell_route():
     with alphart_context(
         {
             "app_scope": "edu",
-            "backend_url": "http://edu-backend",
+            "backend_url": "http://jwell-relay",
+            "application_backend_url": "http://edu-backend",
         }
     ), patch.dict(
         os.environ,

@@ -12,6 +12,10 @@
 - Include the Jwell app secret on Edu chat result and event callbacks routed
   through the shared internal relay.
 - Keep Jwell's app secret off callbacks sent to the application backend.
+- Keep Edu task-registration and media-bridge API calls on the application
+  backend even when generation traffic uses Jwell's relay address.
+- Send a valid native Seedance role for unlabelled image-to-video references
+  and log the underlying SDK error instead of silently returning `generate fail`.
 - Use Jwell's native Seedance v3 task endpoint for Dreamina/Doubao Seedance video generation;
   non-Seedance video providers keep the compatibility relay path.
 

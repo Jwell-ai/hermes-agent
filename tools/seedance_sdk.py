@@ -74,11 +74,12 @@ def _native_content(
     image_role_values = list(image_roles)
     for index, url in enumerate(image_values):
         role = image_role_values[index].strip() if index < len(image_role_values) else ""
-        # Ark accepts a single image without a role. Native content with more
-        # than one image must identify each image so the upstream can preserve
-        # first/last/reference-frame semantics.
-        if len(image_values) > 1 and not role:
-            role = "reference_image"
+        # Ark's native content schema requires a role for image inputs. A
+        # single unlabelled image is the conventional image-to-video first
+        # frame; additional unlabelled images are references rather than frame
+        # boundaries. Explicit roles from the request remain authoritative.
+        if not role:
+            role = "first_frame" if len(image_values) == 1 else "reference_image"
         content.append(_content_part("image_url", url, role))
 
     audio_role_values = list(audio_roles)
