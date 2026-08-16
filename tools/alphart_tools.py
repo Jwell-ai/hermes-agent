@@ -588,6 +588,15 @@ def _import_jwell_media(asset: Dict[str, Any], media_type: str, object_name: str
         raise RuntimeError("Edu media bridge returned no stored asset")
     merged = dict(asset)
     merged.update(stored)
+    # The bridge returns the persistent URL as `url`, while the provider
+    # response may still carry the original data URI under its media alias.
+    # Keep every alias pointed at the stored object so a large base64 payload
+    # cannot escape in the agent response after a successful import.
+    stored_url = str(stored.get("url") or "").strip()
+    if not stored_url or stored_url.startswith("data:"):
+        raise RuntimeError("Edu media bridge returned no persistent media URL")
+    merged["url"] = stored_url
+    merged[f"{media_type}_url"] = stored_url
     merged["provider"] = asset.get("provider") or merged.get("provider")
     merged["model"] = asset.get("model") or merged.get("model")
     merged["_credit_settled"] = True
@@ -898,7 +907,7 @@ def _generate_chunked_audio(
         "input": text,
         "script": text,
         "url": combined_asset.get("url"),
-        "audio_url": combined_asset.get("audio_url") or combined_asset.get("url"),
+        "audio_url": combined_asset.get("url") or combined_asset.get("audio_url"),
         "mime_type": combined_asset.get("mime_type") or "audio/wav",
         "duration_seconds": duration,
         "filename": combined_asset.get("filename"),

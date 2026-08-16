@@ -4,12 +4,13 @@ import base64
 import io
 import json
 import wave
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import requests
 
 from tools.alphart_tools import (
     _generate_chunked_audio,
+    _import_jwell_media,
     _split_audio_script,
 )
 
@@ -153,7 +154,6 @@ def test_chunked_audio_retries_final_import_with_stable_object_name():
         return {
             **asset,
             "url": "https://storage.example/audio.wav",
-            "audio_url": "https://storage.example/audio.wav",
             "s3_object_name": "org/audio.wav",
             "mime_type": "audio/wav",
         }
@@ -162,7 +162,10 @@ def test_chunked_audio_retries_final_import_with_stable_object_name():
         "tools.alphart_tools._handle_alphart_generate_audio",
         return_value=json.dumps({
             "status": "success",
-            "result": {"url": f"data:audio/wav;base64,{wav}"},
+            "result": {
+                "url": f"data:audio/wav;base64,{wav}",
+                "audio_url": f"data:audio/wav;base64,{wav}",
+            },
         }),
     ), patch("tools.alphart_tools._jwell_relay_enabled", return_value=True), \
         patch("tools.alphart_tools._import_jwell_media", side_effect=fake_import), \
@@ -180,3 +183,31 @@ def test_chunked_audio_retries_final_import_with_stable_object_name():
     assert imports[0][2] == imports[1][2]
     assert imports[0][2].startswith("audio-")
     assert imports[0][2].endswith(".wav")
+    assert result["result"]["url"] == "https://storage.example/audio.wav"
+    assert result["result"]["audio_url"] == "https://storage.example/audio.wav"
+    assert not result["result"]["audio_url"].startswith("data:")
+
+
+def test_import_jwell_media_replaces_provider_audio_alias_with_persistent_url():
+    response = MagicMock()
+    response.json.return_value = {
+        "data": {
+            "url": "https://storage.example/audio.wav",
+            "s3_object_name": "org/audio.wav",
+        },
+    }
+
+    with patch("tools.alphart_tools._jwell_relay_enabled", return_value=True), \
+        patch("tools.alphart_tools._internal_api_url", return_value="http://edu/internal/import"), \
+        patch("tools.alphart_tools.requests.post", return_value=response):
+        result = _import_jwell_media(
+            {
+                "url": "data:audio/wav;base64,AAAA",
+                "audio_url": "data:audio/wav;base64,AAAA",
+                "mime_type": "audio/wav",
+            },
+            "audio",
+        )
+
+    assert result["url"] == "https://storage.example/audio.wav"
+    assert result["audio_url"] == "https://storage.example/audio.wav"
