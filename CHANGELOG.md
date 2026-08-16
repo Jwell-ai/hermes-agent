@@ -7,6 +7,8 @@
   idempotency.
 - Bake the Seedance SDK into the Alphart agent image, preserve dependency
   installation diagnostics, and default unlabelled audio inputs to soundtrack.
+- Use the already-installed build toolchain for the editable Alphart image
+  install so the Docker build does not require an isolated PyPI download.
 - Use Jwell's native Seedance v3 task endpoint for Dreamina/Doubao Seedance video generation;
   non-Seedance video providers keep the compatibility relay path.
 
