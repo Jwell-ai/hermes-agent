@@ -393,8 +393,25 @@ def _jwell_relay_app_secret() -> str:
     return str(os.getenv("JWELL_APP_SECRET") or "").strip()
 
 
-def _relay_url(path: str) -> str:
+def _is_seedance_video_model(provider: Any, model: Any) -> bool:
+    provider = str(provider or "").strip().lower()
+    model = str(model or "").strip().lower()
+    return provider == "seedance" or (
+        provider == "byteplus"
+        and (
+            model == "seedance"
+            or model.startswith("seedance-")
+            or model.startswith("dreamina-seedance-")
+            or model.startswith("doubao-seedance-")
+            or model.startswith("bytedance-seedance-")
+        )
+    )
+
+
+def _relay_url(path: str, *, provider: Any = "", model: Any = "") -> str:
     if _jwell_relay_enabled():
+        if path.strip("/").lower() == "videos" and _is_seedance_video_model(provider, model):
+            return f"{_jwell_relay_base_url()}/internal/v3/contents/generations/tasks"
         return f"{_jwell_relay_base_url()}/internal/v1/{path.lstrip('/')}"
     return _internal_relay_url(path)
 
@@ -468,6 +485,18 @@ def _relay_headers() -> Dict[str, str]:
     if _jwell_relay_enabled():
         headers["X-App-Secret"] = _jwell_relay_app_secret()
     return headers
+
+
+def _seedance_media_roles(references: Any) -> list[str]:
+    if not isinstance(references, list):
+        references = [references] if references else []
+    roles: list[str] = []
+    for reference in references:
+        if isinstance(reference, dict):
+            roles.append(str(reference.get("role") or "").strip())
+        else:
+            roles.append("")
+    return roles
 
 
 def _resolve_jwell_media_urls(media_type: str, references: Any) -> list[str]:
@@ -1667,7 +1696,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         if graph_error:
             return _tool_error(graph_error)
         args["canvas_item_id"] = canvas_item_id
-    relay_url = _relay_url("videos")
+    relay_url = _relay_url("videos", provider=args.get("provider"), model=args.get("model"))
     if not relay_url:
         return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
     payload = {
@@ -1717,30 +1746,65 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         flush=True,
     )
     try:
-        resp = requests.post(
-            relay_url,
-            json=payload,
-            headers=_relay_headers(),
-            timeout=_backend_tool_timeout(),
-        )
-    except requests.RequestException as exc:
-        return _tool_error(f"Alphart relay request failed: {exc}")
-    try:
-        decoded = resp.json()
-    except ValueError:
-        decoded = {"raw": resp.text}
-    response_preview = (resp.text or "").replace("\n", " ")[:500]
-    print(
-        f"[alphart-agent] internal relay video response status={resp.status_code} bytes={len(resp.text)} body={response_preview}",
-        flush=True,
-    )
-    if resp.status_code < 200 or resp.status_code >= 300:
+        if _jwell_relay_enabled() and _is_seedance_video_model(payload.get("provider"), payload.get("model")):
+            from tools.seedance_sdk import create_seedance_task
+
+            sdk_headers = _relay_headers()
+            tool_call_id = str(payload.get("tool_call_id") or "").strip()
+            if tool_call_id:
+                sdk_headers["Idempotency-Key"] = tool_call_id
+            image_references = args.get("input_images") or []
+            audio_references = args.get("input_audio") or []
+            decoded = create_seedance_task(
+                base_url=_jwell_relay_base_url() + "/internal/v3",
+                headers=sdk_headers,
+                model=str(payload.get("model") or "").strip(),
+                prompt=str(payload.get("prompt") or ""),
+                image_urls=payload.get("image") or [],
+                audio_urls=payload.get("audio") or [],
+                image_roles=_seedance_media_roles(image_references),
+                audio_roles=_seedance_media_roles(audio_references),
+                ratio=str(payload.get("aspect_ratio") or "").strip(),
+                resolution=str(payload.get("resolution") or "").strip(),
+                duration=int(payload["duration"]) if payload.get("duration") is not None else None,
+                generate_audio=bool(payload.get("generate_audio")),
+                timeout=_backend_tool_timeout(),
+            )
+            response_status = 202
+            response_preview = json.dumps(decoded, ensure_ascii=False)[:500]
+            print(
+                f"[alphart-agent] official Ark SDK relay response status={response_status} "
+                f"body={response_preview}",
+                flush=True,
+            )
+        else:
+            resp = requests.post(
+                relay_url,
+                json=payload,
+                headers=_relay_headers(),
+                timeout=_backend_tool_timeout(),
+            )
+            try:
+                decoded = resp.json()
+            except ValueError:
+                decoded = {"raw": resp.text}
+            response_preview = (resp.text or "").replace("\n", " ")[:500]
+            print(
+                f"[alphart-agent] internal relay video response status={resp.status_code} bytes={len(resp.text)} body={response_preview}",
+                flush=True,
+            )
+            response_status = resp.status_code
+    except Exception as exc:  # SDK provider errors are version-specific classes.
+        if is_canvas:
+            return _tool_error(f"Canvas video relay failed: {exc}")
+        return _system_busy_tool_error()
+    if response_status < 200 or response_status >= 300:
         if is_canvas:
             detail = ""
             if isinstance(decoded, dict):
                 detail = str(decoded.get("detail") or decoded.get("message") or decoded.get("error") or "").strip()
             return _tool_error(
-                f"Canvas video relay failed (HTTP {resp.status_code}): "
+                f"Canvas video relay failed (HTTP {response_status}): "
                 f"{detail or response_preview or 'unknown relay error'}"
             )
         return _system_busy_tool_error()

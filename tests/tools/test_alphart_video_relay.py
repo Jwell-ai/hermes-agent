@@ -38,6 +38,67 @@ def test_edu_video_relay_does_not_send_canvas_caption_script():
     assert "caption_script" not in captured["json"]
 
 
+def test_seedance_video_relay_uses_native_jwell_route():
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+            raise_for_status=lambda: None,
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "edu",
+            "backend_url": "http://edu-backend",
+        }
+    ), patch.dict(
+        os.environ,
+        {"JWELL_SERVICE_GRPC_ADDRS": "http://jwell-relay", "JWELL_APP_SECRET": "secret"},
+    ), patch("tools.seedance_sdk.create_seedance_task", return_value={"id": "task-1", "status": "queued"}) as sdk_call, patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "Animate the keyframe", "provider": "byteplus", "model": "dreamina-seedance-2-0"},
+                tool_call_id="call-seedance-1",
+            )
+        )
+
+    assert result["status"] == "success"
+    assert sdk_call.call_args.kwargs["base_url"] == "http://jwell-relay/internal/v3"
+    assert sdk_call.call_args.kwargs["headers"]["Idempotency-Key"] == "call-seedance-1"
+    assert captured["url"] == "http://edu-backend/internal/api/v1/agent/jwell-video-tasks"
+
+
+def test_doubao_seedance_video_relay_uses_native_jwell_route():
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+            raise_for_status=lambda: None,
+        )
+
+    with alphart_context({"app_scope": "edu", "backend_url": "http://edu-backend"}), patch.dict(
+        os.environ,
+        {"JWELL_SERVICE_GRPC_ADDRS": "http://jwell-relay", "JWELL_APP_SECRET": "secret"},
+    ), patch("tools.seedance_sdk.create_seedance_task", return_value={"id": "task-1", "status": "queued"}) as sdk_call, patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "Animate the keyframe", "provider": "byteplus", "model": "doubao-seedance-2-0-260128"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert sdk_call.call_args.kwargs["base_url"] == "http://jwell-relay/internal/v3"
+    assert captured["url"] == "http://edu-backend/internal/api/v1/agent/jwell-video-tasks"
+
+
 def test_canvas_video_relay_keeps_canvas_caption_script():
     captured = {}
 

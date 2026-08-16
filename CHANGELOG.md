@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased - 2026-08-15
+
+- Use the official Volcengine Ark Python SDK for Seedance task creation while
+  routing through Jwell's internal relay, preserving relay-owned billing and
+  idempotency.
+- Bake the Seedance SDK into the Alphart agent image, preserve dependency
+  installation diagnostics, and default unlabelled audio inputs to soundtrack.
+- Use Jwell's native Seedance v3 task endpoint for Dreamina/Doubao Seedance video generation;
+  non-Seedance video providers keep the compatibility relay path.
+
 ## Unreleased - 2026-08-04
 
 - Kept Jwell provider-relay billing ownership Edu-scoped; Canvas provider and

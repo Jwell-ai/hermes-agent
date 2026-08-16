@@ -1,0 +1,145 @@
+"""Official Volcengine Ark SDK bridge for Seedance task requests.
+
+The SDK is deliberately pointed at Jwell's internal relay instead of the
+upstream Ark endpoint. Jwell remains responsible for model selection,
+identity, preflight credits, settlement, and idempotency.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Iterable, Mapping
+
+
+def _get_ark_class() -> Any:
+    """Import the Ark SDK on first Seedance use, installing its optional extra."""
+    try:
+        from tools.lazy_deps import FeatureUnavailable, ensure
+
+        try:
+            ensure("video.seedance", prompt=False)
+        except FeatureUnavailable as exc:
+            raise RuntimeError(f"The official Volcengine Ark SDK is unavailable: {exc}") from exc
+    except ImportError:
+        # Keep the import path usable in minimal test environments where the
+        # lazy dependency helper is not packaged.
+        pass
+
+    try:
+        from volcenginesdkarkruntime import Ark
+    except ImportError as exc:
+        raise RuntimeError(
+            "The official Volcengine Ark SDK is unavailable; install "
+            "volcengine-python-sdk[ark]."
+        ) from exc
+    return Ark
+
+
+def _model_to_dict(value: Any) -> dict[str, Any]:
+    """Convert an Ark response model without depending on its Pydantic version."""
+    if hasattr(value, "to_dict"):
+        converted = value.to_dict(use_api_names=True, exclude_unset=False)
+    elif hasattr(value, "model_dump"):
+        converted = value.model_dump(by_alias=True, exclude_unset=False)
+    elif isinstance(value, Mapping):
+        converted = dict(value)
+    else:
+        converted = {}
+    return dict(converted) if isinstance(converted, Mapping) else {}
+
+
+def _content_part(kind: str, url: str, role: str = "") -> dict[str, Any]:
+    if kind == "image_url":
+        part: dict[str, Any] = {"type": kind, "image_url": {"url": url}}
+    else:
+        part = {"type": kind, "audio_url": {"url": url}}
+    if role:
+        part["role"] = role
+    return part
+
+
+def _native_content(
+    prompt: str,
+    image_urls: Iterable[str],
+    audio_urls: Iterable[str],
+    image_roles: Iterable[str] = (),
+    audio_roles: Iterable[str] = (),
+) -> list[dict[str, Any]]:
+    """Build the native Ark content array used by Seedance v3."""
+    content: list[dict[str, Any]] = []
+    image_values = [str(url).strip() for url in image_urls if str(url).strip()]
+    audio_values = [str(url).strip() for url in audio_urls if str(url).strip()]
+    if prompt.strip():
+        content.append({"type": "text", "text": prompt})
+
+    image_role_values = list(image_roles)
+    for index, url in enumerate(image_values):
+        role = image_role_values[index].strip() if index < len(image_role_values) else ""
+        # Ark accepts a single image without a role. Native content with more
+        # than one image must identify each image so the upstream can preserve
+        # first/last/reference-frame semantics.
+        if len(image_values) > 1 and not role:
+            role = "reference_image"
+        content.append(_content_part("image_url", url, role))
+
+    audio_role_values = list(audio_roles)
+    for index, url in enumerate(audio_values):
+        role = (audio_role_values[index].strip() if index < len(audio_role_values) else "") or "soundtrack"
+        content.append(_content_part("audio_url", url, role))
+    return content
+
+
+def create_seedance_task(
+    *,
+    base_url: str,
+    headers: Mapping[str, str],
+    model: str,
+    prompt: str,
+    image_urls: Iterable[str] = (),
+    audio_urls: Iterable[str] = (),
+    image_roles: Iterable[str] = (),
+    audio_roles: Iterable[str] = (),
+    ratio: str = "",
+    resolution: str = "",
+    duration: int | None = None,
+    generate_audio: bool | None = None,
+    timeout: float = 900,
+) -> dict[str, Any]:
+    """Create one task through Ark while sending it to Jwell's relay."""
+    import httpx
+
+    Ark = _get_ark_class()
+    request_headers = dict(headers)
+    content = _native_content(
+        prompt,
+        tuple(str(url).strip() for url in image_urls if str(url).strip()),
+        tuple(str(url).strip() for url in audio_urls if str(url).strip()),
+        image_roles,
+        audio_roles,
+    )
+    if not content:
+        raise ValueError("Seedance video request requires prompt or media content")
+
+    client = httpx.Client(headers=request_headers, timeout=timeout)
+    try:
+        with Ark(
+            base_url=base_url.rstrip("/") + "/",
+            api_key="internal-relay",
+            timeout=timeout,
+            max_retries=0,
+            http_client=client,
+        ) as ark:
+            response = ark.content_generation.tasks.create(
+                model=model,
+                content=content,
+                ratio=ratio or None,
+                resolution=resolution or None,
+                duration=duration,
+                generate_audio=generate_audio,
+                timeout=timeout,
+            )
+            return _model_to_dict(response)
+    finally:
+        # Ark closes the client on normal exit; this also covers constructor
+        # failures before the context manager is entered.
+        if not client.is_closed:
+            client.close()

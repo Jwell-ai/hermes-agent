@@ -74,6 +74,8 @@ dependencies = [
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]
+# Official Volcengine Ark Runtime SDK — only needed for Seedance video tasks.
+seedance = ["volcengine-python-sdk[ark]>=5.0.38,<6"]
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]
