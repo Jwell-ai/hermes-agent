@@ -2973,6 +2973,15 @@ def _callback_service_token() -> str:
     )
 
 
+def _callback_headers(req: AlphartEduChatRequest) -> Dict[str, str]:
+    headers = _internal_relay_headers(req)
+    token = _callback_service_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        headers["X-Hermes-Agent-Token"] = token
+    return headers
+
+
 def _alphart_enabled_toolsets(req: AlphartEduChatRequest) -> List[str]:
     if req.script_only:
         # Canvas uses this mode to draft an Audio node's spoken script. Media tools
@@ -2996,7 +3005,6 @@ def _post_chat_result_callback(req: AlphartEduChatRequest, response: Dict[str, A
             flush=True,
         )
         return
-    token = _callback_service_token()
     payload = dict(response)
     payload.update(
         {
@@ -3010,10 +3018,7 @@ def _post_chat_result_callback(req: AlphartEduChatRequest, response: Dict[str, A
         resp = requests.post(
             f"{backend_url}/internal/api/v1/agent/chat-results",
             json=payload,
-            headers={
-                **({"Authorization": f"Bearer {token}"} if token else {}),
-                **({"X-Hermes-Agent-Token": token} if token else {}),
-            },
+            headers=_callback_headers(req),
             timeout=int(os.getenv("ALPHART_EDU_BACKEND_CALLBACK_TIMEOUT_SECONDS") or os.getenv("CANVAS_BACKEND_CALLBACK_TIMEOUT_SECONDS", "30")),
         )
     except requests.RequestException as exc:
@@ -3033,7 +3038,6 @@ def _post_chat_event_callback(req: AlphartEduChatRequest, event: Dict[str, Any])
     backend_url = _callback_backend_url(req)
     if not backend_url or not req.session_id or not isinstance(event, dict):
         return
-    token = _callback_service_token()
     clean_event = dict(event)
     clean_event.pop("_live_sent", None)
     try:
@@ -3045,10 +3049,7 @@ def _post_chat_event_callback(req: AlphartEduChatRequest, event: Dict[str, Any])
                 "user_id": req.user_id,
                 "event": clean_event,
             },
-            headers={
-                **({"Authorization": f"Bearer {token}"} if token else {}),
-                **({"X-Hermes-Agent-Token": token} if token else {}),
-            },
+            headers=_callback_headers(req),
             timeout=3,
         )
     except requests.RequestException:

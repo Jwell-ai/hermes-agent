@@ -1,6 +1,9 @@
 """Focused tests for shared Alphart agent service helpers."""
 
-from alphart_agent_service import AlphartEduChatRequest, _alphart_enabled_toolsets, _canvas_video_recovery_needed, _canvas_workflow_item_type, _media_intent, _provider_config_for_domain, _uses_jwell_internal_relay
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from alphart_agent_service import AlphartEduChatRequest, _alphart_enabled_toolsets, _canvas_video_recovery_needed, _canvas_workflow_item_type, _media_intent, _post_chat_event_callback, _post_chat_result_callback, _provider_config_for_domain, _uses_jwell_internal_relay
 from toolsets import resolve_toolset
 
 
@@ -46,6 +49,21 @@ def test_jwell_billing_ownership_stays_edu_scoped(monkeypatch):
 
     assert _uses_jwell_internal_relay(AlphartEduChatRequest(app_scope="edu")) is True
     assert _uses_jwell_internal_relay(AlphartEduChatRequest(app_scope="canvas")) is False
+
+
+def test_jwell_callbacks_include_app_secret(monkeypatch):
+    monkeypatch.setenv("JWELL_SERVICE_GRPC_ADDR", "http://jwell.test")
+    monkeypatch.setenv("JWELL_APP_SECRET", "secret")
+    request = AlphartEduChatRequest(app_scope="edu", session_id="session-1")
+    response = SimpleNamespace(status_code=200, text="{}")
+
+    with patch("alphart_agent_service.requests.post", return_value=response) as post:
+        _post_chat_result_callback(request, {"final_response": "done"})
+        _post_chat_event_callback(request, {"type": "progress"})
+
+    assert post.call_count == 2
+    for call in post.call_args_list:
+        assert call.kwargs["headers"]["X-App-Secret"] == "secret"
 
 
 def test_edu_toolset_does_not_advertise_canvas_graph_mutations():
