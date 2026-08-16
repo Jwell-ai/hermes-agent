@@ -13,10 +13,15 @@ import contextlib
 import contextvars
 import ast
 import base64
+import binascii
+import hashlib
+import io
 import json
 import mimetypes
 import os
 import re
+import uuid
+import wave
 import tempfile
 import time
 from pathlib import Path
@@ -554,7 +559,7 @@ def _resolve_jwell_media_urls(media_type: str, references: Any) -> list[str]:
     return data
 
 
-def _import_jwell_media(asset: Dict[str, Any], media_type: str) -> Dict[str, Any]:
+def _import_jwell_media(asset: Dict[str, Any], media_type: str, object_name: str = "") -> Dict[str, Any]:
     if not _jwell_relay_enabled():
         return asset
     media_url = str(asset.get("url") or asset.get(f"{media_type}_url") or "").strip()
@@ -563,14 +568,17 @@ def _import_jwell_media(asset: Dict[str, Any], media_type: str) -> Dict[str, Any
     url = _internal_api_url("agent/relay-media-import")
     if not url:
         raise RuntimeError("ALPHART_EDU_BACKEND_URL is not configured")
+    request_payload = {
+        "url": media_url,
+        "mime_type": asset.get("mime_type") or "",
+        "media_type": media_type,
+        "canvas_id": _ctx().get("canvas_id") or "",
+    }
+    if str(object_name or "").strip():
+        request_payload["object_name"] = str(object_name).strip()
     response = requests.post(
         url,
-        json={
-            "url": media_url,
-            "mime_type": asset.get("mime_type") or "",
-            "media_type": media_type,
-            "canvas_id": _ctx().get("canvas_id") or "",
-        },
+        json=request_payload,
         headers=_internal_relay_headers(),
         timeout=_backend_tool_timeout(),
     )
@@ -584,6 +592,323 @@ def _import_jwell_media(asset: Dict[str, Any], media_type: str) -> Dict[str, Any
     merged["model"] = asset.get("model") or merged.get("model")
     merged["_credit_settled"] = True
     return merged
+
+
+_AUDIO_CHUNK_ENGLISH_WORDS = 75
+_AUDIO_CHUNK_CJK_CHARS = 180
+_AUDIO_CHUNK_PAUSE_SECONDS = 0.35
+
+
+def _audio_has_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]", text or ""))
+
+
+def _audio_text_units(text: str) -> int:
+    cjk_count = len(re.findall(r"[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]", text or ""))
+    non_cjk = re.sub(r"[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]", " ", text or "")
+    word_count = len(re.findall(r"\b[\w]+(?:['’\-][\w]+)*\b", non_cjk, flags=re.UNICODE))
+    return cjk_count + word_count
+
+
+def _audio_chunk_limit(text: str, language_type: str) -> int:
+    language = str(language_type or "").strip().lower()
+    if language in {"cantonese", "mandarin", "chinese", "zh", "yue"} or _audio_has_cjk(text):
+        return _AUDIO_CHUNK_CJK_CHARS
+    return _AUDIO_CHUNK_ENGLISH_WORDS
+
+
+def _split_audio_long_segment(segment: str, limit: int) -> List[str]:
+    segment = str(segment or "").strip()
+    if not segment:
+        return []
+    if _audio_text_units(segment) <= limit:
+        return [segment]
+    if _audio_has_cjk(segment):
+        runes = list(segment)
+        return ["".join(runes[index:index + limit]).strip() for index in range(0, len(runes), limit)]
+    words = segment.split()
+    chunks: List[str] = []
+    current: List[str] = []
+    units = 0
+    for word in words:
+        word_units = _audio_text_units(word)
+        if current and units + word_units > limit:
+            chunks.append(" ".join(current).strip())
+            current = []
+            units = 0
+        current.append(word)
+        units += word_units
+    if current:
+        chunks.append(" ".join(current).strip())
+    return chunks
+
+
+def _split_audio_script(text: str, language_type: str = "") -> List[str]:
+    """Split spoken text at natural punctuation into approximately 30s chunks."""
+    text = str(text or "").strip()
+    if not text:
+        return []
+    limit = _audio_chunk_limit(text, language_type)
+    segments: List[str] = []
+    current: List[str] = []
+    characters = list(text)
+    for index, character in enumerate(characters):
+        current.append(character)
+        next_character = characters[index + 1] if index + 1 < len(characters) else ""
+        is_decimal = character == "." and current and next_character.isdigit() and current[-2:-1] and current[-2].isdigit()
+        if character in "。！？；!?;" or (character == "." and not is_decimal) or character == "\n":
+            if character == "\n" and next_character == "\n":
+                segments.append("".join(current).strip())
+                current = []
+            elif character != "\n":
+                segments.append("".join(current).strip())
+                current = []
+    if current:
+        segments.append("".join(current).strip())
+
+    chunks: List[str] = []
+    pending: List[str] = []
+    pending_units = 0
+    for segment in segments:
+        if not segment:
+            continue
+        for part in _split_audio_long_segment(segment, limit):
+            part_units = _audio_text_units(part)
+            if pending and pending_units + part_units > limit:
+                chunks.append(" ".join(pending).strip())
+                pending = []
+                pending_units = 0
+            pending.append(part)
+            pending_units += part_units
+    if pending:
+        chunks.append(" ".join(pending).strip())
+    return [chunk for chunk in chunks if chunk]
+
+
+def _audio_asset_bytes(asset: Dict[str, Any]) -> bytes:
+    media_url = str(asset.get("url") or asset.get("audio_url") or "").strip()
+    if not media_url:
+        raise RuntimeError("audio chunk returned no playable URL")
+    if media_url.startswith("data:"):
+        header, encoded = media_url.split(",", 1)
+        if ";base64" not in header.lower():
+            raise RuntimeError("audio chunk data URL is not base64 encoded")
+        try:
+            return base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise RuntimeError(f"audio chunk data URL is invalid: {exc}") from exc
+    response = requests.get(media_url, timeout=_backend_tool_timeout())
+    response.raise_for_status()
+    return response.content
+
+
+def _concat_audio_wav_chunks(chunks: List[bytes]) -> Tuple[bytes, float]:
+    if not chunks:
+        raise RuntimeError("no audio chunks to concatenate")
+    if len(chunks) == 1:
+        with wave.open(io.BytesIO(chunks[0]), "rb") as source:
+            return chunks[0], source.getnframes() / max(source.getframerate(), 1)
+
+    output = io.BytesIO()
+    output_wave = None
+    duration = 0.0
+    params = None
+    try:
+        for index, chunk in enumerate(chunks):
+            with wave.open(io.BytesIO(chunk), "rb") as source:
+                current_params = (source.getnchannels(), source.getsampwidth(), source.getframerate(), source.getcomptype())
+                if params is None:
+                    params = current_params
+                    output_wave = wave.open(output, "wb")
+                    output_wave.setnchannels(params[0])
+                    output_wave.setsampwidth(params[1])
+                    output_wave.setframerate(params[2])
+                    output_wave.setcomptype("NONE", "not compressed")
+                elif current_params != params:
+                    raise RuntimeError("audio chunks use incompatible WAV formats")
+                if index > 0:
+                    silence_frames = int(params[2] * _AUDIO_CHUNK_PAUSE_SECONDS)
+                    output_wave.writeframes(b"\x00" * silence_frames * params[0] * params[1])
+                    duration += _AUDIO_CHUNK_PAUSE_SECONDS
+                frames = source.getnframes()
+                output_wave.writeframes(source.readframes(frames))
+                duration += frames / max(params[2], 1)
+    finally:
+        if output_wave is not None:
+            output_wave.close()
+    return output.getvalue(), duration
+
+
+def _audio_result_payload(result: str) -> Dict[str, Any]:
+    try:
+        decoded = json.loads(result)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(decoded, dict) or decoded.get("success") is False:
+        return {}
+    payload = decoded.get("result")
+    return payload if isinstance(payload, dict) else decoded
+
+
+def _audio_result_success(result: str) -> bool:
+    try:
+        decoded = json.loads(result)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(decoded, dict) or decoded.get("success") is False:
+        return False
+    if str(decoded.get("status") or "").strip().lower() in {"failed", "error", "failure"}:
+        return False
+    payload = decoded.get("result")
+    if isinstance(payload, dict) and str(payload.get("status") or "").strip().lower() in {"failed", "error", "failure", "partial"}:
+        return False
+    return bool(_audio_result_payload(result))
+
+
+def _audio_usage_sum(total: Dict[str, Any], usage: Any) -> None:
+    if not isinstance(usage, dict):
+        return
+    for key, value in usage.items():
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            total[key] = total.get(key, 0) + value
+
+
+def _stable_audio_object_name(base_call_id: str) -> str:
+    digest = hashlib.sha256(str(base_call_id or "").strip().encode("utf-8")).hexdigest()
+    return f"audio-{digest}.wav"
+
+
+def _generate_chunked_audio(
+    args: Dict[str, Any],
+    text: str,
+    chunks: List[str],
+    tool_call_id: str = "",
+) -> str:
+    base_call_id = str(tool_call_id or args.get("tool_call_id") or uuid.uuid4()).strip()
+    generated_assets: List[Dict[str, Any]] = []
+    audio_chunks: List[bytes] = []
+    total_usage: Dict[str, Any] = {}
+    provider = str(args.get("provider") or "").strip()
+    model = str(args.get("model") or "").strip()
+    retries = max(1, int(os.getenv("ALPHART_AUDIO_RELAY_RETRY_ATTEMPTS", "3") or "3"))
+    for index, chunk in enumerate(chunks, start=1):
+        chunk_args = dict(args)
+        chunk_args["input"] = chunk
+        chunk_args["tool_call_id"] = f"{base_call_id}:chunk:{index}"
+        chunk_args["response_format"] = "wav"
+        chunk_args["_audio_chunk"] = True
+        chunk_args["_skip_media_import"] = True
+        result = ""
+        for attempt in range(1, retries + 1):
+            result = _handle_alphart_generate_audio(chunk_args)
+            if _audio_result_success(result):
+                break
+            print(
+                f"[alphart-agent] audio chunk failed chunk={index}/{len(chunks)} "
+                f"attempt={attempt}/{retries}",
+                flush=True,
+            )
+            if attempt < retries:
+                time.sleep(min(2 * attempt, 5))
+        if not _audio_result_success(result):
+            return json.dumps({
+                "status": "failed",
+                "result": {
+                    "type": "generate_audio_result",
+                    "status": "partial",
+                    "message": "generate fail",
+                    "provider": provider,
+                    "model": model,
+                    "input": text,
+                    "script": text,
+                    "chunk_count": len(chunks),
+                    "generated_chunk_count": len(audio_chunks),
+                    "failed_chunk_index": index,
+                    "usage": total_usage,
+                },
+            }, ensure_ascii=False)
+        asset = _audio_result_payload(result)
+        _audio_usage_sum(total_usage, asset.get("usage"))
+        try:
+            audio_chunks.append(_audio_asset_bytes(asset))
+        except (requests.RequestException, RuntimeError) as exc:
+            return json.dumps({
+                "status": "failed",
+                "result": {
+                    "type": "generate_audio_result",
+                    "status": "partial",
+                    "message": str(exc),
+                    "provider": provider,
+                    "model": model,
+                    "input": text,
+                    "script": text,
+                    "chunk_count": len(chunks),
+                    "generated_chunk_count": len(audio_chunks),
+                    "failed_chunk_index": index,
+                    "usage": total_usage,
+                },
+            }, ensure_ascii=False)
+        generated_assets.append(asset)
+    try:
+        combined, duration = _concat_audio_wav_chunks(audio_chunks)
+    except (RuntimeError, wave.Error) as exc:
+        return _tool_error(f"Unable to concatenate audio chunks: {exc}")
+    combined_asset: Dict[str, Any] = {
+        "url": "data:audio/wav;base64," + base64.b64encode(combined).decode("ascii"),
+        "audio_url": "data:audio/wav;base64," + base64.b64encode(combined).decode("ascii"),
+        "mime_type": "audio/wav",
+        "provider": provider,
+        "model": model,
+    }
+    if _jwell_relay_enabled():
+        object_name = _stable_audio_object_name(base_call_id)
+        import_attempts = 3
+        last_import_error: Optional[BaseException] = None
+        for attempt in range(1, import_attempts + 1):
+            try:
+                combined_asset = _import_jwell_media(combined_asset, "audio", object_name=object_name)
+                last_import_error = None
+                break
+            except (requests.RequestException, RuntimeError) as exc:
+                last_import_error = exc
+                if attempt < import_attempts:
+                    time.sleep(min(2 * attempt, 5))
+        if last_import_error is not None:
+            return json.dumps({
+                "status": "failed",
+                "result": {
+                    "type": "generate_audio_result",
+                    "status": "partial",
+                    "message": f"Unable to store generated audio: {last_import_error}",
+                    "provider": provider,
+                    "model": model,
+                    "input": text,
+                    "script": text,
+                    "chunk_count": len(chunks),
+                    "generated_chunk_count": len(generated_assets),
+                    "failed_stage": "media_import",
+                    "usage": total_usage,
+                },
+            }, ensure_ascii=False)
+    result = {
+        "type": "generate_audio_result",
+        "status": "completed",
+        "provider": combined_asset.get("provider") or provider,
+        "model": combined_asset.get("model") or model,
+        "input": text,
+        "script": text,
+        "url": combined_asset.get("url"),
+        "audio_url": combined_asset.get("audio_url") or combined_asset.get("url"),
+        "mime_type": combined_asset.get("mime_type") or "audio/wav",
+        "duration_seconds": duration,
+        "filename": combined_asset.get("filename"),
+        "s3_object_name": combined_asset.get("s3_object_name"),
+        "chunk_count": len(chunks),
+        "generated_chunk_count": len(generated_assets),
+        "usage": total_usage,
+        "_credit_settled": True,
+    }
+    return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
 
 
 def _handle_write_plan(args: Dict[str, Any], **_: Any) -> str:
@@ -1901,6 +2226,8 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
 
 def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
     args = dict(args or {})
+    audio_chunk_request = bool(args.pop("_audio_chunk", False))
+    skip_media_import = bool(args.pop("_skip_media_import", False))
     _set_canvas_model_default(args, "audio")
     canvas_audio_duration = _ctx().get("audio_duration_seconds") if _ctx().get("app_scope") == "canvas" else 0
     requested_duration = int(args.get("duration_seconds") or canvas_audio_duration or _ctx().get("duration_seconds") or 0)
@@ -1924,6 +2251,21 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
         return _tool_error("audio input text is required")
     if _ctx().get("app_scope") != "canvas" and (len(text) < 80 or re.search(r"^\s*(/audio|generate|create|生成)", text, flags=re.I)):
         text = _audio_script_from_request(text, str(args.get("language_type") or ""))
+    if _jwell_relay_enabled() and not audio_chunk_request:
+        chunks = _split_audio_script(text, str(args.get("language_type") or ""))
+        if len(chunks) > 1:
+            response_format = str(args.get("response_format") or "wav").strip().lower()
+            if response_format not in {"wav", "wave", "x-wav", "audio/wav", "audio/x-wav"}:
+                return _tool_error(
+                    "Long audio chunking requires response_format=wav",
+                    "AUDIO_FORMAT_UNSUPPORTED",
+                )
+            print(
+                f"[alphart-agent] audio chunking provider={_log_model_value(selected_provider)} "
+                f"model={_log_model_value(selected_model)} chunks={len(chunks)}",
+                flush=True,
+            )
+            return _generate_chunked_audio(args, text, chunks, kwargs.get("tool_call_id") or "")
     payload = {
         "provider": selected_provider,
         "model": args.get("model"),
@@ -1942,9 +2284,15 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
     }
     if _ctx().get("app_scope") == "canvas":
         payload["reference_item_ids"] = _ctx().get("reference_item_ids") or []
+    native_route = (
+        "gemini.generateContent"
+        if str(selected_provider).strip().lower() in {"google", "gemini"}
+        else "audio.speech"
+    )
     print(
         f"[alphart-agent] calling internal relay audio session_id={_ctx().get('session_id')} "
-        f"provider={_log_model_value(selected_provider)} model={_log_model_value(selected_model)} url={relay_url}",
+        f"provider={_log_model_value(selected_provider)} model={_log_model_value(selected_model)} "
+        f"route={native_route} url={relay_url}",
         flush=True,
     )
     attempts = max(1, int(os.getenv("ALPHART_AUDIO_RELAY_RETRY_ATTEMPTS", "3") or "3"))
@@ -2018,7 +2366,7 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
         asset = decoded
     else:
         asset = {}
-    if _jwell_relay_enabled():
+    if _jwell_relay_enabled() and not skip_media_import:
         try:
             asset = _import_jwell_media(asset, "audio")
         except (requests.RequestException, RuntimeError) as exc:
