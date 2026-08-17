@@ -8,6 +8,7 @@ from tools.alphart_tools import (
     _game_artifact_harness_feedback,
     _game_runtime_harness_feedback,
     _prepare_game_html_for_upload,
+    _request_game_upload_target,
 )
 
 
@@ -101,6 +102,8 @@ def test_game_runtime_harness_uses_browserless_when_configured(monkeypatch):
     assert "__ALPHART_GAME_TEST__" in captured["json"]["code"]
     assert "game stage is clipped by the viewport" in captured["json"]["code"]
     assert "exceed the game stage bounds" in captured["json"]["code"]
+    assert '{ name: "tablet", width: 1024, height: 768 }' in captured["json"]["code"]
+    assert "visibleGameElements" in captured["json"]["code"]
     assert "alphart-game.local" in captured["json"]["code"]
     assert "Access-Control-Allow-Origin" in captured["json"]["code"]
 
@@ -134,3 +137,26 @@ def test_game_runtime_harness_returns_browserless_violations(monkeypatch):
         feedback = _game_runtime_harness_feedback(VALID_GAME)
 
     assert "mobile: document scroll/overflow detected" in feedback
+
+
+def test_game_upload_target_preserves_explicit_org_scope():
+    captured = {}
+
+    def fake_post(_url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"url": "https://example.test/games/team-a/session-1/game-1/index.html"},
+        )
+
+    with (
+        patch("tools.alphart_tools._backend_url", return_value="http://edu"),
+        patch("tools.alphart_tools._auth_token", return_value=""),
+        patch("tools.alphart_tools._service_token", return_value="agent-token"),
+        patch("tools.alphart_tools._ctx", return_value={"org_no": "team-a"}),
+        patch("tools.alphart_tools.requests.post", side_effect=fake_post),
+    ):
+        _request_game_upload_target({"session_id": "session-1"})
+
+    assert captured["json"]["org_no"] == "team-a"

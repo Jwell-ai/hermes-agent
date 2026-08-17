@@ -1654,6 +1654,8 @@ def _generate_storybook_images_with_retries(storybook_id: str, payload: Dict[str
             f"report={json.dumps(report, ensure_ascii=False)}",
             flush=True,
         )
+        if resp.status_code in {401, 403} or _storybook_image_report_has_permanent_failure(report):
+            return resp, last_body
         if not _storybook_image_report_has_missing(report):
             return resp, last_body
         if attempt < attempts:
@@ -1752,6 +1754,25 @@ def _storybook_image_report_has_missing(report: Any) -> bool:
     except (TypeError, ValueError):
         return False
     return required > 0 and missing > 0
+
+
+def _storybook_image_report_has_permanent_failure(report: Any) -> bool:
+    if not isinstance(report, dict):
+        return False
+    for error in report.get("errors") or []:
+        message = str(error or "").strip().lower()
+        if any(
+            marker in message
+            for marker in (
+                "status=401",
+                "status=403",
+                "code=unauthorized",
+                "code=forbidden",
+                "internal user uuid does not match",
+            )
+        ):
+            return True
+    return False
 
 
 def _storybook_image_report_has_partial_success(report: Any) -> bool:
@@ -2541,7 +2562,7 @@ def _game_artifact_harness_feedback(html: str) -> str:
         return "game artifact harness: game must include reachable start, restart, or play controls"
     if "addeventlistener" not in lower and "onclick=" not in lower:
         return "game artifact harness: controls must have a real event handler"
-    if not re.search(r"\b(?:requestanimationframe|setinterval|settimeout|classlist\.(?:add|remove|toggle)|textcontent\s*=|innerhtml\s*=)\b", lower):
+    if not re.search(r"\b(?:requestanimationframe|setinterval|settimeout|classlist\.(?:add|remove|toggle)|textcontent\s*=|innerhtml\s*=)", lower):
         return "game artifact harness: interaction must visibly update game state or UI"
     if re.search(r"position\s*:\s*fixed", value, re.I):
         return "game artifact harness: CSS must not use position:fixed because it can escape the 1920x1080 game stage"
@@ -2573,6 +2594,7 @@ def _game_browserless_harness_source() -> str:
   const viewports = [
     { name: "stage", width: 1920, height: 1080 },
     { name: "laptop", width: 1366, height: 768 },
+    { name: "tablet", width: 1024, height: 768 },
     { name: "mobile", width: 390, height: 844 },
   ];
   const violations = [];
@@ -2663,6 +2685,9 @@ def _game_browserless_harness_source() -> str:
         const playfields = Array.from(document.querySelectorAll("canvas,svg")).filter(visible);
         const controls = Array.from(document.querySelectorAll("button,input[type=button],input[type=submit]")).filter(visible);
         const root = document.querySelector("[data-game-stage], #stage, #game, main, canvas, svg");
+        const visibleGameElements = root
+          ? [root, ...Array.from(root.querySelectorAll("*")).filter(visible)]
+          : [];
         const rootRect = root ? root.getBoundingClientRect() : null;
         const doc = document.documentElement;
         const body = document.body;
@@ -2676,9 +2701,10 @@ def _game_browserless_harness_source() -> str:
           hasVisibleRoot: visible(root),
           rootOutsideViewport: !!rootRect && (rootRect.right < 0 || rootRect.bottom < 0 || rootRect.left > window.innerWidth || rootRect.top > window.innerHeight),
           rootClippedByViewport: !!rootRect && outsideViewport(root),
-          clippedGameElementCount: [root, ...playfields, ...controls].filter((element) => element && outsideViewport(element)).length,
+          clippedGameElementCount: visibleGameElements.filter((element) => outsideViewport(element)).length,
           outsideStageElementCount: !!rootRect
-            ? [...playfields, ...controls].filter((element) => {
+            ? visibleGameElements.filter((element) => {
+                if (element === root) return false;
                 const rect = element.getBoundingClientRect();
                 return rect.left < rootRect.left - 1 || rect.top < rootRect.top - 1 || rect.right > rootRect.right + 1 || rect.bottom > rootRect.bottom + 1;
               }).length
@@ -2892,7 +2918,7 @@ def _request_game_upload_target(args: Dict[str, Any]) -> Dict[str, Any]:
         "canvas_id": args.get("canvas_id") or _ctx().get("canvas_id"),
         "user_uuid": args.get("user_uuid") or _ctx().get("user_uuid"),
         "storage_prefix": args.get("storage_prefix") or _ctx().get("storage_prefix"),
-        "org_no": args.get("org_no") or _ctx().get("storage_prefix"),
+        "org_no": args.get("org_no") or _ctx().get("org_no") or _ctx().get("storage_prefix"),
         "game_id": args.get("game_id"),
         "content_type": "text/html; charset=utf-8",
     }
