@@ -18,6 +18,12 @@ class TestRegistry:
         assert get_provider_profile("nous-portal").name == "nous"
         assert get_provider_profile("qwen").name == "qwen-oauth"
         assert get_provider_profile("qwen-portal").name == "qwen-oauth"
+        assert get_provider_profile("doubao").name == "volcengine"
+        assert get_provider_profile("byteplus").name == "byteplus"
+
+    def test_volcengine_and_byteplus_endpoints_are_distinct(self):
+        assert "volces.com" in get_provider_profile("doubao").base_url
+        assert "bytepluses.com" in get_provider_profile("byteplus").base_url
 
     def test_unknown_provider_returns_none(self):
         assert get_provider_profile("nonexistent-provider") is None

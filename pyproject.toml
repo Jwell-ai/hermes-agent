@@ -46,6 +46,10 @@ dependencies = [
   # Responses API resource is exercised from a non-main thread, which is the
   # codex_responses dispatch in agent/chat_completion_helpers.py:_call.
   "pydantic==2.13.4",
+  # Seedance and Seedream use the official Ark SDK through Jwell's relay. Keep
+  # it installed with the agent so media generation never mutates the runtime
+  # environment or depends on network access during a request.
+  "volcengine-python-sdk[ark]==5.0.45",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
@@ -74,8 +78,10 @@ dependencies = [
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]
-# Official Volcengine Ark Runtime SDK — only needed for Seedance video tasks.
-seedance = ["volcengine-python-sdk[ark]>=5.0.38,<6"]
+# Compatibility extras retained for existing install commands; the Ark runtime
+# is also a core dependency and is therefore preinstalled for every agent.
+seedance = ["volcengine-python-sdk[ark]==5.0.45"]
+seedream = ["volcengine-python-sdk[ark]==5.0.45"]
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]

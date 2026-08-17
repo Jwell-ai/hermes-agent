@@ -1,9 +1,6 @@
 from unittest.mock import patch
 
-import pytest
-
-from tools.lazy_deps import FeatureUnavailable
-from tools.seedance_sdk import _get_ark_class, _native_content, create_seedance_task
+from tools.seedance_sdk import _native_content, create_seedance_task
 
 
 def test_native_content_assigns_first_frame_role_to_single_image():
@@ -75,19 +72,6 @@ def test_native_content_defaults_blank_audio_role_to_soundtrack():
         audio_roles=[""],
     )
     assert content[-1]["role"] == "soundtrack"
-
-
-def test_get_ark_class_preserves_lazy_install_failure():
-    failure = FeatureUnavailable(
-        "video.seedance",
-        ("volcengine-python-sdk[ark]",),
-        "lazy installs disabled",
-    )
-    with patch("tools.lazy_deps.ensure", side_effect=failure), pytest.raises(
-        RuntimeError,
-        match="lazy installs disabled",
-    ):
-        _get_ark_class()
 
 
 def test_create_task_uses_internal_base_url_and_headers():

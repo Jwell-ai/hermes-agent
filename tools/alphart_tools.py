@@ -447,6 +447,14 @@ def _is_seedance_video_model(provider: Any, model: Any) -> bool:
     )
 
 
+def _is_seedream_image_model(provider: Any, model: Any) -> bool:
+    provider = str(provider or "").strip().lower()
+    model = str(model or "").strip().lower()
+    return provider == "seedream" or (
+        provider in {"byteplus", "volcengine", "doubao"} and "seedream" in model
+    )
+
+
 def _relay_url(path: str, *, provider: Any = "", model: Any = "") -> str:
     if _jwell_relay_enabled():
         if path.strip("/").lower() == "videos" and _is_seedance_video_model(provider, model):
@@ -1888,7 +1896,14 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
             return _tool_error(graph_error)
         if image_item_id:
             args["canvas_item_id"] = image_item_id
-    relay_url = _relay_url("images/generations" if is_canvas or not args.get("input_images") else "images/edits")
+    use_seedream_sdk = _jwell_relay_enabled() and _is_seedream_image_model(
+        args.get("provider"), args.get("model")
+    )
+    relay_url = _relay_url(
+        "images/generations"
+        if is_canvas or not args.get("input_images") or use_seedream_sdk
+        else "images/edits"
+    )
     if not relay_url:
         return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
     payload = {
@@ -1922,25 +1937,50 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
         f"[alphart-agent] calling internal relay image session_id={_ctx().get('session_id')} url={relay_url}",
         flush=True,
     )
-    try:
-        resp = requests.post(
-            relay_url,
-            json=payload,
-            headers=_relay_headers(),
-            timeout=_backend_tool_timeout(),
-        )
-    except requests.RequestException as exc:
-        return _tool_error(f"Alphart relay request failed: {exc}")
-    try:
-        decoded = resp.json()
-    except ValueError:
-        decoded = {"raw": resp.text}
-    response_preview = (resp.text or "").replace("\n", " ")[:500]
+    response_status = 0
+    response_preview = ""
+    if use_seedream_sdk:
+        try:
+            from tools.seedream_sdk import create_seedream_image
+
+            decoded = create_seedream_image(
+                base_url=f"{_jwell_relay_base_url()}/internal/v1",
+                headers=_relay_headers(),
+                model=str(args.get("model") or ""),
+                prompt=str(args.get("prompt") or ""),
+                provider=str(args.get("provider") or ""),
+                image_urls=payload.get("images") or [],
+                aspect_ratio=str(args.get("aspect_ratio") or ""),
+                resolution=str(args.get("resolution") or ""),
+                quantity=args.get("quantity"),
+                idempotency_key=str(payload.get("tool_call_id") or "").strip(),
+                timeout=_backend_tool_timeout(),
+            )
+            response_status = 200
+            response_preview = json.dumps(decoded, ensure_ascii=False)[:500]
+        except Exception as exc:  # SDK errors must remain tool failures, not agent crashes.
+            return _tool_error(f"Alphart relay request failed: {exc}")
+    else:
+        try:
+            resp = requests.post(
+                relay_url,
+                json=payload,
+                headers=_relay_headers(),
+                timeout=_backend_tool_timeout(),
+            )
+        except requests.RequestException as exc:
+            return _tool_error(f"Alphart relay request failed: {exc}")
+        response_status = resp.status_code
+        try:
+            decoded = resp.json()
+        except ValueError:
+            decoded = {"raw": resp.text}
+        response_preview = (resp.text or "").replace("\n", " ")[:500]
     print(
-        f"[alphart-agent] internal relay image response status={resp.status_code} bytes={len(resp.text)} body={response_preview}",
+        f"[alphart-agent] internal relay image response status={response_status} body={response_preview}",
         flush=True,
     )
-    if resp.status_code < 200 or resp.status_code >= 300:
+    if response_status < 200 or response_status >= 300:
         if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
             detail = ""
             if isinstance(decoded, dict):
@@ -1948,8 +1988,8 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
                 if isinstance(error, dict):
                     detail = str(error.get("message") or error.get("detail") or "")
                 detail = detail or str(decoded.get("detail") or decoded.get("message") or "")
-            detail = " ".join((detail or f"relay returned HTTP {resp.status_code}").split())[:500]
-            return _tool_error(f"Canvas image relay failed (HTTP {resp.status_code}): {detail}")
+            detail = " ".join((detail or f"relay returned HTTP {response_status}").split())[:500]
+            return _tool_error(f"Canvas image relay failed (HTTP {response_status}): {detail}")
         return _system_busy_tool_error()
     if is_canvas and not str(_ctx().get("canvas_item_id") or "").strip():
         _ctx()["_canvas_generation_submitted"] = True

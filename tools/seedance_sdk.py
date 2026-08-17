@@ -11,25 +11,13 @@ from typing import Any, Iterable, Mapping
 
 
 def _get_ark_class() -> Any:
-    """Import the Ark SDK on first Seedance use, installing its optional extra."""
-    try:
-        from tools.lazy_deps import FeatureUnavailable, ensure
-
-        try:
-            ensure("video.seedance", prompt=False)
-        except FeatureUnavailable as exc:
-            raise RuntimeError(f"The official Volcengine Ark SDK is unavailable: {exc}") from exc
-    except ImportError:
-        # Keep the import path usable in minimal test environments where the
-        # lazy dependency helper is not packaged.
-        pass
-
+    """Import the preinstalled official Ark SDK."""
     try:
         from volcenginesdkarkruntime import Ark
     except ImportError as exc:
         raise RuntimeError(
-            "The official Volcengine Ark SDK is unavailable; install "
-            "volcengine-python-sdk[ark]."
+            "The official Volcengine Ark SDK is unavailable; reinstall "
+            "hermes-agent with its core dependencies."
         ) from exc
     return Ark
 

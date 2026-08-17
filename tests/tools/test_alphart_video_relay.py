@@ -339,6 +339,53 @@ def test_canvas_image_relay_without_asset_is_failure():
     assert "no stored image asset" in result["error"]
 
 
+def test_edu_seedream_image_uses_ark_sdk_through_jwell_relay():
+    with alphart_context(
+        {
+            "app_scope": "edu",
+            "backend_url": "http://edu-backend",
+        }
+    ), patch.dict(
+        os.environ,
+        {
+            "JWELL_SERVICE_GRPC_ADDRS": "http://jwell-relay",
+            "JWELL_APP_SECRET": "secret",
+        },
+    ), patch(
+        "tools.seedream_sdk.create_seedream_image",
+        return_value={"data": [{"url": "https://jwell/image.png", "model": "seedream-4-0"}]},
+    ) as sdk_call, patch(
+        "tools.alphart_tools.requests.post"
+    ) as post_call, patch(
+        "tools.alphart_tools._resolve_jwell_media_urls",
+        return_value=["https://jwell/reference.png"],
+    ), patch(
+        "tools.alphart_tools._import_jwell_media",
+        return_value={"url": "https://jwell/image.png", "s3_object_name": "test/image.png"},
+    ):
+        result = json.loads(
+            _handle_alphart_generate_image(
+                {
+                    "prompt": "A warm autumn sunset",
+                    "provider": "byteplus",
+                    "model": "seedream-4-0-250828",
+                    "input_images": ["https://example.test/reference.png"],
+                    "aspect_ratio": "16:9",
+                    "resolution": "2K",
+                },
+                tool_call_id="call-seedream-1",
+            )
+        )
+
+    assert result["status"] == "success"
+    assert result["result"]["s3_object_name"] == "test/image.png"
+    assert sdk_call.call_args.kwargs["base_url"] == "http://jwell-relay/internal/v1"
+    assert sdk_call.call_args.kwargs["headers"]["X-App-Secret"] == "secret"
+    assert sdk_call.call_args.kwargs["provider"] == "byteplus"
+    assert sdk_call.call_args.kwargs["idempotency_key"] == "call-seedream-1"
+    post_call.assert_not_called()
+
+
 def test_canvas_video_request_does_not_generate_speculative_image():
     with alphart_context(
         {

@@ -79,9 +79,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # Native Anthropic SDK — needed when provider=anthropic (not via
     # OpenRouter / aggregators which use the openai SDK).
     "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
-    # Official Volcengine Ark Runtime SDK for Seedance video tasks. The SDK is
-    # used against Jwell's internal relay, never directly against the provider.
-    "video.seedance": ("volcengine-python-sdk[ark]>=5.0.38,<6",),
     # AWS Bedrock provider
     "provider.bedrock": ("boto3==1.42.89",),
     # Microsoft Foundry — Entra ID auth (managed identity, workload identity,
