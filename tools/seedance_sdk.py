@@ -57,6 +57,24 @@ def _content_part(kind: str, url: str, role: str = "") -> dict[str, Any]:
     return part
 
 
+def _normalize_image_role(value: Any) -> str:
+    """Map user-facing reference labels to the roles accepted by Seedance."""
+    role = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "keyframe": "first_frame",
+        "start_frame": "first_frame",
+        "start": "first_frame",
+        "first": "first_frame",
+        "end_frame": "last_frame",
+        "end": "last_frame",
+        "last": "last_frame",
+        "reference": "reference_image",
+        "visual_reference": "reference_image",
+    }
+    role = aliases.get(role, role)
+    return role if role in {"first_frame", "last_frame", "reference_image"} else ""
+
+
 def _native_content(
     prompt: str,
     image_urls: Iterable[str],
@@ -73,7 +91,7 @@ def _native_content(
 
     image_role_values = list(image_roles)
     for index, url in enumerate(image_values):
-        role = image_role_values[index].strip() if index < len(image_role_values) else ""
+        role = _normalize_image_role(image_role_values[index]) if index < len(image_role_values) else ""
         # Ark's native content schema requires a role for image inputs. A
         # single unlabelled image is the conventional image-to-video first
         # frame; additional unlabelled images are references rather than frame

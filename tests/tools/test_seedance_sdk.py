@@ -40,6 +40,24 @@ def test_native_content_keeps_unlabelled_multiple_images_as_references():
     ]
 
 
+def test_native_content_normalizes_user_facing_image_roles():
+    content = _native_content(
+        "Animate this",
+        ["https://example.test/keyframe.jfif"],
+        [],
+        ["keyframe"],
+    )
+    assert content[1]["role"] == "first_frame"
+
+    content = _native_content(
+        "Use this as a visual reference",
+        ["https://example.test/reference.jfif"],
+        [],
+        ["protagonist"],
+    )
+    assert content[1]["role"] == "first_frame"
+
+
 def test_native_content_assigns_soundtrack_role_for_audio():
     content = _native_content("Animate with audio", [], ["https://example.test/a.wav"])
     assert content[-1] == {
