@@ -67,6 +67,28 @@ def _latest_canvas_created_node_id(item_type: str) -> str:
     return ""
 
 
+def _canvas_context_video_item_id() -> str:
+    """Return a trusted existing Canvas video target, if the request has one."""
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
+        return ""
+    item_id = str(_ctx().get("canvas_item_id") or "").strip()
+    if not item_id:
+        return ""
+    item_type = str(_ctx().get("canvas_item_type") or "").strip().lower()
+    if item_type == "video":
+        return item_id
+    if item_type:
+        return ""
+    # Older callers did not send canvas_item_type. Preserve their existing
+    # video target unless the selected-node metadata explicitly identifies the
+    # same id as a non-video node.
+    selected_id = str(_ctx().get("selected_canvas_item_id") or "").strip()
+    selected_type = str(_ctx().get("selected_canvas_item_type") or "").strip().lower()
+    if selected_id == item_id and selected_type and selected_type != "video":
+        return ""
+    return item_id
+
+
 def _tool_error(message: str, code: str = "") -> str:
     payload = {"success": False, "error": message}
     if code:
@@ -1089,7 +1111,7 @@ def _ensure_canvas_video_generation_graph(prompt: str) -> Tuple[str, str]:
     """
     if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
         return "", ""
-    if str(_ctx().get("canvas_item_id") or "").strip():
+    if _canvas_context_video_item_id():
         return "", ""
     if not str(_ctx().get("canvas_id") or "").strip():
         return "", "Canvas canvas_id is required before creating a video node"
@@ -2116,23 +2138,35 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     tool = _pick_tool("video", args)
     _set_tool_defaults(args, tool)
     args.setdefault("wait", False)
-    canvas_item_id = str(
-        args.get("canvas_item_id")
-        or args.get("item_id")
-        or args.get("node_id")
-        or _ctx().get("canvas_item_id")
-        or (
-            _ctx().get("selected_canvas_item_id")
-            if str(_ctx().get("selected_canvas_item_type") or "").strip().lower() == "video"
-            else ""
-        )
-        or ""
-    ).strip()
+    if is_canvas:
+        # A model-supplied node id is not authoritative. In a homepage/new
+        # graph turn it may be stale or hallucinated, and trusting it skips
+        # the graph creation fallback before the relay validates the node.
+        # Only the selected execution target or a node created in this turn
+        # can be used for Canvas generation. Edu keeps its existing argument
+        # precedence and relay contract.
+        context_item_id = _canvas_context_video_item_id()
+        selected_item_id = str(_ctx().get("selected_canvas_item_id") or "").strip()
+        selected_item_type = str(_ctx().get("selected_canvas_item_type") or "").strip().lower()
+        created_item_id = "" if _ctx().get("_canvas_generation_submitted") else _latest_canvas_created_node_id("video")
+        canvas_item_id = context_item_id or (
+            selected_item_id if selected_item_type == "video" else ""
+        ) or created_item_id
+    else:
+        canvas_item_id = str(
+            args.get("canvas_item_id")
+            or args.get("item_id")
+            or args.get("node_id")
+            or _ctx().get("canvas_item_id")
+            or ""
+        ).strip()
+    auto_created_video_node = False
     if is_canvas and not canvas_item_id:
         canvas_item_id, graph_error = _ensure_canvas_video_generation_graph(str(args.get("prompt") or "").strip())
         if graph_error:
             return _tool_error(graph_error)
         args["canvas_item_id"] = canvas_item_id
+        auto_created_video_node = bool(canvas_item_id)
     relay_url = _relay_url("videos", provider=args.get("provider"), model=args.get("model"))
     if not relay_url:
         return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
@@ -2156,6 +2190,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
             "caption_script": str(args.get("caption_script") or _ctx().get("video_caption_script") or "").strip(),
             "audio_model": _ctx().get("audio_model"),
             "language_type": _ctx().get("audio_language_type"),
+            "create_if_missing": auto_created_video_node,
         })
         payload.update({
             "user_id": _ctx().get("user_id"),
@@ -2257,7 +2292,12 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         _ctx()["_canvas_generation_submitted"] = True
     selected_provider = decoded.get("provider") if isinstance(decoded, dict) else args.get("provider")
     selected_model = decoded.get("model") if isinstance(decoded, dict) else args.get("model")
-    task_id = decoded.get("id") if isinstance(decoded, dict) else ""
+    task_id = ""
+    if isinstance(decoded, dict):
+        # Canvas may return an in-flight local task while the original request
+        # is still submitting and no provider task id exists yet. Edu/Jwell
+        # responses continue to use the provider id as before.
+        task_id = decoded.get("id") or decoded.get("task_id") or ""
     if _jwell_relay_enabled():
         try:
             tracked = requests.post(
