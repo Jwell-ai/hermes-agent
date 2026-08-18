@@ -536,7 +536,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
         if ephemeral_out is not None:
             agent._ephemeral_max_output_tokens = None  # consume immediately
-        return _transport.build_kwargs(
+        kwargs = _transport.build_kwargs(
             model=agent.model,
             messages=anthropic_messages,
             tools=tools_for_api,
@@ -549,6 +549,12 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
         )
+        override_headers = (agent.request_overrides or {}).get("extra_headers")
+        if isinstance(override_headers, dict) and override_headers:
+            merged_headers = dict(kwargs.get("extra_headers") or {})
+            merged_headers.update(override_headers)
+            kwargs["extra_headers"] = merged_headers
+        return kwargs
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
     # The adapter handles message/tool conversion and boto3 calls directly.

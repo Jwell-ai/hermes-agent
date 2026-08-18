@@ -41,6 +41,12 @@ def _make_agent_stub(agent_cls):
     # Non-None so the test catches a missing-kwarg regression.
     agent.enabled_toolsets = ["memory", "skills", "terminal"]
     agent.disabled_toolsets = ["spotify", "feishu_doc"]
+    agent.request_overrides = {
+        "extra_headers": {
+            "X-App-Secret": "service-secret",
+            "X-Internal-User-ID": "42",
+        }
+    }
     return agent
 
 
@@ -237,3 +243,46 @@ def test_review_fork_inherits_parent_toolset_config():
         f"disabled_toolsets mismatch: {captured.get('disabled_toolsets')!r} "
         f"vs expected {agent.disabled_toolsets!r}"
     )
+
+
+def test_review_fork_inherits_parent_request_overrides():
+    """Internal relay authentication must survive the background-review fork."""
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    captured = {}
+
+    class _Recorder:
+        def __init__(self, *args, **kwargs):
+            captured["request_overrides"] = kwargs.get("request_overrides")
+            self._cached_system_prompt = None
+            self._memory_write_origin = None
+            self._memory_write_context = None
+            self._memory_store = None
+            self._memory_enabled = None
+            self._user_profile_enabled = None
+            self._memory_nudge_interval = None
+            self._skill_nudge_interval = None
+            self.suppress_status_output = None
+            self.session_start = None
+            self.session_id = None
+
+        def run_conversation(self, *args, **kwargs):
+            raise RuntimeError("stop after recording")
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert captured["request_overrides"] == agent.request_overrides
+    assert captured["request_overrides"] is not agent.request_overrides

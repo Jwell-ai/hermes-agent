@@ -412,6 +412,7 @@ def _run_review_in_thread(
                 parent_session_id=agent.session_id,
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                request_overrides=dict(getattr(agent, "request_overrides", {}) or {}),
                 skip_memory=True,
             )
             review_agent._memory_write_origin = "background_review"
