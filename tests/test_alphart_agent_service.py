@@ -4,8 +4,14 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from agent.chat_completion_helpers import (
+    _internal_relay_idempotency_key,
+    _relay_request_overrides,
+)
+
 from alphart_agent_service import (
     AlphartEduChatRequest,
+    AlphartEduTitleRequest,
     _alphart_enabled_toolsets,
     _canvas_video_recovery_needed,
     _canvas_workflow_item_type,
@@ -16,6 +22,7 @@ from alphart_agent_service import (
     _post_chat_event_callback,
     _post_chat_result_callback,
     _provider_config_for_domain,
+    _title_relay_idempotency_key,
     _uses_jwell_internal_relay,
 )
 from toolsets import resolve_toolset
@@ -81,6 +88,47 @@ def test_jwell_callbacks_include_app_secret(monkeypatch):
     assert post.call_args_list[1].args[0] == "http://edu-backend/internal/api/v1/agent/events"
     for call in post.call_args_list:
         assert "X-App-Secret" not in call.kwargs["headers"]
+
+
+def test_internal_relay_text_key_is_stable_for_retries_and_changes_per_turn():
+    agent = SimpleNamespace(
+        session_id="session-1",
+        provider="anthropic",
+        model="claude-sonnet-4-6",
+        api_mode="anthropic_messages",
+        request_overrides={
+            "extra_headers": {
+                "X-App-Secret": "secret",
+                "X-Internal-User-ID": "42",
+            },
+        },
+    )
+    first_turn = [{"role": "user", "content": "Make an image"}]
+    second_turn = first_turn + [{"role": "assistant", "content": "Done"}]
+
+    first_key = _internal_relay_idempotency_key(agent, first_turn)
+    retry_key = _internal_relay_idempotency_key(agent, first_turn)
+    second_key = _internal_relay_idempotency_key(agent, second_turn)
+    overrides = _relay_request_overrides(agent, first_turn)
+
+    assert first_key == retry_key
+    assert first_key != second_key
+    assert overrides["extra_headers"]["Idempotency-Key"] == first_key
+
+
+def test_title_relay_key_is_scoped_to_user_and_session():
+    request = AlphartEduTitleRequest(
+        messages=[{"role": "user", "content": "Create a storybook"}],
+        user_id="user-1",
+        session_id="session-1",
+    )
+    same_request_key = _title_relay_idempotency_key(request, "openai", "gpt-5.4", "Create a storybook")
+    other_session = request.model_copy(update={"session_id": "session-2"})
+    other_user = request.model_copy(update={"user_id": "user-2"})
+
+    assert same_request_key == _title_relay_idempotency_key(request, "openai", "gpt-5.4", "Create a storybook")
+    assert same_request_key != _title_relay_idempotency_key(other_session, "openai", "gpt-5.4", "Create a storybook")
+    assert same_request_key != _title_relay_idempotency_key(other_user, "openai", "gpt-5.4", "Create a storybook")
 
 
 def test_edu_toolset_does_not_advertise_canvas_graph_mutations():

@@ -11,7 +11,9 @@ import requests
 from tools.alphart_tools import (
     _generate_chunked_audio,
     _import_jwell_media,
+    _relay_headers,
     _split_audio_script,
+    alphart_context,
 )
 
 
@@ -23,6 +25,22 @@ def _wav_bytes(frames: int = 100) -> bytes:
         audio.setframerate(24000)
         audio.writeframes(b"\x00\x00" * frames)
     return output.getvalue()
+
+
+def test_relay_headers_include_media_idempotency_key():
+    with alphart_context({
+        "app_scope": "edu",
+        "user_id": "42",
+        "user_uuid": "user-uuid",
+        "org_no": "org-1",
+        "session_id": "session-1",
+    }):
+        headers = _relay_headers("audio-call:chunk:2")
+
+    assert headers["X-Internal-User-ID"] == "42"
+    assert headers["X-Internal-User-UUID"] == "user-uuid"
+    assert headers["X-Org-No"] == "org-1"
+    assert headers["Idempotency-Key"] == "audio-call:chunk:2"
 
 
 def test_split_audio_script_targets_natural_english_chunks():

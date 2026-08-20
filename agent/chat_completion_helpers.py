@@ -15,6 +15,7 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -524,6 +525,47 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
+def _internal_relay_idempotency_key(agent, api_messages: list) -> str:
+    """Return one retry-stable key for the current internal relay turn.
+
+    Hermes may issue several model calls during one tool loop. The key must
+    therefore be derived from the current conversation state and selected
+    model, rather than from the outer session alone. A transport retry rebuilds
+    the same payload and gets the same key; a new tool result or model changes
+    the digest and creates a new relay request.
+    """
+    raw = json.dumps(
+        {
+            "session_id": getattr(agent, "session_id", "") or "",
+            "provider": getattr(agent, "provider", "") or "",
+            "model": getattr(agent, "model", "") or "",
+            "api_mode": getattr(agent, "api_mode", "") or "",
+            "messages": api_messages,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return "hermes-text:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _relay_request_overrides(agent, api_messages: list) -> dict:
+    """Add request-scoped relay headers without mutating agent state."""
+    overrides = dict(getattr(agent, "request_overrides", {}) or {})
+    existing = overrides.get("extra_headers")
+    if not isinstance(existing, dict):
+        return overrides
+    internal_keys = {"x-app-secret", "x-hermes-agent-token", "x-internal-user-id"}
+    if not any(str(key).lower() in internal_keys and str(value).strip() for key, value in existing.items()):
+        return overrides
+    headers = {str(key): str(value) for key, value in existing.items() if str(value)}
+    if not any(str(key).lower() == "idempotency-key" and str(value).strip() for key, value in headers.items()):
+        headers["Idempotency-Key"] = _internal_relay_idempotency_key(agent, api_messages)
+    overrides["extra_headers"] = headers
+    return overrides
+
+
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
@@ -549,7 +591,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
         )
-        override_headers = (agent.request_overrides or {}).get("extra_headers")
+        override_headers = _relay_request_overrides(agent, api_messages).get("extra_headers")
         if isinstance(override_headers, dict) and override_headers:
             merged_headers = dict(kwargs.get("extra_headers") or {})
             merged_headers.update(override_headers)
@@ -627,7 +669,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             session_id=getattr(agent, "session_id", None),
             max_tokens=agent.max_tokens,
             timeout=agent._resolved_api_call_timeout(),
-            request_overrides=agent.request_overrides,
+            request_overrides=_relay_request_overrides(agent, api_messages),
             is_github_responses=is_github_responses,
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,
@@ -729,7 +771,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             ephemeral_max_output_tokens=_ephemeral_out,
             max_tokens_param_fn=agent._max_tokens_param,
             reasoning_config=agent.reasoning_config,
-            request_overrides=agent.request_overrides,
+            request_overrides=_relay_request_overrides(agent, api_messages),
             session_id=getattr(agent, "session_id", None),
             provider_profile=_profile,
             ollama_num_ctx=agent._ollama_num_ctx,
@@ -761,7 +803,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         ephemeral_max_output_tokens=_ephemeral_out,
         max_tokens_param_fn=agent._max_tokens_param,
         reasoning_config=agent.reasoning_config,
-        request_overrides=agent.request_overrides,
+        request_overrides=_relay_request_overrides(agent, api_messages),
         session_id=getattr(agent, "session_id", None),
         model_lower=(agent.model or "").lower(),
         is_openrouter=_is_or,

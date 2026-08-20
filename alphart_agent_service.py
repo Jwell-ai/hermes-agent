@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -85,6 +86,7 @@ class AlphartEduChatRequest(BaseModel):
 
 class AlphartEduTitleRequest(BaseModel):
     messages: List[Any] = Field(default_factory=list)
+    session_id: str = ""
     user_id: str = ""
     auth_token: str = ""
     org_no: str = ""
@@ -3400,10 +3402,29 @@ def _generate_title_direct(provider: str, endpoint: str, api_key: str, model: st
     }
 
 
+def _title_relay_idempotency_key(req: AlphartEduTitleRequest, provider: str, model: str, source: str) -> str:
+    raw = json.dumps(
+        {
+            "session_id": req.session_id,
+            "user_id": req.user_id,
+            "provider": provider,
+            "model": model,
+            "messages": req.messages,
+            "source": source,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return "hermes-title:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def _generate_title_relay(req: AlphartEduTitleRequest, provider: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
     timeout = int(config.get("timeout") or config.get("timeout_seconds") or 60)
     endpoint = _internal_relay_base_url(req)
     headers = _internal_relay_headers(req)
+    headers["Idempotency-Key"] = _title_relay_idempotency_key(req, provider, model, source)
     wire_format = _text_model_wire_format(provider, model, config)
     if wire_format == "anthropic":
         url = endpoint.rstrip("/") + "/messages"
@@ -3567,7 +3588,7 @@ def _generate_title_agent(req: AlphartEduTitleRequest, provider: str, model: str
         max_iterations=1,
         max_tokens=64,
         quiet_mode=True,
-        session_id=None,
+        session_id=req.session_id or None,
         skip_context_files=True,
         skip_memory=True,
         platform="alphart",

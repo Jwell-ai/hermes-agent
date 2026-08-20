@@ -549,10 +549,13 @@ def _internal_relay_headers() -> Dict[str, str]:
     return headers
 
 
-def _relay_headers() -> Dict[str, str]:
+def _relay_headers(idempotency_key: Any = "") -> Dict[str, str]:
     headers = _internal_relay_headers()
     if _jwell_relay_enabled():
         headers["X-App-Secret"] = _jwell_relay_app_secret()
+    key = str(idempotency_key or "").strip()
+    if key:
+        headers["Idempotency-Key"] = key
     return headers
 
 
@@ -1967,7 +1970,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
 
             decoded = create_seedream_image(
                 base_url=f"{_jwell_relay_base_url()}/internal/v1",
-                headers=_relay_headers(),
+                headers=_relay_headers(payload.get("tool_call_id")),
                 model=str(args.get("model") or ""),
                 prompt=str(args.get("prompt") or ""),
                 provider=str(args.get("provider") or ""),
@@ -1987,7 +1990,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
             resp = requests.post(
                 relay_url,
                 json=payload,
-                headers=_relay_headers(),
+                headers=_relay_headers(payload.get("tool_call_id")),
                 timeout=_backend_tool_timeout(),
             )
         except requests.RequestException as exc:
@@ -2253,7 +2256,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
             resp = requests.post(
                 relay_url,
                 json=payload,
-                headers=_relay_headers(),
+                headers=_relay_headers(payload.get("tool_call_id")),
                 timeout=_backend_tool_timeout(),
             )
             try:
@@ -2419,7 +2422,7 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
             resp = requests.post(
                 relay_url,
                 json=payload,
-                headers=_relay_headers(),
+                headers=_relay_headers(payload.get("idempotency_key")),
                 timeout=timeout,
             )
         except requests.RequestException as exc:
