@@ -33,7 +33,9 @@ import functools
 import json
 import logging
 import os
+from pathlib import Path
 import platform
+import posixpath
 import shlex
 import socket
 import subprocess
@@ -67,6 +69,50 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
     "patch",
     "terminal",
 ])
+
+# EduLab executes model-authored Python. Only container-backed environments
+# provide the isolation boundary required for that code; SSH is remote but is
+# not an isolation boundary by itself.
+# EduLab's no-credential/no-network policy is implemented by DockerEnvironment.
+# Do not advertise backends whose constructors still mount Hermes credentials or
+# caches as an isolation boundary.
+_ISOLATED_ENV_TYPES = frozenset({"docker"})
+_EDULAB_SKILLS = (
+    "edu-analytic-geometry",
+    "edu-chem-reaction",
+    "edu-solid-geometry",
+)
+
+
+def _edulab_backend_config() -> tuple[str, str]:
+    """Return EduLab's isolated backend, honoring explicit env overrides."""
+    configured = _load_config().get("edulab", {})
+    if not isinstance(configured, dict):
+        configured = {}
+    env_type = str(
+        os.getenv("TERMINAL_EDULAB_ENV")
+        or configured.get("env_type")
+        or "docker"
+    ).strip().lower()
+    image = str(
+        os.getenv(f"TERMINAL_EDULAB_{env_type.upper()}_IMAGE")
+        or configured.get(f"{env_type}_image")
+        or ("alphart-edulab-sandbox:latest" if env_type == "docker" else "")
+    ).strip()
+    return env_type, image
+
+
+def _sandbox_tools_for_session(enabled_tools: Optional[List[str]]) -> frozenset:
+    """Return the RPC tools explicitly available to this session.
+
+    ``None`` means the caller did not provide a session allowlist and retains
+    the standalone execute_code behavior. An explicit empty/intersecting
+    allowlist must remain empty; falling back to every sandbox tool would let
+    a session that only enabled execute_code call terminal and file tools.
+    """
+    if enabled_tools is None:
+        return SANDBOX_ALLOWED_TOOLS
+    return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
 
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
 DEFAULT_TIMEOUT = 300        # 5 minutes
@@ -589,7 +635,12 @@ def _rpc_server_loop(
 # Remote execution support (file-based RPC via terminal backend)
 # ---------------------------------------------------------------------------
 
-def _get_or_create_env(task_id: str):
+def _get_or_create_env(
+    task_id: str,
+    *,
+    env_type_override: Optional[str] = None,
+    image_override: Optional[str] = None,
+):
     """Get or create the terminal environment for *task_id*.
 
     Reuses the same environment (container/sandbox/SSH session) that the
@@ -603,13 +654,17 @@ def _get_or_create_env(task_id: str):
         _resolve_container_task_id,
     )
 
-    effective_task_id = _resolve_container_task_id(task_id)
+    # Explicit backend overrides represent an isolation boundary. Preserve
+    # their task key instead of collapsing it into the shared default env.
+    effective_task_id = task_id if env_type_override else _resolve_container_task_id(task_id)
+    configured_env_type = _get_env_config()["env_type"]
+    selected_env_type = env_type_override or configured_env_type
 
     # Fast path: environment already exists
     with _env_lock:
         if effective_task_id in _active_environments:
             _last_activity[effective_task_id] = time.time()
-            return _active_environments[effective_task_id], _get_env_config()["env_type"]
+            return _active_environments[effective_task_id], selected_env_type
 
     # Slow path: create environment (same pattern as file_tools._get_file_ops)
     with _creation_locks_lock:
@@ -621,10 +676,10 @@ def _get_or_create_env(task_id: str):
         with _env_lock:
             if effective_task_id in _active_environments:
                 _last_activity[effective_task_id] = time.time()
-                return _active_environments[effective_task_id], _get_env_config()["env_type"]
+                return _active_environments[effective_task_id], selected_env_type
 
         config = _get_env_config()
-        env_type = config["env_type"]
+        env_type = env_type_override or config["env_type"]
         overrides = _task_env_overrides.get(effective_task_id, {})
 
         if env_type == "docker":
@@ -637,6 +692,8 @@ def _get_or_create_env(task_id: str):
             image = overrides.get("daytona_image") or config["daytona_image"]
         else:
             image = ""
+        if image_override and env_type in {"docker", "singularity", "modal", "daytona"}:
+            image = image_override
 
         cwd = overrides.get("cwd") or config["cwd"]
 
@@ -650,6 +707,21 @@ def _get_or_create_env(task_id: str):
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
             }
+            if env_type_override:
+                # EduLab model code gets a deliberately minimal container:
+                # no host secrets/caches, no user-provided mounts, no network,
+                # and no persistent filesystem between sessions.
+                container_config.update({
+                    "network": False,
+                    "mount_credential_files": False,
+                    "mount_skill_directories": False,
+                    "mount_cache_directories": False,
+                    "container_persistent": False,
+                    "docker_volumes": [],
+                    "docker_persist_across_processes": False,
+                    "forward_passthrough_env": False,
+                    "ephemeral": True,
+                })
 
         ssh_config = None
         if env_type == "ssh":
@@ -691,6 +763,22 @@ def _get_or_create_env(task_id: str):
         return env, env_type
 
 
+def _touch_terminal_env_activity(task_id: str) -> None:
+    """Refresh the idle-cleanup timestamp for an active remote execution."""
+    from tools.terminal_tool import _active_environments, _env_lock, _last_activity
+
+    with _env_lock:
+        if task_id in _active_environments:
+            _last_activity[task_id] = time.time()
+
+
+def _keep_terminal_env_alive(task_id: str, stop_event: threading.Event) -> None:
+    """Heartbeat an isolated environment while its script is executing."""
+    _touch_terminal_env_activity(task_id)
+    while not stop_event.wait(15):
+        _touch_terminal_env_activity(task_id)
+
+
 def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
     """Write *content* to *remote_path* on the remote environment.
 
@@ -706,6 +794,57 @@ def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
         cwd="/",
         timeout=30,
     )
+
+
+def _prepare_edulab_remote_workspace(env, sandbox_dir: str) -> list[str] | str:
+    """Ship bundled EduLab sources and require the remote image's sympy.
+
+    The remote backend is a separate runtime from the Hermes process, so
+    installing sympy in the agent image does not make it available in a
+    Docker/Modal image. Fail before running model code when that image is not
+    provisioned instead of letting a kernel fail midway through generation.
+    """
+    dependency_check = env.execute(
+        "python3 -c 'import sympy; print(sympy.__version__)'",
+        cwd="/", timeout=30,
+    )
+    if dependency_check.get("returncode", 0) != 0:
+        return (
+            "EduLab isolated backend is missing sympy. Configure "
+            "code_execution.edulab in config.yaml (or the legacy "
+            "TERMINAL_EDULAB_DOCKER_IMAGE override) with sympy==1.14.0 "
+            "preinstalled."
+        )
+
+    source_root = Path(__file__).resolve().parents[1] / "skills" / "education"
+    remote_skills_root = f"{sandbox_dir}/skills"
+    env.execute(f"mkdir -p {shlex.quote(remote_skills_root)}", cwd="/", timeout=10)
+    import_roots: list[str] = []
+
+    for skill_name in _EDULAB_SKILLS:
+        local_skill_root = source_root / skill_name
+        if not local_skill_root.is_dir():
+            return f"EduLab skill bundle is missing: {skill_name}"
+
+        remote_skill_root = f"{remote_skills_root}/{skill_name}"
+        # The bundled kernels import their sibling modules as top-level names
+        # (for example, analytic_kernel imports conics), so each lib directory
+        # must be on PYTHONPATH. The skill root alone cannot resolve them.
+        import_roots.append(f"{remote_skill_root}/lib")
+        for path in sorted(local_skill_root.rglob("*")):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            if path.suffix.lower() not in {".py", ".html", ".md", ".txt"}:
+                continue
+            relative = path.relative_to(local_skill_root).as_posix()
+            remote_path = f"{remote_skill_root}/{relative}"
+            env.execute(
+                f"mkdir -p {shlex.quote(posixpath.dirname(remote_path))}",
+                cwd="/", timeout=10,
+            )
+            _ship_file_to_remote(env, remote_path, path.read_text(encoding="utf-8"))
+
+    return import_roots
 
 
 def _env_temp_dir(env: Any) -> str:
@@ -870,25 +1009,43 @@ def _execute_remote(
     code: str,
     task_id: Optional[str],
     enabled_tools: Optional[List[str]],
+    require_isolated: bool = False,
 ) -> str:
     """Run a script on the remote terminal backend via file-based RPC.
 
     The script and the generated hermes_tools.py module are shipped to
     the remote environment, and tool calls are proxied through a polling
-    thread that communicates via request/response files.
+    thread that communicates via request/response files. EduLab additionally
+    ships its bundled kernels and validates the image's preinstalled sympy.
     """
 
     _cfg = _load_config()
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-    if not sandbox_tools:
-        sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    # EduLab code must remain computation-only. In particular, do not allow a
+    # mixed toolset to proxy terminal/web/file calls back into the host task.
+    sandbox_tools = frozenset() if require_isolated else _sandbox_tools_for_session(enabled_tools)
 
     effective_task_id = task_id or "default"
-    env, env_type = _get_or_create_env(effective_task_id)
+    stop_event = threading.Event()
+    activity_thread = None
+    isolated_env_task_id = None
+    if require_isolated:
+        isolated_env_type, isolated_image = _edulab_backend_config()
+        # EduLab runs are intentionally one-shot. A unique environment key
+        # prevents concurrent execute_code calls in the same chat from sharing
+        # a container, so the exact container can be reclaimed in finally.
+        isolated_env_task_id = (
+            f"{effective_task_id}:edulab:{uuid.uuid4().hex[:12]}"
+        )
+        env, env_type = _get_or_create_env(
+            isolated_env_task_id,
+            env_type_override=isolated_env_type,
+            image_override=isolated_image or None,
+        )
+    else:
+        env, env_type = _get_or_create_env(effective_task_id)
 
     sandbox_id = uuid.uuid4().hex[:12]
     temp_dir = _env_temp_dir(env)
@@ -899,10 +1056,17 @@ def _execute_remote(
     tool_call_log: list = []
     tool_call_counter = [0]
     exec_start = time.monotonic()
-    stop_event = threading.Event()
     rpc_thread = None
 
     try:
+        if isolated_env_task_id:
+            activity_thread = threading.Thread(
+                target=_keep_terminal_env_alive,
+                args=(isolated_env_task_id, stop_event),
+                daemon=True,
+            )
+            activity_thread.start()
+
         # Verify Python is available on the remote
         py_check = env.execute(
             "command -v python3 >/dev/null 2>&1 && echo OK",
@@ -919,6 +1083,18 @@ def _execute_remote(
                 "tool_calls_made": 0,
                 "duration_seconds": 0,
             })
+
+        edulab_import_roots: list[str] = []
+        if require_isolated:
+            prepared = _prepare_edulab_remote_workspace(env, sandbox_dir)
+            if isinstance(prepared, str):
+                return json.dumps({
+                    "status": "error",
+                    "error": prepared,
+                    "tool_calls_made": 0,
+                    "duration_seconds": 0,
+                }, ensure_ascii=False)
+            edulab_import_roots = prepared
 
         # Create sandbox directory on remote
         env.execute(
@@ -951,6 +1127,12 @@ def _execute_remote(
             f"HERMES_RPC_DIR={shlex.quote(f'{sandbox_dir}/rpc')} "
             f"PYTHONDONTWRITEBYTECODE=1"
         )
+        if edulab_import_roots:
+            edulab_pythonpath = ":".join(edulab_import_roots)
+            env_prefix += (
+                f" EDULAB_SKILLS_DIR={shlex.quote(f'{sandbox_dir}/skills')}"
+                f" PYTHONPATH={shlex.quote(edulab_pythonpath)}"
+            )
         tz = os.getenv("HERMES_TIMEZONE", "").strip()
         if tz:
             env_prefix += f" TZ={tz}"
@@ -992,6 +1174,8 @@ def _execute_remote(
         stop_event.set()
         if rpc_thread is not None:
             rpc_thread.join(timeout=5)
+        if activity_thread is not None:
+            activity_thread.join(timeout=2)
 
         # Clean up remote sandbox dir
         try:
@@ -1000,6 +1184,20 @@ def _execute_remote(
             )
         except Exception:
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
+
+        if isolated_env_task_id:
+            try:
+                from tools.terminal_tool import cleanup_vm
+                cleanup_vm(isolated_env_task_id, force_remove=True)
+                wait_for_cleanup = getattr(env, "wait_for_cleanup", None)
+                if callable(wait_for_cleanup):
+                    wait_for_cleanup(timeout=30)
+            except Exception:
+                logger.debug(
+                    "Failed to clean up isolated EduLab environment %s",
+                    isolated_env_task_id,
+                    exc_info=True,
+                )
 
     duration = round(time.monotonic() - exec_start, 2)
 
@@ -1067,6 +1265,7 @@ def execute_code(
     code: str,
     task_id: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    require_isolated: bool = False,
 ) -> str:
     """
     Run a Python script in a sandboxed child process with RPC access
@@ -1097,6 +1296,22 @@ def execute_code(
     from tools.terminal_tool import _get_env_config
     env_type = _get_env_config()["env_type"]
 
+    # EduLab runs model-authored kernels. A local child process is not an
+    # isolation boundary: it can still read or mutate the agent container.
+    if require_isolated:
+        env_type, _ = _edulab_backend_config()
+        if env_type not in _ISOLATED_ENV_TYPES:
+            return json.dumps({
+                "status": "error",
+                "error": (
+                    "EduLab execution requires the Docker isolated code backend. "
+                    "Configure code_execution.edulab.env_type as Docker in "
+                    "config.yaml."
+                ),
+                "tool_calls_made": 0,
+                "duration_seconds": 0,
+            }, ensure_ascii=False)
+
     # execute_code runs arbitrary Python (subprocess/os.system/...) that never
     # passes through terminal()/DANGEROUS_PATTERNS, so guard the whole script
     # here before either dispatch path spawns it. Runs synchronously in the
@@ -1112,7 +1327,7 @@ def execute_code(
         }, ensure_ascii=False)
 
     if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools)
+        return _execute_remote(code, task_id, enabled_tools, require_isolated)
 
     # --- Local execution path (UDS) --- below this line is unchanged ---
 
@@ -1125,11 +1340,7 @@ def execute_code(
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
     # Determine which tools the sandbox can call
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-
-    if not sandbox_tools:
-        sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    sandbox_tools = _sandbox_tools_for_session(enabled_tools)
 
     # --- Set up temp directory with hermes_tools.py and script.py ---
     tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")
@@ -1814,6 +2025,15 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
 EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 
+def _edulab_isolation_requested(enabled_toolsets: Optional[List[str]]) -> bool:
+    """Keep EduLab code execution isolated whenever Edu is enabled.
+
+    Canvas may be enabled alongside Edu in a shared session, but that must not
+    weaken the sandbox boundary for Edu's ``execute_code`` tool.
+    """
+    return "alphart-edu" in (enabled_toolsets or [])
+
+
 # --- Registry ---
 from tools.registry import registry, tool_error
 
@@ -1824,7 +2044,9 @@ registry.register(
     handler=lambda args, **kw: execute_code(
         code=args.get("code", ""),
         task_id=kw.get("task_id"),
-        enabled_tools=kw.get("enabled_tools")),
+        enabled_tools=kw.get("enabled_tools"),
+        require_isolated=_edulab_isolation_requested(kw.get("enabled_toolsets")),
+    ),
     check_fn=check_sandbox_requirements,
     emoji="🐍",
     max_result_size_chars=100_000,

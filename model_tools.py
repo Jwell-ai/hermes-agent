@@ -992,6 +992,8 @@ def handle_function_call(
                 function_name, function_args,
                 task_id=task_id,
                 enabled_tools=sandbox_enabled,
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
             )
         else:
             result = registry.dispatch(

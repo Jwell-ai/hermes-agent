@@ -2,13 +2,17 @@
 
 import asyncio
 import json
+import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
 from tools.vision_tools import (
     _detect_video_mime_type,
+    _download_video,
+    _trusted_internal_media_headers,
     _video_to_base64_data_url,
     _handle_video_analyze,
+    _resolve_canvas_video_reference,
     _MAX_VIDEO_BASE64_BYTES,
     video_analyze_tool,
     VIDEO_ANALYZE_SCHEMA,
@@ -118,6 +122,158 @@ class TestVideoAnalyzeSchema:
         assert "video" in VIDEO_ANALYZE_SCHEMA["description"].lower()
 
 
+def test_internal_canvas_media_url_uses_authenticated_headers():
+    from tools.alphart_tools import alphart_context
+
+    with alphart_context({
+        "app_scope": "canvas",
+        "application_backend_url": "http://canvas-backend:58080",
+        "auth_token": "user-token",
+    }):
+        assert _trusted_internal_media_headers(
+            "http://canvas-backend:58080/api/v1/files/video?s3_object_name=org/video.mp4"
+        ) == {"Authorization": "Bearer user-token"}
+
+
+def test_unrelated_private_url_is_not_trusted():
+    from tools.alphart_tools import alphart_context
+
+    with alphart_context({
+        "app_scope": "canvas",
+        "application_backend_url": "http://canvas-backend:58080",
+        "auth_token": "user-token",
+    }):
+        assert _trusted_internal_media_headers("http://127.0.0.1:22/private.mp4") is None
+
+
+def test_metadata_url_is_never_trusted_as_internal_media():
+    from tools.alphart_tools import alphart_context
+
+    with alphart_context({
+        "app_scope": "canvas",
+        "application_backend_url": "http://169.254.169.254",
+        "auth_token": "user-token",
+    }):
+        assert _trusted_internal_media_headers(
+            "http://169.254.169.254/api/v1/files/video.mp4"
+        ) is None
+
+
+def test_internal_media_path_is_canonical_before_auth_headers():
+    from tools.alphart_tools import alphart_context
+
+    with alphart_context({
+        "app_scope": "canvas",
+        "application_backend_url": "http://canvas-backend:58080",
+        "auth_token": "user-token",
+    }):
+        assert _trusted_internal_media_headers(
+            "http://canvas-backend:58080/api/v1/files/../admin"
+        ) is None
+        assert _trusted_internal_media_headers(
+            "http://canvas-backend:58080/api/v1/files/%2e%2e/admin"
+        ) is None
+
+
+def test_internal_auth_headers_are_removed_on_cross_origin_redirect(tmp_path):
+    calls = []
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def get(self, url, headers):
+            calls.append((url, dict(headers)))
+            request = httpx.Request("GET", url, headers=headers)
+            if len(calls) == 1:
+                return httpx.Response(
+                    302,
+                    headers={"location": "https://storage.example/video.mp4"},
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                content=b"video",
+                headers={"content-length": "5"},
+                request=request,
+            )
+
+    def trusted_headers(url):
+        if url.startswith("http://canvas-backend:58080/api/v1/files/"):
+            return {
+                "Authorization": "Bearer user-token",
+                "X-Hermes-Agent-Token": "service-token",
+            }
+        return None
+
+    with patch("tools.vision_tools.httpx.AsyncClient", FakeAsyncClient), patch(
+        "tools.vision_tools._trusted_internal_media_headers",
+        side_effect=trusted_headers,
+    ), patch("tools.vision_tools.check_website_access", return_value=None), patch(
+        "tools.url_safety.is_safe_url", return_value=True,
+    ):
+        asyncio.get_event_loop().run_until_complete(
+            _download_video(
+                "http://canvas-backend:58080/api/v1/files/video.mp4",
+                tmp_path / "video.mp4",
+                max_retries=1,
+                request_headers=trusted_headers(
+                    "http://canvas-backend:58080/api/v1/files/video.mp4"
+                ),
+            )
+        )
+
+    assert "X-Hermes-Agent-Token" in calls[0][1]
+    assert "X-Hermes-Agent-Token" not in calls[1][1]
+    assert "Authorization" not in calls[1][1]
+
+
+def test_trusted_internal_video_url_bypasses_outer_ssrf_guard(tmp_path):
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = "Video analyzed."
+
+    async def fake_download(_url, destination, **_kwargs):
+        destination.write_bytes(b"\x00" * 100)
+        return destination
+
+    with patch(
+        "tools.vision_tools._trusted_internal_media_headers",
+        return_value={"Authorization": "Bearer user-token"},
+    ), patch(
+        "tools.vision_tools.check_website_access",
+        return_value={"message": "private address"},
+    ), patch(
+        "tools.vision_tools.get_hermes_dir",
+        return_value=tmp_path,
+    ), patch(
+        "tools.vision_tools._download_video",
+        side_effect=fake_download,
+    ) as download, patch(
+        "tools.vision_tools.async_call_llm",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ), patch(
+        "tools.vision_tools.extract_content_or_reasoning",
+        return_value="Video analyzed.",
+    ):
+        result = asyncio.get_event_loop().run_until_complete(
+            video_analyze_tool(
+                "http://canvas-backend:58080/api/v1/files/video.mp4",
+                "Describe this video",
+            )
+        )
+
+    assert json.loads(result)["success"] is True
+    download.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # _handle_video_analyze handler
 # ---------------------------------------------------------------------------
@@ -125,6 +281,21 @@ class TestVideoAnalyzeSchema:
 
 class TestHandleVideoAnalyze:
     """Tests for the registry handler wrapper."""
+
+    def test_resolves_opaque_canvas_reference_from_current_context(self):
+        from tools.alphart_tools import alphart_context
+
+        with alphart_context({
+            "app_scope": "canvas",
+            "input_videos": [{"url": "https://media.test/video.mp4"}],
+        }):
+            assert _resolve_canvas_video_reference("canvas-video-1") == "https://media.test/video.mp4"
+
+    def test_does_not_resolve_canvas_reference_outside_current_context(self):
+        from tools.alphart_tools import alphart_context
+
+        with alphart_context({"app_scope": "canvas", "input_videos": []}):
+            assert _resolve_canvas_video_reference("canvas-video-1") == "canvas-video-1"
 
     def test_returns_awaitable(self, tmp_path, monkeypatch):
         video_file = tmp_path / "test.mp4"

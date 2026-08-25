@@ -97,6 +97,22 @@ class TestHandleFunctionCall:
         assert mock_dispatch.call_args.kwargs["tool_call_id"] == "call-1"
         assert mock_dispatch.call_args.kwargs["session_id"] == "session-1"
 
+    def test_execute_code_dispatch_forwards_toolset_scope(self):
+        """Edu isolation policy must survive the execute_code fast path."""
+        with patch("model_tools.registry.dispatch", return_value='{"ok":true}') as mock_dispatch:
+            result = handle_function_call(
+                "execute_code",
+                {"code": "print('ok')"},
+                task_id="task-1",
+                enabled_tools=["execute_code"],
+                enabled_toolsets=["alphart-edu"],
+                disabled_toolsets=["alphart-canvas"],
+            )
+
+        assert result == '{"ok":true}'
+        assert mock_dispatch.call_args.kwargs["enabled_toolsets"] == ["alphart-edu"]
+        assert mock_dispatch.call_args.kwargs["disabled_toolsets"] == ["alphart-canvas"]
+
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):
         """Regression: post_tool_call and transform_tool_result hooks must
         receive a non-negative integer ``duration_ms`` kwarg measuring

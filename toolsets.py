@@ -100,6 +100,10 @@ _ALPHART_TOOLS = [
     "update_storybook_page",
 ]
 
+# EduLab kernels and renderers run through Hermes' bounded code sandbox. Keep
+# execution out of the general app/API toolset and the Canvas toolset.
+_ALPHART_EDU_TOOLS = [*_ALPHART_TOOLS, "execute_code"]
+
 # Canvas intentionally exposes only graph primitives and Canvas-owned media
 # operations. Keep Edu storybook/game tools out of Canvas turns even though the
 # handlers live in the shared Alphart tool module.
@@ -130,7 +134,7 @@ _ALPHART_EDU_SKILLS_TOOLS = [
 TOOLSETS = {
     "alphart-edu": {
         "description": "Alphart app tools: planning plus backend-managed media generation.",
-        "tools": _ALPHART_TOOLS,
+        "tools": _ALPHART_EDU_TOOLS,
         "includes": []
     },
     "alphart-canvas": {

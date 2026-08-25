@@ -32,10 +32,11 @@ import base64
 import json
 import logging
 import os
+import posixpath
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 import httpx
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from hermes_constants import get_hermes_dir
@@ -1196,40 +1197,125 @@ def _video_to_base64_data_url(video_path: Path, mime_type: Optional[str] = None)
     return f"data:{mime};base64,{encoded}"
 
 
-async def _download_video(video_url: str, destination: Path, max_retries: int = 3) -> Path:
+def _trusted_internal_media_headers(video_url: str) -> Optional[Dict[str, str]]:
+    """Return auth headers only for an app-owned media download URL."""
+    try:
+        from tools.alphart_tools import _auth_token, _backend_url
+        from tools.url_safety import is_always_blocked_url
+
+        backend_url = _backend_url()
+        parsed = urlparse(video_url)
+        backend = urlparse(backend_url)
+    except Exception:
+        return None
+
+    try:
+        # Normalize percent-encoded dot segments before granting credentials.
+        # httpx also canonicalizes these paths when it builds the request.
+        canonical_path = posixpath.normpath(unquote(parsed.path))
+    except Exception:
+        return None
+
+    if (
+        not backend.scheme
+        or not backend.netloc
+        or parsed.scheme != backend.scheme
+        or parsed.netloc.lower() != backend.netloc.lower()
+        or not canonical_path.startswith("/api/v1/files/")
+        or is_always_blocked_url(video_url)
+    ):
+        return None
+
+    headers: Dict[str, str] = {}
+    auth_token = _auth_token()
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+    service_token = (
+        os.getenv("HERMES_AGENT_TOKEN")
+        or os.getenv("ALPHART_AGENT_TOKEN")
+        or os.getenv("CANVAS_AGENT_TOKEN")
+        or ""
+    ).strip()
+    if service_token:
+        headers["X-Hermes-Agent-Token"] = service_token
+    return headers or None
+
+
+async def _download_video(
+    video_url: str,
+    destination: Path,
+    max_retries: int = 3,
+    request_headers: Optional[Dict[str, str]] = None,
+) -> Path:
     """Download video from URL with SSRF protection and retry."""
     import asyncio
 
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    async def _ssrf_redirect_guard(response):
-        if response.is_redirect and response.next_request:
-            redirect_url = str(response.next_request.url)
-            from tools.url_safety import is_safe_url
-            if not is_safe_url(redirect_url):
-                raise ValueError(
-                    f"Blocked redirect to private/internal address: {redirect_url}"
-                )
+    trusted_internal = bool(_trusted_internal_media_headers(video_url))
+
+    def is_trusted_internal_url(url: str) -> bool:
+        return trusted_internal and bool(_trusted_internal_media_headers(url))
+
+    def _same_origin(left: str, right: str) -> bool:
+        left_parts = urlparse(left)
+        right_parts = urlparse(right)
+        return (
+            left_parts.scheme.lower() == right_parts.scheme.lower()
+            and left_parts.netloc.lower() == right_parts.netloc.lower()
+        )
+
+    def _redirect_headers(
+        current_headers: Dict[str, str], current_url: str, redirect_url: str
+    ) -> Dict[str, str]:
+        headers = dict(current_headers)
+        if _same_origin(current_url, redirect_url):
+            return headers
+        # httpx strips Authorization on cross-origin redirects, but custom
+        # service headers are retained. Never forward either internal token.
+        return {
+            key: value
+            for key, value in headers.items()
+            if key.lower() not in {"authorization", "x-hermes-agent-token"}
+        }
 
     last_error = None
     for attempt in range(max_retries):
         try:
             blocked = check_website_access(video_url)
-            if blocked:
+            if blocked and not is_trusted_internal_url(video_url):
                 raise PermissionError(blocked["message"])
 
             async with httpx.AsyncClient(
                 timeout=60.0,
-                follow_redirects=True,
-                event_hooks={"response": [_ssrf_redirect_guard]},
+                follow_redirects=False,
             ) as client:
-                response = await client.get(
-                    video_url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        "Accept": "video/*,*/*;q=0.8",
-                    },
-                )
+                base_headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "video/*,*/*;q=0.8",
+                }
+                base_headers.update(request_headers or {})
+                current_url = video_url
+                headers = base_headers
+                for _ in range(6):
+                    response = await client.get(current_url, headers=headers)
+                    if not response.is_redirect:
+                        break
+
+                    location = response.headers.get("location")
+                    if not location:
+                        raise ValueError("Redirect response did not include a location")
+                    redirect_url = str(response.url.join(location))
+                    from tools.url_safety import is_safe_url
+                    if not is_safe_url(redirect_url) and not is_trusted_internal_url(redirect_url):
+                        raise ValueError(
+                            f"Blocked redirect to private/internal address: {redirect_url}"
+                        )
+                    headers = _redirect_headers(headers, current_url, redirect_url)
+                    current_url = redirect_url
+                else:
+                    raise ValueError("Too many redirects while downloading video")
+
                 response.raise_for_status()
 
                 cl = response.headers.get("content-length")
@@ -1240,7 +1326,7 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
 
                 final_url = str(response.url)
                 blocked = check_website_access(final_url)
-                if blocked:
+                if blocked and not is_trusted_internal_url(final_url):
                     raise PermissionError(blocked["message"])
 
                 body = response.content
@@ -1330,18 +1416,23 @@ async def video_analyze_tool(
             logger.info("Using local video file: %s", video_url)
             temp_video_path = local_path
             should_cleanup = False
-        elif _validate_image_url(video_url):
+        else:
+            trusted_headers = _trusted_internal_media_headers(video_url)
+            if not trusted_headers and not _validate_image_url(video_url):
+                raise ValueError(
+                    "Invalid video source. Provide an HTTP/HTTPS URL or a valid local file path."
+                )
             blocked = check_website_access(video_url)
-            if blocked:
+            if blocked and not trusted_headers:
                 raise PermissionError(blocked["message"])
             temp_dir = get_hermes_dir("cache/video", "temp_video_files")
             temp_video_path = temp_dir / f"temp_video_{uuid.uuid4()}.mp4"
-            await _download_video(video_url, temp_video_path)
-            should_cleanup = True
-        else:
-            raise ValueError(
-                "Invalid video source. Provide an HTTP/HTTPS URL or a valid local file path."
+            await _download_video(
+                video_url,
+                temp_video_path,
+                request_headers=trusted_headers,
             )
+            should_cleanup = True
 
         video_size_bytes = temp_video_path.stat().st_size
         video_size_mb = video_size_bytes / (1024 * 1024)
@@ -1519,7 +1610,11 @@ VIDEO_ANALYZE_SCHEMA = {
         "properties": {
             "video_url": {
                 "type": "string",
-                "description": "Video URL (http/https) or local file path to analyze.",
+                "description": (
+                    "Video URL (http/https) or local file path to analyze. "
+                    "Canvas requests may provide an opaque canvas-video-N reference; "
+                    "pass that reference unchanged."
+                ),
             },
             "question": {
                 "type": "string",
@@ -1531,8 +1626,33 @@ VIDEO_ANALYZE_SCHEMA = {
 }
 
 
+def _resolve_canvas_video_reference(video_url: Any) -> str:
+    """Resolve a current-turn Canvas video token without exposing its URL to the model."""
+    value = str(video_url or "").strip()
+    if not value.startswith("canvas-video-"):
+        return value
+    try:
+        from tools.alphart_tools import _ctx
+
+        context = _ctx()
+        if str(context.get("app_scope") or "").strip().lower() != "canvas":
+            return value
+        suffix = value.removeprefix("canvas-video-")
+        index = int(suffix) - 1
+        references = context.get("input_videos")
+        if not isinstance(references, list) or index < 0 or index >= len(references):
+            return value
+        reference = references[index]
+        if not isinstance(reference, dict):
+            return value
+        resolved = str(reference.get("url") or reference.get("uri") or "").strip()
+        return resolved or value
+    except (TypeError, ValueError):
+        return value
+
+
 def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
-    video_url = args.get("video_url", "")
+    video_url = _resolve_canvas_video_reference(args.get("video_url", ""))
     question = args.get("question", "")
     full_prompt = (
         "Fully describe and explain everything happening in this video, "

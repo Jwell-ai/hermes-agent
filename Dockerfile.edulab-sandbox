@@ -1,0 +1,15 @@
+# Runtime image for EduLab's isolated execute_code backend.
+# The agent ships the EduLab skill sources into each execution workspace, while
+# this image provides the preinstalled numerical dependency required by them.
+FROM python:3.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN pip install --no-cache-dir sympy==1.14.0
+
+WORKDIR /workspace
+
+# DockerEnvironment keeps this container alive and runs scripts through
+# `docker exec`; the base Python image otherwise exits immediately.
+CMD ["sleep", "infinity"]

@@ -1913,6 +1913,12 @@ DEFAULT_CONFIG = {
         # Env scrubbing (strips *_API_KEY, *_TOKEN, *_SECRET, ...) and the
         # tool whitelist apply identically in both modes.
         "mode": "project",
+        # EduLab model-authored kernels always run in a separate container.
+        # The image is built by the alphart compose deployment.
+        "edulab": {
+            "env_type": "docker",
+            "docker_image": "alphart-edulab-sandbox:latest",
+        },
     },
 
     # Tool Search (progressive disclosure for large tool surfaces).

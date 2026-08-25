@@ -91,6 +91,7 @@ logger = logging.getLogger(__name__)
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 BUNDLED_CANVAS_SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills" / "canvas"
+BUNDLED_EDU_SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills" / "education"
 
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
@@ -109,6 +110,13 @@ def _canvas_skill_search_dirs() -> List[Path]:
     """Expose bundled Canvas workflows only to Canvas-scoped requests."""
     if _active_alphart_scope() == "canvas" and BUNDLED_CANVAS_SKILLS_DIR.is_dir():
         return [BUNDLED_CANVAS_SKILLS_DIR]
+    return []
+
+
+def _edu_skill_search_dirs() -> List[Path]:
+    """Expose bundled EduLab workflows only to Edu-scoped requests."""
+    if _active_alphart_scope() == "edu" and BUNDLED_EDU_SKILLS_DIR.is_dir():
+        return [BUNDLED_EDU_SKILLS_DIR]
     return []
 
 
@@ -628,6 +636,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
         dirs_to_scan.append(SKILLS_DIR)
     dirs_to_scan.extend(get_external_skills_dirs())
     dirs_to_scan.extend(_canvas_skill_search_dirs())
+    dirs_to_scan.extend(_edu_skill_search_dirs())
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
@@ -875,11 +884,13 @@ def skill_view(
     """
     try:
         if not _skill_allowed_in_active_scope(name):
+            scope = _active_alphart_scope()
+            scope_label = scope.title() if scope else "current"
             return json.dumps(
                 {
                     "success": False,
-                    "error": f"Skill '{name}' is not available in the Canvas app scope.",
-                    "hint": "Use skills_list to see Canvas skills available for this request.",
+                    "error": f"Skill '{name}' is not available in the {scope_label} app scope.",
+                    "hint": f"Use skills_list to see {scope_label} skills available for this request.",
                 },
                 ensure_ascii=False,
             )
@@ -959,6 +970,7 @@ def skill_view(
             all_dirs.append(SKILLS_DIR)
         all_dirs.extend(get_external_skills_dirs())
         all_dirs.extend(_canvas_skill_search_dirs())
+        all_dirs.extend(_edu_skill_search_dirs())
 
         if not all_dirs:
             return json.dumps(
@@ -1023,11 +1035,11 @@ def skill_view(
                 if found_md.name != "SKILL.md":
                     _record(None, found_md)
 
-        # The Canvas bundle is a fallback for deployments that have not yet
-        # seeded it into ~/.hermes/skills. Prefer the installed/external copy
-        # when both exist, while keeping collision detection for those normal
+        # App bundles are fallbacks for deployments that have not yet seeded
+        # them into ~/.hermes/skills. Prefer an installed/external copy when
+        # both exist, while keeping collision detection for normal
         # user-configured directories intact.
-        bundled_dirs = _canvas_skill_search_dirs()
+        bundled_dirs = [*_canvas_skill_search_dirs(), *_edu_skill_search_dirs()]
         if bundled_dirs:
             bundled_roots = []
             for bundled_dir in bundled_dirs:
@@ -1036,7 +1048,7 @@ def skill_view(
                 except Exception:
                     bundled_roots.append(bundled_dir)
 
-            def _is_bundled_canvas_candidate(candidate: Tuple[Optional[Path], Path]) -> bool:
+            def _is_bundled_candidate(candidate: Tuple[Optional[Path], Path]) -> bool:
                 try:
                     candidate_path = candidate[1].resolve()
                 except Exception:
@@ -1050,7 +1062,7 @@ def skill_view(
                 return False
 
             installed_candidates = [
-                candidate for candidate in candidates if not _is_bundled_canvas_candidate(candidate)
+                candidate for candidate in candidates if not _is_bundled_candidate(candidate)
             ]
             if installed_candidates:
                 candidates = installed_candidates
@@ -1300,6 +1312,7 @@ def skill_view(
                 for ext in [
                     "*.md",
                     "*.py",
+                    "*.html",
                     "*.yaml",
                     "*.yml",
                     "*.json",

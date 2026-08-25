@@ -3,7 +3,7 @@
 The reaper itself is unit-tested in tests/tools/test_docker_environment.py
 under the "Orphan reaper" section. These tests cover the terminal_tool-side
 gates: once-per-process behavior, the disable flag, and the
-``lifetime_seconds`` doubling that determines the reaper's age threshold.
+the age threshold derived from terminal lifetime and code-execution timeout.
 
 Issue #20561 — without these gates, parallel subagents would each fire the
 reaper on container creation, and the ``terminal.docker_orphan_reaper: false``
@@ -27,21 +27,26 @@ def test_maybe_reap_runs_once_per_process(monkeypatch):
     would otherwise fire N concurrent docker ps + inspect storms against the
     daemon and waste 5–10s of startup."""
     _reset_reaper_gate()
-    call_count = {"reap": 0}
+    call_count = {"orphan": 0, "ephemeral": 0}
 
-    def _fake_reap(**kwargs):
-        call_count["reap"] += 1
+    def _fake_orphan_reap(**kwargs):
+        call_count["orphan"] += 1
         return 0
 
-    with patch("tools.environments.docker.reap_orphan_containers", _fake_reap):
+    def _fake_ephemeral_reap(**kwargs):
+        call_count["ephemeral"] += 1
+        return 0
+
+    with (
+        patch("tools.environments.docker.reap_orphan_containers", _fake_orphan_reap),
+        patch("tools.environments.docker.reap_ephemeral_containers", _fake_ephemeral_reap),
+    ):
         config = {"docker_orphan_reaper": True}
         terminal_tool._maybe_reap_docker_orphans(config)
         terminal_tool._maybe_reap_docker_orphans(config)
         terminal_tool._maybe_reap_docker_orphans(config)
 
-    assert call_count["reap"] == 1, (
-        f"reaper must run exactly once per process; got {call_count['reap']} calls"
-    )
+    assert call_count == {"orphan": 1, "ephemeral": 1}
 
 
 def test_maybe_reap_respects_disable_flag(monkeypatch):
@@ -56,7 +61,10 @@ def test_maybe_reap_respects_disable_flag(monkeypatch):
         call_count["reap"] += 1
         return 0
 
-    with patch("tools.environments.docker.reap_orphan_containers", _fake_reap):
+    with (
+        patch("tools.environments.docker.reap_orphan_containers", _fake_reap),
+        patch("tools.environments.docker.reap_ephemeral_containers", _fake_reap),
+    ):
         terminal_tool._maybe_reap_docker_orphans({"docker_orphan_reaper": False})
 
     assert call_count["reap"] == 0, "disabled reaper must not run any docker calls"
@@ -77,7 +85,10 @@ def test_maybe_reap_doubles_lifetime_for_max_age(monkeypatch):
         return 0
 
     monkeypatch.setenv("TERMINAL_LIFETIME_SECONDS", "300")
-    with patch("tools.environments.docker.reap_orphan_containers", _fake_reap):
+    with (
+        patch("tools.environments.docker.reap_orphan_containers", _fake_reap),
+        patch("tools.environments.docker.reap_ephemeral_containers", _fake_reap),
+    ):
         terminal_tool._maybe_reap_docker_orphans({"docker_orphan_reaper": True})
 
     assert captured_args.get("max_age_seconds") == 600, (
@@ -97,12 +108,35 @@ def test_maybe_reap_floors_at_60_seconds(monkeypatch):
         return 0
 
     monkeypatch.setenv("TERMINAL_LIFETIME_SECONDS", "0")
-    with patch("tools.environments.docker.reap_orphan_containers", _fake_reap):
+    with (
+        patch("tools.environments.docker.reap_orphan_containers", _fake_reap),
+        patch("tools.environments.docker.reap_ephemeral_containers", _fake_reap),
+    ):
         terminal_tool._maybe_reap_docker_orphans({"docker_orphan_reaper": True})
 
-    assert captured_args.get("max_age_seconds") == 120, (
-        f"expected floored 60 × 2 = 120, got {captured_args.get('max_age_seconds')}"
+    assert captured_args.get("max_age_seconds") == 600, (
+        f"expected max(60, default execution timeout 300) × 2 = 600, got {captured_args.get('max_age_seconds')}"
     )
+
+
+def test_maybe_reap_respects_code_execution_timeout(monkeypatch):
+    """A long-running execute_code job must outlive the terminal lifetime floor."""
+    _reset_reaper_gate()
+    captured_args = {}
+
+    def _fake_reap(**kwargs):
+        captured_args.update(kwargs)
+        return 0
+
+    monkeypatch.setenv("TERMINAL_LIFETIME_SECONDS", "300")
+    with (
+        patch("hermes_cli.config.read_raw_config", return_value={"code_execution": {"timeout": 1200}}),
+        patch("tools.environments.docker.reap_orphan_containers", _fake_reap),
+        patch("tools.environments.docker.reap_ephemeral_containers", _fake_reap),
+    ):
+        terminal_tool._maybe_reap_docker_orphans({"docker_orphan_reaper": True})
+
+    assert captured_args.get("max_age_seconds") == 2400
 
 
 def test_maybe_reap_passes_current_profile_as_filter(monkeypatch):
@@ -116,8 +150,11 @@ def test_maybe_reap_passes_current_profile_as_filter(monkeypatch):
         captured_args.update(kwargs)
         return 0
 
-    with patch("tools.environments.docker.reap_orphan_containers", _fake_reap), \
-         patch("tools.environments.docker._get_active_profile_name", return_value="research-bot"):
+    with (
+        patch("tools.environments.docker.reap_orphan_containers", _fake_reap),
+        patch("tools.environments.docker.reap_ephemeral_containers", _fake_reap),
+        patch("tools.environments.docker._get_active_profile_name", return_value="research-bot"),
+    ):
         terminal_tool._maybe_reap_docker_orphans({"docker_orphan_reaper": True})
 
     assert captured_args.get("profile_filter") == "research-bot", (
@@ -134,6 +171,9 @@ def test_maybe_reap_swallows_exceptions(monkeypatch):
     def _exploding_reap(**kwargs):
         raise RuntimeError("docker daemon ate the cat")
 
-    with patch("tools.environments.docker.reap_orphan_containers", _exploding_reap):
+    with (
+        patch("tools.environments.docker.reap_orphan_containers", _exploding_reap),
+        patch("tools.environments.docker.reap_ephemeral_containers", _exploding_reap),
+    ):
         # Must not raise
         terminal_tool._maybe_reap_docker_orphans({"docker_orphan_reaper": True})

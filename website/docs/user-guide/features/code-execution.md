@@ -143,6 +143,9 @@ print(json.dumps(report, indent=2))
 # ~/.hermes/config.yaml
 code_execution:
   mode: project   # or "strict"
+  edulab:
+    env_type: docker
+    docker_image: alphart-edulab-sandbox:latest
 ```
 
 Fallback behavior in `project` mode: if `VIRTUAL_ENV` / `CONDA_PREFIX` is unset, broken, or points at a Python older than 3.8, the resolver falls back cleanly to `sys.executable` — it never leaves the agent without a working interpreter.
@@ -154,6 +157,11 @@ Security-critical invariants are identical across both modes:
 - resource limits (timeout, stdout cap, tool-call cap)
 
 Switching mode changes where scripts run and which interpreter runs them, not what credentials they can see or which tools they can call.
+
+EduLab kernels use the separate `code_execution.edulab` container backend. The
+backend and image are configured in `config.yaml`; legacy
+`TERMINAL_EDULAB_ENV` and `TERMINAL_EDULAB_DOCKER_IMAGE` environment variables
+are accepted as compatibility overrides.
 
 ## Resource Limits
 
@@ -172,6 +180,9 @@ code_execution:
   mode: project      # project (default) | strict
   timeout: 300       # Max seconds per script (default: 300)
   max_tool_calls: 50 # Max tool calls per execution (default: 50)
+  edulab:
+    env_type: docker
+    docker_image: alphart-edulab-sandbox:latest
 ```
 
 ## How Tool Calls Work Inside Scripts

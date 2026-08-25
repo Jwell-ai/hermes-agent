@@ -51,9 +51,22 @@ services:
     image: alphart-hermes-agent:latest
     restart: unless-stopped
     logging: *agent-logging
+    depends_on:
+      - alphart-edulab-sandbox
     env_file:
       - ./.env.alphart
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     expose:
       - "58088"
     deploy:
       replicas: ${ALPHART_AGENT_REPLICAS:-2}
+
+  # Built and kept available for Hermes' DockerEnvironment. The agent starts
+  # one short-lived execution container per task from this image.
+  alphart-edulab-sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.edulab-sandbox
+    image: alphart-edulab-sandbox:latest
+    restart: unless-stopped

@@ -227,6 +227,79 @@ def reap_orphan_containers(
     return removed
 
 
+def reap_ephemeral_containers(
+    *,
+    max_age_seconds: int = 600,
+    profile_filter: str | None = None,
+    docker_exe: str | None = None,
+) -> int:
+    """Remove stale running containers created for one-shot executions.
+
+    One-shot containers run ``sleep infinity`` so the parent can exec commands
+    into them. If the parent is killed, the Docker daemon otherwise keeps the
+    child running forever. Only containers carrying the explicit
+    ``hermes-ephemeral=1`` label are eligible here.
+    """
+    docker = docker_exe or find_docker() or "docker"
+    filters = [
+        "--filter", "label=hermes-agent=1",
+        "--filter", "label=hermes-ephemeral=1",
+        "--filter", "status=running",
+    ]
+    if profile_filter:
+        filters.extend(["--filter", f"label=hermes-profile={_sanitize_label_value(profile_filter)}"])
+
+    try:
+        listing = subprocess.run(
+            [docker, "ps", "-a", *filters, "--format", "{{.ID}}"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.debug("ephemeral container reaper docker ps failed: %s", e)
+        return 0
+    if listing.returncode != 0:
+        logger.debug(
+            "ephemeral container reaper docker ps returned %d: %s",
+            listing.returncode, listing.stderr.strip(),
+        )
+        return 0
+
+    candidate_ids = [line.strip() for line in listing.stdout.splitlines() if line.strip()]
+    if not candidate_ids:
+        return 0
+
+    import datetime
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    removed = 0
+    for container_id in candidate_ids:
+        created_at = _container_created_at(docker, container_id)
+        if created_at is None:
+            continue
+        age = (now - created_at).total_seconds()
+        if age < max_age_seconds:
+            continue
+        try:
+            result = subprocess.run(
+                [docker, "rm", "-f", container_id],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+            if result.returncode == 0:
+                removed += 1
+                logger.info(
+                    "Reaped stale ephemeral container %s (running for %d seconds)",
+                    container_id[:12], int(age),
+                )
+            else:
+                logger.debug(
+                    "docker rm -f %s failed: %s",
+                    container_id[:12], result.stderr.strip(),
+                )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("docker rm -f %s failed: %s", container_id[:12], e)
+    return removed
+
+
 def _container_finished_at(docker_exe: str, container_id: str):
     """Parse ``docker inspect`` FinishedAt for *container_id*.
 
@@ -258,6 +331,30 @@ def _container_finished_at(docker_exe: str, container_id: str):
         return datetime.datetime.fromisoformat(raw)
     except ValueError as e:
         logger.debug("could not parse FinishedAt %r for %s: %s", raw, container_id[:12], e)
+        return None
+
+
+def _container_created_at(docker_exe: str, container_id: str):
+    """Return a timezone-aware Docker Created timestamp, or ``None``."""
+    try:
+        result = subprocess.run(
+            [docker_exe, "inspect", "--format", "{{.Created}}", container_id],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.debug("docker inspect Created failed for %s: %s", container_id[:12], e)
+        return None
+    if result.returncode != 0:
+        return None
+    raw = result.stdout.strip()
+    if not raw or raw.startswith("0001-01-01"):
+        return None
+    raw = re.sub(r"(\.\d{6})\d+", r"\1", raw).replace("Z", "+00:00")
+    try:
+        import datetime
+        return datetime.datetime.fromisoformat(raw)
+    except ValueError as e:
+        logger.debug("could not parse Created %r for %s: %s", raw, container_id[:12], e)
         return None
 
 
@@ -526,14 +623,21 @@ class DockerEnvironment(BaseEnvironment):
         run_as_host_user: bool = False,
         extra_args: list = None,
         persist_across_processes: bool = True,
+        ephemeral: bool = False,
+        mount_credential_files: bool = True,
+        mount_skill_directories: bool = True,
+        mount_cache_directories: bool = True,
+        forward_passthrough_env: bool = True,
     ):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent = persistent_filesystem
         self._persist_across_processes = persist_across_processes
+        self._ephemeral = ephemeral
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
+        self._forward_passthrough_env = forward_passthrough_env
         self._env = _normalize_env_dict(env)
         self._container_id: Optional[str] = None
         self._labels: dict[str, str] = {}
@@ -636,7 +740,8 @@ class DockerEnvironment(BaseEnvironment):
                 get_cache_directory_mounts,
             )
 
-            for mount_entry in get_credential_file_mounts():
+            credential_mounts = get_credential_file_mounts() if mount_credential_files else []
+            for mount_entry in credential_mounts:
                 src = Path(mount_entry["host_path"])
                 if src.is_dir():
                     # Docker-in-Docker: Docker auto-created the source path as
@@ -665,7 +770,8 @@ class DockerEnvironment(BaseEnvironment):
 
             # Mount skill directories (local + external) so skill
             # scripts/templates are available inside the container.
-            for skills_mount in get_skills_directory_mount():
+            skill_mounts = get_skills_directory_mount() if mount_skill_directories else []
+            for skills_mount in skill_mounts:
                 src = Path(skills_mount["host_path"])
                 if not src.is_dir():
                     logger.warning(
@@ -687,7 +793,8 @@ class DockerEnvironment(BaseEnvironment):
             # screenshots) so the agent can access uploaded files and other
             # cached media from inside the container.  Read-only — the
             # container reads these but the host gateway manages writes.
-            for cache_mount in get_cache_directory_mounts():
+            cache_mounts = get_cache_directory_mounts() if mount_cache_directories else []
+            for cache_mount in cache_mounts:
                 src = Path(cache_mount["host_path"])
                 if not src.is_dir():
                     logger.warning(
@@ -791,11 +898,15 @@ class DockerEnvironment(BaseEnvironment):
             "--label", f"hermes-task-id={task_label}",
             "--label", f"hermes-profile={profile_name}",
         ]
+        if self._ephemeral:
+            label_args.extend(["--label", "hermes-ephemeral=1"])
         self._labels = {
             "hermes-agent": "1",
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
         }
+        if self._ephemeral:
+            self._labels["hermes-ephemeral"] = "1"
 
         # Cross-process container reuse (issue #20561 — docs claim "ONE long-lived
         # container shared across sessions").  If a prior Hermes process
@@ -880,13 +991,15 @@ class DockerEnvironment(BaseEnvironment):
         """
         exec_env: dict[str, str] = dict(self._env)
 
-        explicit_forward_keys = set(self._forward_env)
+        allow_passthrough = getattr(self, "_forward_passthrough_env", True)
+        explicit_forward_keys = set(self._forward_env) if allow_passthrough else set()
         passthrough_keys: set[str] = set()
-        try:
-            from tools.env_passthrough import get_all_passthrough
-            passthrough_keys = set(get_all_passthrough())
-        except Exception:
-            pass
+        if allow_passthrough:
+            try:
+                from tools.env_passthrough import get_all_passthrough
+                passthrough_keys = set(get_all_passthrough())
+            except Exception:
+                pass
         # Explicit docker_forward_env entries are an intentional opt-in and must
         # win over the generic Hermes secret blocklist. Only implicit passthrough
         # keys are filtered.
@@ -1054,11 +1167,9 @@ class DockerEnvironment(BaseEnvironment):
         ``force_remove=True`` overrides persist mode and always tears the
         container down (``docker stop`` + ``docker rm -f``). This is the
         explicit-teardown path for ``/reset``, ``cleanup_vm(task_id)``-driven
-        resets, or any caller that wants a guaranteed fresh container on next
-        ``DockerEnvironment(task_id=...)``. No current caller passes
-        ``force_remove=True``; the parameter is here so the explicit-teardown
-        semantics can be wired up later without changing this method's
-        signature.
+        resets, the one-shot isolated EduLab execution path, or any caller
+        that wants a guaranteed fresh container on next
+        ``DockerEnvironment(task_id=...)``.
 
         Cleanup runs on a daemon thread with bounded ``subprocess.run`` calls
         (not the racy ``Popen(... &)`` pattern from before PR #33645). The

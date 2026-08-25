@@ -13,14 +13,20 @@ from alphart_agent_service import (
     AlphartEduChatRequest,
     AlphartEduTitleRequest,
     _alphart_enabled_toolsets,
+    _canvas_agent_prompt,
+    _canvas_persisted_user_message,
+    _canvas_video_analysis_intent,
+    _canvas_video_reference_message,
     _canvas_video_recovery_needed,
     _canvas_workflow_item_type,
     _generation_tool_attempted,
     _generation_tool_effectively_failed,
     _forced_media_tool_messages,
+    _input_videos_from_content,
     _media_intent,
     _post_chat_event_callback,
     _post_chat_result_callback,
+    _prepare_chat_content_for_model,
     _provider_config_for_domain,
     _title_relay_idempotency_key,
     _uses_jwell_internal_relay,
@@ -49,7 +55,116 @@ def test_canvas_flat_multimodal_config_is_used():
 def test_canvas_toolsets_exclude_edu_workflows():
     request = AlphartEduChatRequest(app_scope="canvas")
 
-    assert _alphart_enabled_toolsets(request) == ["alphart-canvas", "alphart-canvas-skills"]
+    assert _alphart_enabled_toolsets(request) == ["alphart-canvas", "alphart-canvas-skills", "video"]
+
+
+def test_canvas_video_references_enable_analysis_and_reach_prompt():
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        messages=[{"role": "user", "content": "summarize this video"}],
+    )
+    references = _input_videos_from_content(
+        request,
+        [{"type": "video_url", "video_url": {"url": "https://media.test/video.mp4"}}],
+        "summarize this video",
+    )
+
+    assert _alphart_enabled_toolsets(request) == [
+        "alphart-canvas",
+        "alphart-canvas-skills",
+        "video",
+    ]
+    prompt = _canvas_agent_prompt(request)
+    assert "https://media.test/video.mp4" not in prompt
+    assert "current user message contains Canvas video references" in prompt
+
+    turn_context = _canvas_video_reference_message(request, references)
+    assert "https://media.test/video.mp4" not in turn_context
+    assert '"reference_id": "canvas-video-1"' in turn_context
+    assert "call video_analyze exactly once" in turn_context
+
+    generation_request = AlphartEduChatRequest(
+        app_scope="canvas",
+        messages=[{"role": "user", "content": "use this as a keyframe and generate a video"}],
+    )
+    assert _alphart_enabled_toolsets(generation_request) == [
+        "alphart-canvas",
+        "alphart-canvas-skills",
+        "video",
+    ]
+
+
+def test_canvas_video_parts_are_not_injected_as_presigned_url_text():
+    request = AlphartEduChatRequest(app_scope="canvas")
+
+    assert _prepare_chat_content_for_model(
+        request,
+        [
+            {
+                "type": "text",
+                "text": (
+                    "summarize this video\n\n<input_videos count=\"1\">"
+                    "<video file_id=\"video-1\" url=\"https://signed.test/video.mp4\" />"
+                    "</input_videos>"
+                ),
+            },
+            {"type": "video_url", "video_url": "https://media.test/video.mp4"},
+        ],
+    ) == [{"type": "text", "text": "summarize this video\n\n"}]
+
+
+def test_canvas_persisted_user_message_uses_opaque_video_context():
+    content = [
+        {"type": "text", "text": "generate a video"},
+        {"type": "video_url", "video_url": {"url": "https://signed.test/video.mp4"}},
+    ]
+    reference = "CANVAS VIDEO REFERENCES FOR THIS TURN"
+
+    persisted = _canvas_persisted_user_message(content, reference)
+
+    assert persisted["role"] == "user"
+    assert all(part.get("type") != "video_url" for part in persisted["content"])
+    assert persisted["content"][-1] == {"type": "text", "text": reference}
+    assert "signed.test" not in json.dumps(persisted)
+
+
+def test_canvas_persisted_user_message_strips_string_video_markup():
+    content = (
+        'generate a video\n\n<input_videos count="1">'
+        '<video file_id="video-1" url="https://signed.test/video.mp4" />'
+        '</input_videos>'
+    )
+
+    persisted = _canvas_persisted_user_message(
+        content,
+        "CANVAS VIDEO REFERENCES FOR THIS TURN",
+    )
+
+    serialized = json.dumps(persisted)
+    assert "signed.test" not in serialized
+    assert "<input_videos" not in serialized
+    assert "<video" not in serialized
+    assert "CANVAS VIDEO REFERENCES FOR THIS TURN" in serialized
+
+
+def test_canvas_video_references_enable_analysis_for_descriptive_prompts():
+    for phrase in (
+        "describe this video",
+        "what is this video about?",
+        "请描述这个视频",
+        "看看这个视频",
+        "这个视频讲了什么？",
+    ):
+        request = AlphartEduChatRequest(
+            app_scope="canvas",
+            messages=[{"role": "user", "content": phrase}],
+        )
+        assert _canvas_video_analysis_intent(request) is True
+        assert _alphart_enabled_toolsets(request) == [
+            "alphart-canvas",
+            "alphart-canvas-skills",
+            "video",
+        ]
 
 
 def test_canvas_script_only_toolsets_exclude_edu_skill_management():
@@ -135,12 +250,14 @@ def test_edu_toolset_does_not_advertise_canvas_graph_mutations():
     edu_tools = set(resolve_toolset("alphart-edu"))
 
     assert {"canvas_create_node", "canvas_update_node", "canvas_connect_nodes"}.isdisjoint(edu_tools)
+    assert "execute_code" in edu_tools
 
 
 def test_canvas_toolset_owns_canvas_graph_mutations():
     canvas_tools = set(resolve_toolset("alphart-canvas"))
 
     assert {"canvas_create_node", "canvas_update_node", "canvas_connect_nodes"}.issubset(canvas_tools)
+    assert "execute_code" not in canvas_tools
 
 
 def test_prompt_refinement_does_not_route_to_media_generation():
@@ -161,6 +278,55 @@ def test_canvas_explicit_video_request_overrides_selected_image():
     )
 
     assert _canvas_workflow_item_type(request) == "video"
+
+
+def test_canvas_video_references_are_recovered_from_existing_message_parts():
+    request = AlphartEduChatRequest(app_scope="canvas", backend_url="https://canvas.example")
+    content = [
+        {
+            "type": "video_url",
+            "video_url": "https://media.example/video.mp4",
+            "s3_object_name": "org/canvas/video.mp4",
+        },
+    ]
+
+    refs = _input_videos_from_content(
+        request,
+        content,
+        '<input_videos count="1"><video file_id="video-1" s3_object_name="org/canvas/video-1.mp4" /></input_videos>',
+    )
+
+    assert [ref["url"] for ref in refs] == [
+        "https://media.example/video.mp4",
+        "https://canvas.example/api/v1/files/video-1.mp4?s3_object_name=org%2Fcanvas%2Fvideo-1.mp4",
+    ]
+
+
+def test_canvas_top_level_video_references_are_normalized():
+    request = AlphartEduChatRequest(app_scope="canvas")
+    refs = _input_videos_from_content(
+        request,
+        [{"video_url": "https://media.example/video.mp4", "filename": "video.mp4"}],
+        "",
+        allow_untyped=True,
+    )
+
+    assert refs == [{
+        "video_url": "https://media.example/video.mp4",
+        "filename": "video.mp4",
+        "url": "https://media.example/video.mp4",
+    }]
+
+
+def test_canvas_top_level_string_video_reference_is_normalized():
+    request = AlphartEduChatRequest(app_scope="canvas")
+
+    assert _input_videos_from_content(
+        request,
+        ["https://media.example/video.mp4"],
+        "",
+        allow_untyped=True,
+    ) == [{"url": "https://media.example/video.mp4"}]
 
 
 def test_canvas_video_recovery_routes_after_speculative_image_failure():

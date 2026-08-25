@@ -44,7 +44,12 @@ from tools.code_execution_tool import (
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
     _execute_remote,
+    _prepare_edulab_remote_workspace,
+    _sandbox_tools_for_session,
+    _edulab_backend_config,
+    _edulab_isolation_requested,
 )
+from toolsets import TOOLSETS
 
 
 def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
@@ -68,6 +73,20 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
 
 
 class TestSandboxRequirements(unittest.TestCase):
+    def test_edulab_environment_overrides_persisted_config(self):
+        with patch(
+            "tools.code_execution_tool._load_config",
+            return_value={"edulab": {"env_type": "docker", "docker_image": "configured:latest"}},
+        ), patch.dict(
+            os.environ,
+            {
+                "TERMINAL_EDULAB_ENV": "docker",
+                "TERMINAL_EDULAB_DOCKER_IMAGE": "override:latest",
+            },
+            clear=False,
+        ):
+            self.assertEqual(_edulab_backend_config(), ("docker", "override:latest"))
+
     def test_available_on_posix(self):
         if sys.platform != "win32":
             self.assertTrue(check_sandbox_requirements())
@@ -79,6 +98,21 @@ class TestSandboxRequirements(unittest.TestCase):
 
 
 class TestHermesToolsGeneration(unittest.TestCase):
+    def test_execute_code_is_edu_only(self):
+        self.assertIn("execute_code", TOOLSETS["alphart-edu"]["tools"])
+        self.assertNotIn("execute_code", TOOLSETS["hermes-api-server"]["tools"])
+
+    def test_edu_execution_stays_isolated_with_mixed_toolsets(self):
+        self.assertTrue(_edulab_isolation_requested(["alphart-edu", "alphart-canvas"]))
+        self.assertFalse(_edulab_isolation_requested(["alphart-canvas"]))
+
+    def test_session_allowlist_does_not_fall_back_to_all_tools(self):
+        self.assertEqual(_sandbox_tools_for_session(["execute_code"]), frozenset())
+        self.assertEqual(_sandbox_tools_for_session(["generate_image"]), frozenset())
+
+    def test_missing_session_allowlist_keeps_standalone_behavior(self):
+        self.assertEqual(_sandbox_tools_for_session(None), SANDBOX_ALLOWED_TOOLS)
+
     def test_generates_all_allowed_tools(self):
         src = generate_hermes_tools_module(list(SANDBOX_ALLOWED_TOOLS))
         for tool in SANDBOX_ALLOWED_TOOLS:
@@ -172,6 +206,81 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         self.assertIn("HERMES_RPC_DIR=/data/data/com.termux/files/usr/tmp/hermes_exec_", run_cmd)
         self.assertIn("rm -rf /data/data/com.termux/files/usr/tmp/hermes_exec_", cleanup_cmd)
         self.assertNotIn("mkdir -p /tmp/hermes_exec_", mkdir_cmd)
+
+    def test_edulab_remote_requires_preinstalled_sympy(self):
+        class FakeEnv:
+            def get_temp_dir(self):
+                return "/tmp"
+
+            def execute(self, command, cwd=None, timeout=None):
+                if "command -v python3" in command:
+                    return {"output": "OK\n"}
+                if "import sympy" in command:
+                    return {"output": "", "returncode": 1}
+                return {"output": ""}
+
+        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env", return_value=(FakeEnv(), "docker")):
+            result = json.loads(_execute_remote(
+                "print('hello')", "task-1", ["terminal"], require_isolated=True,
+            ))
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("missing sympy", result["error"])
+
+    def test_edulab_remote_adds_kernel_directories_to_pythonpath(self):
+        class FakeEnv:
+            def execute(self, command, cwd=None, timeout=None):
+                return {"output": "1.14.0\n"}
+
+        with patch("tools.code_execution_tool._ship_file_to_remote"):
+            roots = _prepare_edulab_remote_workspace(FakeEnv(), "/tmp/hermes-edulab")
+
+        self.assertIsInstance(roots, list)
+        self.assertEqual(
+            roots,
+            [
+                "/tmp/hermes-edulab/skills/edu-analytic-geometry/lib",
+                "/tmp/hermes-edulab/skills/edu-chem-reaction/lib",
+                "/tmp/hermes-edulab/skills/edu-solid-geometry/lib",
+            ],
+        )
+
+    def test_edulab_remote_uses_one_shot_environment_and_reclaims_it(self):
+        class FakeEnv:
+            def get_temp_dir(self):
+                return "/tmp"
+
+            def execute(self, command, cwd=None, timeout=None):
+                if "command -v python3" in command:
+                    return {"output": "OK\n"}
+                if "python3 script.py" in command:
+                    return {"output": "hello\n", "returncode": 0}
+                return {"output": ""}
+
+        env = FakeEnv()
+        env_task_ids = []
+
+        def create_env(task_id, **kwargs):
+            env_task_ids.append(task_id)
+            return env, "docker"
+
+        fake_thread = MagicMock()
+        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._edulab_backend_config", return_value=("docker", "edulab:latest")), \
+             patch("tools.code_execution_tool._get_or_create_env", side_effect=create_env), \
+             patch("tools.code_execution_tool._prepare_edulab_remote_workspace", return_value=[]), \
+             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread), \
+             patch("tools.terminal_tool.cleanup_vm") as cleanup_vm:
+            result = json.loads(_execute_remote(
+                "print('hello')", "task-1", ["terminal"], require_isolated=True,
+            ))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(env_task_ids), 1)
+        self.assertRegex(env_task_ids[0], r"^task-1:edulab:[0-9a-f]{12}$")
+        cleanup_vm.assert_called_once_with(env_task_ids[0], force_remove=True)
 
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
@@ -772,6 +881,19 @@ class TestEnvVarFiltering(unittest.TestCase):
 
 class TestExecuteCodeEdgeCases(unittest.TestCase):
 
+    def test_edu_execution_rejects_unsafe_local_backend(self):
+        for env_type in ("local", "ssh"):
+            with self.subTest(env_type=env_type), \
+                 patch("tools.terminal_tool._get_env_config", return_value={"env_type": env_type}), \
+                 patch.dict(os.environ, {"TERMINAL_EDULAB_ENV": env_type}, clear=False):
+                result = json.loads(execute_code(
+                    "open('/tmp/should-not-run', 'w').close()",
+                    task_id=f"test-edu-{env_type}",
+                    require_isolated=True,
+                ))
+            self.assertEqual(result["status"], "error")
+            self.assertIn("isolated code backend", result["error"])
+
     def test_windows_returns_error(self):
         """When SANDBOX_AVAILABLE is False (e.g. when the backend deems
         the sandbox unusable for this environment), execute_code returns
@@ -805,26 +927,25 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         self.assertIn("all imports ok", result["output"])
 
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
-    def test_empty_enabled_tools_uses_all(self):
-        """When enabled_tools is [] (empty), all sandbox tools should be available."""
+    def test_empty_enabled_tools_exposes_no_tools(self):
+        """An explicit empty allowlist must not expose sandbox tools."""
         code = (
-            "from hermes_tools import terminal, web_search\n"
-            "print('imports ok')\n"
+            "import hermes_tools\n"
+            "print('terminal available:', hasattr(hermes_tools, 'terminal'))\n"
         )
         with patch("model_tools.handle_function_call",
                     return_value=json.dumps({"ok": True})):
             result = json.loads(execute_code(code, task_id="test-empty",
                                              enabled_tools=[]))
         self.assertEqual(result["status"], "success")
-        self.assertIn("imports ok", result["output"])
+        self.assertIn("terminal available: False", result["output"])
 
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
-    def test_nonoverlapping_tools_fallback(self):
-        """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
-        should fall back to all allowed tools."""
+    def test_nonoverlapping_tools_exposes_no_tools(self):
+        """A non-overlapping session allowlist must expose no sandbox tools."""
         code = (
-            "from hermes_tools import terminal\n"
-            "print('fallback ok')\n"
+            "import hermes_tools\n"
+            "print('terminal available:', hasattr(hermes_tools, 'terminal'))\n"
         )
         with patch("model_tools.handle_function_call",
                     return_value=json.dumps({"ok": True})):
@@ -833,7 +954,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
                 enabled_tools=["vision_analyze", "browser_snapshot"],
             ))
         self.assertEqual(result["status"], "success")
-        self.assertIn("fallback ok", result["output"])
+        self.assertIn("terminal available: False", result["output"])
 
 
 # ---------------------------------------------------------------------------

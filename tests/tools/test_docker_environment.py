@@ -44,6 +44,7 @@ def _make_dummy_env(**kwargs):
         auto_mount_cwd=kwargs.get("auto_mount_cwd", False),
         env=kwargs.get("env"),
         run_as_host_user=kwargs.get("run_as_host_user", False),
+        ephemeral=kwargs.get("ephemeral", False),
     )
 
 
@@ -336,6 +337,18 @@ def test_init_env_args_never_forwards_blank_secret(monkeypatch):
     assert "MY_SECRET" not in " ".join(args)
 
 
+def test_init_env_args_can_disable_all_passthrough_env(monkeypatch):
+    """Isolated execution must not inherit registered or explicit secrets."""
+    env = _make_execute_only_env(forward_env=["MY_SECRET"])
+    env._forward_passthrough_env = False
+    monkeypatch.setenv("MY_SECRET", "secret123")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"MY_SECRET": "dotenv-secret"})
+
+    args = env._build_init_env_args()
+
+    assert "MY_SECRET" not in " ".join(args)
+
+
 # ── docker_env tests ──────────────────────────────────────────────
 
 
@@ -622,6 +635,16 @@ def test_run_command_tags_task_and_profile_labels(monkeypatch):
     assert "hermes-profile=research-bot" in labels, (
         f"hermes-profile=research-bot missing; got: {sorted(labels)}"
     )
+
+
+def test_ephemeral_container_has_dedicated_reaper_label(monkeypatch):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(ephemeral=True)
+
+    labels = _labels_in_run_args(_run_args_from_calls(calls))
+    assert "hermes-ephemeral=1" in labels
 
 
 def test_label_sanitizer_rejects_invalid_characters():
@@ -1213,6 +1236,31 @@ def test_reap_orphan_returns_zero_when_no_matches(monkeypatch):
     assert removed == 0
     rms = [c for c in calls if isinstance(c[0], list) and c[0][1:2] == ["rm"]]
     assert not rms, "no rm calls expected when ps returns empty"
+
+
+def test_reap_ephemeral_removes_stale_running_container(monkeypatch):
+    old = _now_iso(offset_seconds=900)
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if len(cmd) >= 2 and cmd[1] == "ps":
+            return subprocess.CompletedProcess(cmd, 0, stdout="stale-running\n", stderr="")
+        if len(cmd) >= 2 and cmd[1] == "inspect":
+            assert "{{.Created}}" in cmd
+            return subprocess.CompletedProcess(cmd, 0, stdout=old + "\n", stderr="")
+        if len(cmd) >= 2 and cmd[1] == "rm":
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    removed = docker_env.reap_ephemeral_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+
+    assert removed == 1
+    assert any(cmd[1:2] == ["rm"] and "stale-running" in cmd for cmd in calls)
 
 
 def test_reap_orphan_removes_stale_exited_container(monkeypatch):

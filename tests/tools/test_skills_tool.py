@@ -377,12 +377,44 @@ class TestSkillsList:
         }
 
     def test_edu_scope_hides_canvas_skill_catalog(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), alphart_context({"app_scope": "edu"}):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool.BUNDLED_EDU_SKILLS_DIR", tmp_path / "no-bundled-skills"),
+            alphart_context({"app_scope": "edu"}),
+        ):
             _make_skill(tmp_path, "canvas-seedance2-video-director")
             _make_skill(tmp_path, "storybook-generator")
             raw = skills_list()
 
         assert {skill["name"] for skill in json.loads(raw)["skills"]} == {"storybook-generator"}
+
+    def test_edu_scope_lists_optional_edulab_skills(self, tmp_path):
+        bundle_dir = tmp_path / "education"
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "installed"),
+            patch("tools.skills_tool.BUNDLED_EDU_SKILLS_DIR", bundle_dir),
+            alphart_context({"app_scope": "edu"}),
+        ):
+            _make_skill(bundle_dir, "edu-analytic-geometry")
+            raw = skills_list()
+
+        assert {skill["name"] for skill in json.loads(raw)["skills"]} == {
+            "edu-analytic-geometry"
+        }
+
+    def test_optional_edulab_skills_are_not_global(self, tmp_path):
+        bundle_dir = tmp_path / "education"
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "installed"),
+            patch("tools.skills_tool.BUNDLED_EDU_SKILLS_DIR", bundle_dir),
+            alphart_context({"app_scope": "canvas"}),
+        ):
+            _make_skill(bundle_dir, "edu-analytic-geometry")
+            raw = skills_list()
+
+        assert "edu-analytic-geometry" not in {
+            skill["name"] for skill in json.loads(raw)["skills"]
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +437,11 @@ class TestSkillView:
         assert "Canvas app scope" in result["error"]
 
     def test_edu_scope_rejects_canvas_skill(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), alphart_context({"app_scope": "edu"}):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool.BUNDLED_EDU_SKILLS_DIR", tmp_path / "no-bundled-skills"),
+            alphart_context({"app_scope": "edu"}),
+        ):
             _make_skill(tmp_path, "canvas-video-shotcraft")
             raw = skill_view("canvas-video-shotcraft")
 
@@ -414,7 +450,11 @@ class TestSkillView:
         assert "Edu app scope" in result["error"]
 
     def test_edu_scope_rejects_bundled_canvas_graph_skill(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), alphart_context({"app_scope": "edu"}):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool.BUNDLED_EDU_SKILLS_DIR", tmp_path / "no-bundled-skills"),
+            alphart_context({"app_scope": "edu"}),
+        ):
             _make_skill(tmp_path, "graph", category="canvas")
             raw = skill_view("graph")
 
@@ -467,6 +507,23 @@ class TestSkillView:
         assert result["success"] is True
         assert "INSTALLED VERSION" in result["content"]
 
+    def test_edu_scope_prefers_installed_skill_over_bundled_fallback(self, tmp_path):
+        installed = tmp_path / "user-skills"
+        bundled = tmp_path / "education"
+        _make_skill(installed, "edu-analytic-geometry", body="INSTALLED VERSION")
+        _make_skill(bundled, "edu-analytic-geometry", body="BUNDLED VERSION")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", installed),
+            patch("tools.skills_tool.BUNDLED_EDU_SKILLS_DIR", bundled),
+            alphart_context({"app_scope": "edu"}),
+        ):
+            raw = skill_view("edu-analytic-geometry")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "INSTALLED VERSION" in result["content"]
+
     def test_edu_scope_cannot_load_bundled_canvas_skill(self, tmp_path):
         bundled = tmp_path / "canvas"
         _make_skill(bundled, "canvas-seedance2-video-director")
@@ -474,6 +531,7 @@ class TestSkillView:
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path / "user-skills"),
             patch("tools.skills_tool.BUNDLED_CANVAS_SKILLS_DIR", bundled),
+            patch("tools.skills_tool.BUNDLED_EDU_SKILLS_DIR", tmp_path / "no-bundled-skills"),
             alphart_context({"app_scope": "edu"}),
         ):
             raw = skill_view("canvas-seedance2-video-director")

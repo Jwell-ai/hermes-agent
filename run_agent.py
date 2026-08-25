@@ -4564,7 +4564,7 @@ class AIAgent:
         conversation_history: List[Dict[str, Any]] = None,
         task_id: str = None,
         stream_callback: Optional[callable] = None,
-        persist_user_message: Optional[str] = None,
+        persist_user_message: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation

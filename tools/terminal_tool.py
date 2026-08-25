@@ -900,9 +900,12 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
             return
         _docker_orphan_reaper_ran = True
 
-    # 2 × lifetime_seconds gives sibling Hermes processes a generous grace
-    # window. Floor at 60s so an operator with TERMINAL_LIFETIME_SECONDS=0
-    # doesn't get an instant-reap that races their own setup.
+    # 2 × the larger of terminal lifetime and code-execution timeout gives
+    # sibling Hermes processes a generous grace window. The execution timeout
+    # matters because EduLab's one-shot containers remain running while a
+    # script is executing, so creation age alone must not reap a valid job.
+    # Floor at 60s so an operator with a zero/invalid setting doesn't get an
+    # instant-reap that races their own setup.
     # ``container_config`` only carries container_* keys, so read
     # lifetime_seconds from the env var the rest of the module uses.
     try:
@@ -910,17 +913,30 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
     except (TypeError, ValueError):
         lifetime = 300
     lifetime = max(60, lifetime)
-    max_age = lifetime * 2
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw_code_execution = read_raw_config().get("code_execution", {})
+        execution_timeout = int(raw_code_execution.get("timeout", 300))
+    except (ImportError, TypeError, ValueError, AttributeError, OSError):
+        execution_timeout = 300
+    execution_timeout = max(60, execution_timeout)
+    max_age = max(lifetime, execution_timeout) * 2
 
     try:
         from tools.environments.docker import (
-            reap_orphan_containers, _get_active_profile_name,
+            reap_ephemeral_containers,
+            reap_orphan_containers,
+            _get_active_profile_name,
         )
     except ImportError:
         return
     try:
         profile = _get_active_profile_name()
         removed = reap_orphan_containers(
+            max_age_seconds=max_age, profile_filter=profile,
+        )
+        removed += reap_ephemeral_containers(
             max_age_seconds=max_age, profile_filter=profile,
         )
         if removed:
@@ -1172,6 +1188,13 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     docker_forward_env = cc.get("docker_forward_env", [])
     docker_env = cc.get("docker_env", {})
     docker_extra_args = cc.get("docker_extra_args", [])
+    docker_persist_across_processes = cc.get("docker_persist_across_processes", True)
+    mount_credential_files = cc.get("mount_credential_files", True)
+    mount_skill_directories = cc.get("mount_skill_directories", True)
+    mount_cache_directories = cc.get("mount_cache_directories", True)
+    forward_passthrough_env = cc.get("forward_passthrough_env", True)
+    network = cc.get("network", True)
+    ephemeral = cc.get("ephemeral", False)
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
@@ -1195,7 +1218,13 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             env=docker_env,
             run_as_host_user=cc.get("docker_run_as_host_user", False),
             extra_args=docker_extra_args,
-            persist_across_processes=cc.get("docker_persist_across_processes", True),
+            persist_across_processes=docker_persist_across_processes,
+            ephemeral=ephemeral,
+            mount_credential_files=mount_credential_files,
+            mount_skill_directories=mount_skill_directories,
+            mount_cache_directories=mount_cache_directories,
+            forward_passthrough_env=forward_passthrough_env,
+            network=network,
         )
     
     elif env_type == "singularity":

@@ -8,7 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
     HERMES_AGENT_PORT=58088
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates gcc git \
+    && apt-get install -y --no-install-recommends ca-certificates docker.io gcc git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
