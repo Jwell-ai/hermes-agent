@@ -977,10 +977,25 @@ def _require_canvas_graph_scope() -> str:
     return ""
 
 
+def _require_canvas_mutation_allowed() -> str:
+    if (
+        str(_ctx().get("app_scope") or "").strip().lower() == "canvas"
+        and _ctx().get("canvas_read_only_turn")
+    ):
+        return _tool_error(
+            "This Canvas analysis turn is read-only; do not create, update, connect, or generate nodes.",
+            "CANVAS_READ_ONLY",
+        )
+    return ""
+
+
 def _handle_canvas_create_node(args: Dict[str, Any], **_: Any) -> str:
     scope_error = _require_canvas_graph_scope()
     if scope_error:
         return scope_error
+    mutation_error = _require_canvas_mutation_allowed()
+    if mutation_error:
+        return mutation_error
     args = dict(args or {})
     suppress_context_connections = bool(args.pop("_suppress_canvas_reference_connections", False))
     if not args.get("canvas_id"):
@@ -1164,14 +1179,24 @@ def _ensure_canvas_video_generation_graph(prompt: str) -> Tuple[str, str]:
         if not _canvas_tool_succeeded(result):
             return "", "Canvas video node creation failed"
         output_node_id = _latest_canvas_created_node_id("video")
-    elif prompt_created:
-        result = _handle_canvas_connect_nodes({
-            "canvas_id": _ctx().get("canvas_id"),
-            "source_item_id": prompt_node_id,
-            "target_item_id": output_node_id,
-        })
-        if not _canvas_tool_succeeded(result):
-            return "", "Canvas prompt-to-video connection failed"
+    else:
+        for src_id in source_ids:
+            if src_id and src_id != output_node_id:
+                conn_result = _handle_canvas_connect_nodes({
+                    "canvas_id": _ctx().get("canvas_id"),
+                    "source_item_id": src_id,
+                    "target_item_id": output_node_id,
+                })
+                if not _canvas_tool_succeeded(conn_result):
+                    return "", "Canvas source connection failed"
+        if prompt_created:
+            result = _handle_canvas_connect_nodes({
+                "canvas_id": _ctx().get("canvas_id"),
+                "source_item_id": prompt_node_id,
+                "target_item_id": output_node_id,
+            })
+            if not _canvas_tool_succeeded(result):
+                return "", "Canvas prompt-to-video connection failed"
     if not output_node_id:
         return "", "Canvas video graph was not created"
     return output_node_id, ""
@@ -1193,6 +1218,9 @@ def _handle_canvas_update_node(args: Dict[str, Any], **_: Any) -> str:
     scope_error = _require_canvas_graph_scope()
     if scope_error:
         return scope_error
+    mutation_error = _require_canvas_mutation_allowed()
+    if mutation_error:
+        return mutation_error
     args = dict(args or {})
     item_id = str(args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or "").strip()
     if not item_id:
@@ -1225,6 +1253,9 @@ def _handle_canvas_connect_nodes(args: Dict[str, Any], **_: Any) -> str:
     scope_error = _require_canvas_graph_scope()
     if scope_error:
         return scope_error
+    mutation_error = _require_canvas_mutation_allowed()
+    if mutation_error:
+        return mutation_error
     args = dict(args or {})
     if not args.get("canvas_id"):
         args["canvas_id"] = _ctx().get("canvas_id")
@@ -1875,6 +1906,9 @@ def _handle_alphart_update_storybook_page(args: Dict[str, Any], **_: Any) -> str
 
 def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
     args = dict(args or {})
+    mutation_error = _require_canvas_mutation_allowed()
+    if mutation_error:
+        return mutation_error
     if _canvas_explicit_video_request():
         return _tool_error(
             "Canvas video request already has a video workflow; use the supplied image references as keyframes instead of generating an image"
@@ -2055,6 +2089,9 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
 
 def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     args = dict(args or {})
+    mutation_error = _require_canvas_mutation_allowed()
+    if mutation_error:
+        return mutation_error
     _set_canvas_model_default(args, "video")
     is_canvas = str(_ctx().get("app_scope") or "").strip().lower() == "canvas"
     if not str(args.get("prompt") or "").strip() and is_canvas:
@@ -2339,6 +2376,9 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
 
 def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
     args = dict(args or {})
+    mutation_error = _require_canvas_mutation_allowed()
+    if mutation_error:
+        return mutation_error
     audio_chunk_request = bool(args.pop("_audio_chunk", False))
     skip_media_import = bool(args.pop("_skip_media_import", False))
     _set_canvas_model_default(args, "audio")

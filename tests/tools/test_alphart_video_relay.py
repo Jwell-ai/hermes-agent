@@ -5,7 +5,16 @@ import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tools.alphart_tools import _backend_tool_timeout, _handle_alphart_generate_image, _handle_alphart_generate_video, alphart_context
+from tools.alphart_tools import _backend_tool_timeout, _ensure_canvas_video_generation_graph, _handle_alphart_generate_image, _handle_alphart_generate_video, alphart_context
+
+
+def test_canvas_read_only_turn_blocks_media_generation():
+    with alphart_context({"app_scope": "canvas", "canvas_read_only_turn": True}):
+        result = _handle_alphart_generate_image({"prompt": "a sunset"})
+
+    decoded = json.loads(result)
+    assert decoded["success"] is False
+    assert decoded["code"] == "CANVAS_READ_ONLY"
 
 
 def test_edu_video_relay_does_not_send_canvas_caption_script():
@@ -677,6 +686,38 @@ def test_canvas_video_graph_keeps_references_on_output_only():
     assert "source_item_ids" not in created_bodies[0]
     assert created_bodies[1]["source_item_ids"] == ["text-ref", "image-ref", "text-node"]
     assert captured["json"]["canvas_item_id"] == "video-node"
+
+
+def test_canvas_video_graph_hides_source_id_when_reused_node_connection_fails():
+    source_id = "internal-source-id"
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/internal/api/v1/canvas/nodes"):
+            return SimpleNamespace(
+                status_code=201,
+                text='{"item":{"id":"prompt-node"}}',
+                json=lambda: {"item": {"id": "prompt-node"}},
+            )
+        return SimpleNamespace(
+            status_code=500,
+            text='{"detail":"connection failed"}',
+            json=lambda: {"detail": "connection failed"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "reference_item_ids": [source_id],
+            "_canvas_created_nodes": [{"id": "video-node", "item_type": "video"}],
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        output_node_id, error = _ensure_canvas_video_generation_graph("Animate the scene")
+
+    assert output_node_id == ""
+    assert error == "Canvas source connection failed"
+    assert source_id not in error
 
 
 def test_canvas_timeout_does_not_inherit_edu_only_value():
