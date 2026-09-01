@@ -114,6 +114,91 @@ _CANVAS_MAX_AUDIO_REFERENCES = 8
 _CANVAS_MAX_AUDIO_TRANSCRIPT_CHARS_PER_REFERENCE = 12_000
 _CANVAS_MAX_AUDIO_TRANSCRIPT_TOTAL_CHARS = 32_000
 _CANVAS_GENERATION_ACTION_RE = re.compile(r"\b(?:create|generate|make|draw|render|produce|design|paint|sketch|illustrate|regenerate|redo|remake|replace|inpaint|edit|transform|turn|convert|animate|upscale|enhance|improve|refine)\b|创建|生成|制作|设计|绘画|素描|插画|重新生成|重做|重制|替换|局部重绘|绘制|渲染|产出|编辑|转换|转成|变成|动画化|放大|增强|优化|修改", re.IGNORECASE)
+_CANVAS_MUTATION_ACTION_RE = re.compile(
+    r"\b(?:create|generate|make|draw|render|produce|design|paint|sketch|illustrate|regenerate|redo|remake|replace|inpaint|edit|transform|turn|convert|animate|upscale|enhance|improve|refine|connect|link|attach|update|rename|move|resize)\b"
+    r"|创建|生成|制作|设计|绘画|素描|插画|重新生成|重做|重制|替换|局部重绘|绘制|渲染|产出|编辑|转换|转成|变成|动画化|放大|增强|优化|修改|连接|连线|关联|附加|更新|改名|重命名|移动|调整",
+    re.IGNORECASE,
+)
+_CANVAS_TEXT_CREATION_RE = re.compile(
+    r"(?:^\s*|(?:[.!?;,:，。！？；：]|\b(?:and|then|also|but)\b|并且|然后|同时|再|并)\s*)(?:(?:please|kindly|could you|can you|would you)\s+)*(?:write|draft|compose)\b"
+    r"|(?:^\s*|(?:[.!?;,:，。！？；：]|并且|然后|同时|再|并)\s*)(?:撰写|起草|编写)",
+    re.IGNORECASE,
+)
+_CANVAS_ALL_ACTION_RE = re.compile(
+    _CANVAS_MUTATION_ACTION_RE.pattern
+    + r"|\b(?:write|draft|compose|brainstorm)\b|撰写|起草|编写|\b(?:disconnect|unlink|delete|remove)\b|断开|解绑|删除|移除",
+    re.IGNORECASE,
+)
+_CANVAS_GRAPH_MUTATION_ACTION_RE = re.compile(
+    r"\b(?:connect|link|attach|update|rename|move|resize)\b|连接|连线|关联|附加|更新|改名|重命名|移动|调整",
+    re.IGNORECASE,
+)
+_CANVAS_DIRECT_GRAPH_ACTION_RE = re.compile(
+    r"^(?:connect|link|attach|连接|连线|关联|附加)$",
+    re.IGNORECASE,
+)
+_CANVAS_ATTACH_GRAPH_ACTION_RE = re.compile(r"^(?:attach|附加)$", re.IGNORECASE)
+_CANVAS_IMPERATIVE_MEDIA_EDIT_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:add|put|place|overlay|insert|apply|write|attach)\b[\s\S]*\b(?:to|onto|on|in|into)\s+(?:(?:the|this|selected)\s+)?(?:image|picture|photo|video|audio|node)\b"
+    r"|^\s*(?:请)?(?:添加|放置|叠加|插入|应用|写入|附加)[\s\S]*(?:到|至|在)[\s\S]*(?:图片|图像|照片|视频|音频|节点)",
+    re.IGNORECASE,
+)
+_CANVAS_GRAPH_CONTEXT_RE = re.compile(
+    r"\b(?:node|nodes|canvas|layout|item|edge|connection)\b|节点|画布|布局|连线|连接|项目",
+    re.IGNORECASE,
+)
+_CANVAS_MENTIONED_NODE_RE = re.compile(r"@[^\n\r\[\]]+\[[0-9a-f-]{36}\]", re.IGNORECASE)
+_CANVAS_MEDIA_EDIT_ACTION_RE = re.compile(r"^(?:delete|update|move|resize)$|删除|移除|移动|调整|更新", re.IGNORECASE)
+_CANVAS_TEXT_CREATION_ACTION_RE = re.compile(r"^(?:write|draft|compose)$|撰写|起草|编写", re.IGNORECASE)
+_CANVAS_TEXT_REFINEMENT_RE = re.compile(r"\b(?:edit|rewrite|refine|enrich|expand|polish|improve|revise|correct|fix|shorten|lengthen|rephrase)\b|编辑|改写|重写|润色|优化|丰富|扩展|改善|修改|修正|缩短|加长", re.IGNORECASE)
+_CANVAS_TEXT_TARGET_RE = re.compile(r"\b(?:draft|text|copy|script|caption|description|prompt|note|document|content)\b|草稿|文本|文案|脚本|字幕|描述|提示词|笔记|文档|内容", re.IGNORECASE)
+_CANVAS_TEXT_PRONOUN_RE = re.compile(r"\b(?:it|this|that|them)\b|其|它|这(?:段|份|个)|那(?:段|份|个)", re.IGNORECASE)
+_CANVAS_MEDIA_EDIT_VERB_RE = re.compile(
+    r"\b(?:add|apply|attach|change|delete|edit|enhance|fix|improve|refine|upscale|transform|remove|replace|retouch|blur|sharpen|crop|move|resize|update)\b"
+    r"|添加|应用|附加|修改|增强|优化|精修|放大|变换|修复|移除|删除|替换|润色|模糊|锐化|裁剪|移动|调整|更新",
+    re.IGNORECASE,
+)
+_CANVAS_CLAUSE_BOUNDARY_RE = re.compile(
+    r"(?:[.!?;,:，。！？；：]|\b(?:and|then|also|but)\b|并且|然后|同时|再|并)",
+    re.IGNORECASE,
+)
+_CANVAS_STRONG_CLAUSE_BOUNDARY_RE = re.compile(
+    r"(?:[.!?;:，。！？；：]|\b(?:then|also|but)\b|并且|然后|同时|再)",
+    re.IGNORECASE,
+)
+_CANVAS_IMPERATIVE_LEAD_RE = re.compile(
+    r"^(?:(?:please|kindly|can you|could you|would you|then|also|and|but|i want to|i need to|i'd like to)(?:\s+|$))*$"
+    r"|^(?:请|请帮我|请直接|然后|同时|再|并且|并)\s*$",
+    re.IGNORECASE,
+)
+_CANVAS_MEDIA_EDIT_RELATION_RE = re.compile(r"\b(?:from|of|on|in|into|using|with)\b|从|的|在|到|于", re.IGNORECASE)
+_CANVAS_MEDIA_EDIT_POSSESSIVE_RE = re.compile(r"['’]s|的", re.IGNORECASE)
+_CANVAS_MEDIA_EDIT_CONTEXT_RE = re.compile(
+    r"\b(?:background|foreground|subject|object|watermark|blemish|noise|sky|hair|face|mask|crop|blur|sharpen)\b|背景|前景|主体|对象|水印|瑕疵|噪声|天空|头发|脸|蒙版|裁剪|模糊|锐化",
+    re.IGNORECASE,
+)
+_CANVAS_MEDIA_EDIT_TARGET_RE = re.compile(
+    r"\b(?:image|picture|photo|video|audio|node)\b|图片|图像|照片|视频|音频|节点|@[^\n\r\[\]]+\[[0-9a-f-]{36}\]",
+    re.IGNORECASE,
+)
+_CANVAS_MEDIA_EDIT_PRONOUN_RE = re.compile(
+    r"\b(?:it|this|that|them)\b|其|它|这(?:张|个)|那(?:张|个)",
+    re.IGNORECASE,
+)
+_CANVAS_REFERENCE_ANALYSIS_RE = re.compile(
+    r"\b(?:analy[sz]e|describe|inspect|summari[sz]e|transcribe|transcription|what(?:'s| is) in|what do you see|tell me about|look at|review|reference|brainstorm(?:ing)?|ideas?|suggest(?:ions?)?)\b"
+    r"|分析|总结|總結|概括|描述|看看|里面有什么|裡面有什麼|是什么|是什麼|讲了什么|講了什麼|转录|轉錄|听写|聽寫|参考|參考|头脑风暴|想法|建议",
+    re.IGNORECASE,
+)
+_CANVAS_UNSUPPORTED_GRAPH_MUTATION_RE = re.compile(
+    r"\b(?:disconnect|unlink|delete|remove)\b|断开|解绑|删除|移除",
+    re.IGNORECASE,
+)
+_CANVAS_CREATION_DESIRE_RE = re.compile(
+    r"\b(?:i\s+want|i\s+need|i'd\s+like|give\s+me)\s+(?:(?:an?|some|one|new)\s+)*(?:image|picture|visual|illustration|photo|video|movie|clip|animation|audio|sound|music|voiceover|speech|prompt|text|script|caption)\b"
+    r"|我想(?:要)?(?:一张|一個|一个|一段|一份)?(?:图片|圖像|照片|视频|影片|动画|音频|声音|音乐|配音|提示词|文本|文案|脚本|字幕)",
+    re.IGNORECASE,
+)
 _CANVAS_POSITIVE_ACTION_RE = re.compile(
     r"\b(?:do\s+not|don't|never|not)\s+(?:forget|hesitate|fail|miss)(?:\s+to)?\s*|\bnot\s+(?:only|just)\s*",
     re.IGNORECASE,
@@ -1784,6 +1869,172 @@ def _game_tool_failed(messages: List[Any]) -> bool:
     return False
 
 
+_CANVAS_GRAPH_MUTATION_TOOLS = frozenset({
+    "canvas_create_node",
+    "canvas_update_node",
+    "canvas_connect_nodes",
+})
+
+
+def _canvas_graph_operation_key(name: str, arguments: Any) -> str:
+    try:
+        decoded = json.loads(arguments) if isinstance(arguments, str) else arguments
+    except (TypeError, ValueError):
+        decoded = {}
+    if not isinstance(decoded, dict):
+        return ""
+    if name == "canvas_create_node":
+        mutation = {
+            key: value
+            for key, value in decoded.items()
+            if key not in {
+                "canvas_id",
+                "type",
+                "text",
+                "prompt",
+                "source_item_ids",
+                "connect_from_item_ids",
+                "reference_item_ids",
+            }
+        }
+        mutation["item_type"] = str(decoded.get("item_type") or decoded.get("type") or "text").strip().lower()
+        content = dict(decoded.get("content")) if isinstance(decoded.get("content"), dict) else {}
+        if decoded.get("prompt"):
+            content["prompt"] = decoded["prompt"]
+        if decoded.get("text"):
+            content["text"] = decoded["text"]
+        if content:
+            mutation["content"] = content
+        else:
+            mutation.pop("content", None)
+        source_ids = []
+        for source_field in ("source_item_ids", "connect_from_item_ids", "reference_item_ids"):
+            raw_sources = decoded.get(source_field) or []
+            if isinstance(raw_sources, str):
+                raw_sources = [raw_sources]
+            if not isinstance(raw_sources, (list, tuple)):
+                continue
+            for value in raw_sources:
+                source_id = str(value).strip()
+                if source_id and source_id not in source_ids:
+                    source_ids.append(source_id)
+        if source_ids:
+            source_ids.sort()
+            mutation["source_item_ids"] = source_ids
+        identity = {
+            "mutation": mutation,
+        }
+    elif name == "canvas_update_node":
+        identity = {
+            "canvas_item_id": decoded.get("canvas_item_id") or decoded.get("item_id") or decoded.get("node_id"),
+            "mutation": {
+                key: value
+                for key, value in decoded.items()
+                if key not in {"canvas_id", "canvas_item_id", "item_id", "node_id"}
+            },
+        }
+    elif name == "canvas_connect_nodes":
+        identity = {
+            "source_item_id": decoded.get("source_item_id") or decoded.get("source_node_id"),
+            "target_item_id": decoded.get("target_item_id") or decoded.get("target_node_id"),
+        }
+    else:
+        return ""
+    if not any(value not in (None, "", []) for value in identity.values()):
+        return ""
+    return json.dumps(identity, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _canvas_graph_tool_attempts(messages: List[Any]) -> List[Dict[str, Any]]:
+    call_keys: Dict[str, Tuple[str, int]] = {}
+    for message_index, msg in enumerate(messages or []):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tool_call in msg.get("tool_calls") or []:
+            name = _string(_tool_call_name(tool_call)).lower()
+            if name not in _CANVAS_GRAPH_MUTATION_TOOLS:
+                continue
+            tool_call_id = _string(tool_call.get("id"))
+            if not tool_call_id:
+                continue
+            operation_key = _canvas_graph_operation_key(name, _tool_call_arguments(tool_call))
+            key = f"{name}:{operation_key}" if operation_key else f"{name}:call:{tool_call_id}"
+            call_keys[tool_call_id] = (key, message_index)
+
+    attempts: List[Dict[str, Any]] = []
+    for index, msg in enumerate(messages or []):
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        name = _string(msg.get("name") or msg.get("tool_name")).lower()
+        if name not in _CANVAS_GRAPH_MUTATION_TOOLS:
+            continue
+        tool_call_id = _string(msg.get("tool_call_id"))
+        call_key = call_keys.get(tool_call_id) if tool_call_id else None
+        key, assistant_index = call_key if call_key else (f"{name}:result:{index}", None)
+        attempts.append({
+            "key": key,
+            "assistant_index": assistant_index,
+            "success": _tool_result_success(msg.get("content")),
+            "content": msg.get("content"),
+        })
+    return attempts
+
+
+def _canvas_graph_tool_repaired_attempts(attempts: List[Dict[str, Any]]) -> set[int]:
+    successful_indexes: Dict[str, List[int]] = {}
+    for index, attempt in enumerate(attempts):
+        if attempt["success"] and isinstance(attempt.get("assistant_index"), int):
+            successful_indexes.setdefault(attempt["key"], []).append(index)
+
+    repaired: set[int] = set()
+    consumed_successes: set[int] = set()
+    for index, attempt in enumerate(attempts):
+        if attempt["success"] or not isinstance(attempt.get("assistant_index"), int):
+            continue
+        failed_round = attempt["assistant_index"]
+        for success_index in successful_indexes.get(attempt["key"], []):
+            if success_index in consumed_successes:
+                continue
+            success_round = attempts[success_index].get("assistant_index")
+            if not isinstance(success_round, int) or success_round <= failed_round:
+                continue
+            repaired.add(index)
+            consumed_successes.add(success_index)
+            break
+    return repaired
+
+
+def _canvas_graph_tool_failed(messages: List[Any]) -> bool:
+    attempts = _canvas_graph_tool_attempts(messages)
+    repaired_attempts = _canvas_graph_tool_repaired_attempts(attempts)
+    return any(
+        not attempt["success"] and index not in repaired_attempts
+        for index, attempt in enumerate(attempts)
+    )
+
+
+def _canvas_graph_tool_error(messages: List[Any]) -> str:
+    attempts = _canvas_graph_tool_attempts(messages)
+    repaired_attempts = _canvas_graph_tool_repaired_attempts(attempts)
+    for index in range(len(attempts) - 1, -1, -1):
+        attempt = attempts[index]
+        if attempt["success"] or index in repaired_attempts:
+            continue
+        content = attempt["content"]
+        try:
+            decoded = json.loads(content) if isinstance(content, str) else content
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(decoded, dict):
+            continue
+        message = _string(decoded.get("error"))
+        if not message and isinstance(decoded.get("result"), dict):
+            message = _string(decoded["result"].get("error") or decoded["result"].get("message"))
+        if message:
+            return message.strip()[:500]
+    return ""
+
+
 def _storybook_tool_attempted(messages: List[Any]) -> bool:
     for msg in messages or []:
         if not isinstance(msg, dict):
@@ -3363,22 +3614,314 @@ def _canvas_non_execution_question(text: str) -> bool:
 
 def _canvas_negated_generation_request(text: str) -> bool:
     normalized = _string(text)
-    matches = list(_CANVAS_GENERATION_ACTION_RE.finditer(normalized))
+    return _canvas_negated_action_request(
+        normalized,
+        lambda action, value, start: bool(_CANVAS_GENERATION_ACTION_RE.fullmatch(action)) or _canvas_media_edit_action(action, value, start),
+        lambda action, value, start: _canvas_graph_mutation_action(action, value, start)
+        or _canvas_unsupported_graph_mutation_action(value, start)
+        or _canvas_text_creation_action(action),
+    )
+
+
+def _canvas_graph_mutation_action(action: str, text: str, start: int) -> bool:
+    action_end = start + len(action)
+    clause_start, clause_end = _canvas_action_clause_range(text, start, action_end)
+    context = text[clause_start:clause_end]
+    has_mentioned_node = _canvas_mentioned_node_near_action(text, start, action_end)
+    has_graph_target = bool(_CANVAS_GRAPH_CONTEXT_RE.search(context) or has_mentioned_node)
+    if _CANVAS_DIRECT_GRAPH_ACTION_RE.fullmatch(action):
+        if not has_graph_target:
+            return False
+        if _CANVAS_ATTACH_GRAPH_ACTION_RE.fullmatch(action):
+            return has_mentioned_node or not _CANVAS_MEDIA_EDIT_CONTEXT_RE.search(context)
+        return True
+    if not _CANVAS_GRAPH_MUTATION_ACTION_RE.fullmatch(action):
+        return False
+    has_media_edit_target = _canvas_mentioned_media_edit_target(text, clause_start, clause_end) or _canvas_generic_media_edit_target(text, start, action_end, clause_start, clause_end)
+    return bool(_CANVAS_GRAPH_CONTEXT_RE.search(context) or has_mentioned_node) and not has_media_edit_target
+
+
+def _canvas_action_clause_range(text: str, start: int, end: int) -> Tuple[int, int]:
+    clause_start = 0
+    for boundary in _CANVAS_CLAUSE_BOUNDARY_RE.finditer(text[:start]):
+        if _canvas_boundary_inside_mention(text, boundary.start()):
+            continue
+        clause_start = boundary.end()
+    clause_end = len(text)
+    for boundary in _CANVAS_CLAUSE_BOUNDARY_RE.finditer(text[end:]):
+        absolute_start = end + boundary.start()
+        if _canvas_boundary_inside_mention(text, absolute_start):
+            continue
+        clause_end = absolute_start
+        break
+    return clause_start, clause_end
+
+
+def _canvas_boundary_inside_mention(text: str, index: int) -> bool:
+    return any(
+        mention.start() < index < mention.end()
+        for mention in _CANVAS_MENTIONED_NODE_RE.finditer(text)
+    )
+
+
+def _canvas_mentioned_node_near_action(text: str, start: int, end: int) -> bool:
+    clause_start, clause_end = _canvas_action_clause_range(text, start, end)
+    return bool(_CANVAS_MENTIONED_NODE_RE.search(text[clause_start:clause_end]))
+
+
+def _canvas_generic_media_edit_target(
+    text: str,
+    start: int,
+    end: int,
+    clause_start: int = 0,
+    clause_end: Optional[int] = None,
+) -> bool:
+    if clause_end is None:
+        clause_end = len(text)
+    context = text[max(clause_start, start - 40):start] + text[start:end] + text[end:min(clause_end, end + 128)]
+    graph_match = _CANVAS_GRAPH_CONTEXT_RE.search(context)
+    media_match = _CANVAS_MEDIA_EDIT_CONTEXT_RE.search(context)
+    if not graph_match or not media_match:
+        return False
+    if graph_match.start() < media_match.start():
+        return bool(_CANVAS_MEDIA_EDIT_POSSESSIVE_RE.search(context[graph_match.end():media_match.start()]))
+    return bool(_CANVAS_MEDIA_EDIT_RELATION_RE.search(context[media_match.end():graph_match.start()]))
+
+
+def _canvas_mutation_action_request(text: str) -> bool:
+    for match in _CANVAS_MUTATION_ACTION_RE.finditer(text):
+        if _CANVAS_GRAPH_MUTATION_ACTION_RE.fullmatch(match.group()):
+            if _canvas_graph_mutation_action(match.group(), text, match.start()):
+                return True
+            continue
+        if (
+            _canvas_reference_or_analysis_request(text)
+            and not _CANVAS_IMPERATIVE_MEDIA_EDIT_RE.search(text)
+            and _CANVAS_MEDIA_EDIT_VERB_RE.fullmatch(match.group())
+        ):
+            continue
+        return True
+    if _canvas_media_edit_request_is_imperative(text):
+        return True
+    return False
+
+
+def _canvas_media_edit_request_is_imperative(text: str) -> bool:
+    saw_non_imperative_action = False
+    for match in _CANVAS_MEDIA_EDIT_VERB_RE.finditer(text):
+        context = text[match.end():match.end() + 96]
+        has_direct_target = bool(_CANVAS_MEDIA_EDIT_CONTEXT_RE.search(context) or _CANVAS_MEDIA_EDIT_TARGET_RE.search(context))
+        has_pronoun_target = bool(_CANVAS_MEDIA_EDIT_PRONOUN_RE.search(context) and _CANVAS_MEDIA_EDIT_TARGET_RE.search(text[:match.start()]))
+        if not has_direct_target and not has_pronoun_target:
+            continue
+        clause_start = 0
+        strong_boundary = False
+        for boundary in _CANVAS_CLAUSE_BOUNDARY_RE.finditer(text[:match.start()]):
+            clause_start = boundary.end()
+            strong_boundary = bool(_CANVAS_STRONG_CLAUSE_BOUNDARY_RE.fullmatch(boundary.group()))
+        prefix = text[clause_start:match.start()].strip()
+        if not _CANVAS_IMPERATIVE_LEAD_RE.fullmatch(prefix):
+            saw_non_imperative_action = True
+            continue
+        if not saw_non_imperative_action or strong_boundary or prefix:
+            return True
+    return False
+
+
+def _canvas_text_has_explicit_mutation(text: str) -> bool:
+    return bool(
+        _CANVAS_CREATION_DESIRE_RE.search(text)
+        or _CANVAS_TEXT_CREATION_RE.search(text)
+        or _canvas_text_refinement_request(text)
+        or _CANVAS_IMPERATIVE_MEDIA_EDIT_RE.search(text)
+        or _canvas_mutation_action_request(text)
+    )
+
+
+def _canvas_mentioned_media_edit_target(text: str, scope_start: int = 0, scope_end: Optional[int] = None) -> bool:
+    if scope_end is None:
+        scope_end = len(text)
+    for mentioned_node_match in _CANVAS_MENTIONED_NODE_RE.finditer(text):
+        if mentioned_node_match.start() < scope_start or mentioned_node_match.end() > scope_end:
+            continue
+        before_mention = text[scope_start:mentioned_node_match.start()]
+        media_matches = list(_CANVAS_MEDIA_EDIT_CONTEXT_RE.finditer(before_mention))
+        if media_matches:
+            media_match = media_matches[-1]
+            if _CANVAS_MEDIA_EDIT_RELATION_RE.search(before_mention[media_match.end():]):
+                return True
+        after_mention = text[mentioned_node_match.end():scope_end]
+        media_match = _CANVAS_MEDIA_EDIT_CONTEXT_RE.search(after_mention)
+        if media_match and _CANVAS_MEDIA_EDIT_POSSESSIVE_RE.search(after_mention[:media_match.start()]):
+            return True
+    return False
+
+
+def _canvas_media_edit_action(action: str, text: str, start: Optional[int] = None) -> bool:
+    if _CANVAS_ATTACH_GRAPH_ACTION_RE.fullmatch(action):
+        if start is None:
+            return False
+        return bool(_CANVAS_MEDIA_EDIT_TARGET_RE.search(text[start + len(action):start + len(action) + 96]))
+    if not _CANVAS_MEDIA_EDIT_ACTION_RE.fullmatch(action):
+        return False
+    clause_start, clause_end = (0, len(text))
+    if start is not None:
+        clause_start, clause_end = _canvas_action_clause_range(text, start, start + len(action))
+    if _canvas_mentioned_media_edit_target(text, clause_start, clause_end):
+        return True
+    return start is not None and _canvas_generic_media_edit_target(text, start, start + len(action), clause_start, clause_end)
+
+
+def _canvas_text_creation_action(action: str) -> bool:
+    return bool(_CANVAS_TEXT_CREATION_ACTION_RE.search(action))
+
+
+def _canvas_text_refinement_request(text: str) -> bool:
+    for match in _CANVAS_TEXT_REFINEMENT_RE.finditer(text):
+        suffix = text[match.end():match.end() + 96]
+        has_direct_target = bool(_CANVAS_TEXT_TARGET_RE.search(suffix))
+        has_pronoun_target = bool(_CANVAS_TEXT_PRONOUN_RE.search(suffix) and _CANVAS_TEXT_TARGET_RE.search(text[:match.start()]))
+        if not has_direct_target and not has_pronoun_target:
+            continue
+        clause_start, _ = _canvas_action_clause_range(text, match.start(), match.end())
+        prefix = text[clause_start:match.start()].strip()
+        if not prefix or _CANVAS_IMPERATIVE_LEAD_RE.fullmatch(prefix):
+            return True
+    return False
+
+
+def _canvas_negated_graph_mutation_request(text: str) -> bool:
+    return _canvas_negated_action_request(
+        _string(text),
+        lambda action, value, start: _canvas_graph_mutation_action(action, value, start)
+        or _canvas_unsupported_graph_mutation_action(value, start),
+        lambda action, value, start: bool(_CANVAS_GENERATION_ACTION_RE.fullmatch(action))
+        or _canvas_media_edit_action(action, value, start)
+        or _canvas_text_creation_action(action),
+    )
+
+
+def _canvas_action_is_negated(prefix: str) -> bool:
+    negation_prefix = _CANVAS_POSITIVE_ACTION_RE.sub("", _string(prefix).strip()).strip()
+    return bool(_CANVAS_NEGATED_ACTION_RE.search(negation_prefix))
+
+
+def _canvas_unsupported_graph_mutation_action(text: str, start: int) -> bool:
+    prefix = text[max(0, start - 40):start]
+    suffix = text[start:start + 128]
+    mentioned_node_match = _CANVAS_MENTIONED_NODE_RE.search(suffix)
+    mention_start = start + mentioned_node_match.start() if mentioned_node_match else -1
+    mention_end = start + mentioned_node_match.end() if mentioned_node_match else -1
+    media_match = _CANVAS_MEDIA_EDIT_CONTEXT_RE.search(suffix)
+    media_start = start + media_match.start() if media_match else -1
+    media_edit_relation = False
+    if mention_start >= 0 and media_match:
+        if media_start < mention_start:
+            media_edit_relation = bool(_CANVAS_MEDIA_EDIT_RELATION_RE.search(text[media_start:mention_start]))
+        elif media_start >= mention_end:
+            media_edit_relation = bool(
+                _CANVAS_MEDIA_EDIT_POSSESSIVE_RE.search(text[mention_end:media_start])
+                or _CANVAS_MEDIA_EDIT_RELATION_RE.search(text[:mention_start])
+            )
+    if mention_start >= 0 and not media_edit_relation:
+        return True
+    graph_match = _CANVAS_GRAPH_CONTEXT_RE.search(suffix)
+    if graph_match:
+        if media_match and media_match.start() < graph_match.start():
+            between = suffix[media_match.end():graph_match.start()]
+            if _CANVAS_MEDIA_EDIT_RELATION_RE.search(between):
+                return False
+        if media_match and graph_match.start() < media_match.start():
+            between = suffix[graph_match.end():media_match.start()]
+            if _CANVAS_MEDIA_EDIT_POSSESSIVE_RE.search(between):
+                return False
+        return True
+    if not _CANVAS_GRAPH_CONTEXT_RE.search(prefix):
+        return False
+    return not _CANVAS_MEDIA_EDIT_CONTEXT_RE.search(suffix)
+
+
+def _canvas_unsupported_graph_mutation_request(text: str) -> bool:
+    normalized = _string(text)
+    for match in _CANVAS_UNSUPPORTED_GRAPH_MUTATION_RE.finditer(normalized):
+        if _canvas_action_is_negated(normalized[max(0, match.start() - 40):match.start()]):
+            continue
+        if _canvas_unsupported_graph_mutation_action(normalized, match.start()):
+            return True
+    return False
+
+
+def _canvas_negated_action_request(
+    text: str,
+    desired_action: Any,
+    conflicts_with_negated_action: Any | None = None,
+) -> bool:
+    matches = list(_CANVAS_ALL_ACTION_RE.finditer(text))
     if not matches:
         return False
     found_negated_action = False
+    found_desired_negated_action = False
+    conflict_action = conflicts_with_negated_action or desired_action
     previous_action_end = 0
     for match in matches:
-        prefix = normalized[:match.start()][-64:]
+        prefix = text[:match.start()][-64:]
         negation_prefix = _CANVAS_POSITIVE_ACTION_RE.sub("", prefix).strip()
         if not _CANVAS_NEGATED_ACTION_RE.search(negation_prefix):
-            between_actions = normalized[previous_action_end:match.start()]
-            if not found_negated_action or not _CANVAS_INSTRUCTIONAL_ACTION_RE.search(between_actions):
+            between_actions = text[previous_action_end:match.start()]
+            if not found_negated_action:
+                if desired_action(match.group(), text, match.start()) or conflict_action(match.group(), text, match.start()):
+                    return False
+                previous_action_end = match.end()
+                continue
+            if not _CANVAS_INSTRUCTIONAL_ACTION_RE.search(between_actions) and (
+                desired_action(match.group(), text, match.start())
+                or conflict_action(match.group(), text, match.start())
+            ):
                 return False
         else:
             found_negated_action = True
+            if desired_action(match.group(), text, match.start()):
+                found_desired_negated_action = True
         previous_action_end = match.end()
-    return found_negated_action
+    return found_negated_action and found_desired_negated_action
+
+
+def _canvas_explicit_mutation_request(req: AlphartEduChatRequest) -> bool:
+    """Allow clear Canvas work requests to override stale UI reference hints."""
+    if _request_app_scope(req) != "canvas":
+        return False
+    text = _canvas_request_text(req)
+    if (
+        not text
+        or _canvas_non_execution_question(text)
+        or _canvas_negated_generation_request(text)
+        or _canvas_negated_graph_mutation_request(text)
+        or _canvas_unsupported_graph_mutation_request(text)
+    ):
+        return False
+    if _canvas_reference_or_analysis_request(text) and not _canvas_text_has_explicit_mutation(text):
+        return False
+    if _canvas_text_refinement_request(text):
+        return True
+    target_operation = _string(req.target_operation).strip().lower()
+    if target_operation in {"create_new", "generate_into_existing", "refine_existing", "mutate_graph"}:
+        return True
+    if _string(req.requested_node_type).strip().lower() in {"text", "note", "image", "video", "audio", "file"}:
+        return True
+    requested_action = _string(req.requested_action).strip().lower()
+    if requested_action and requested_action not in {"answer", "reference_nodes"}:
+        return True
+    if _CANVAS_CREATION_DESIRE_RE.search(text) or _CANVAS_TEXT_CREATION_RE.search(text):
+        return True
+    if _CANVAS_IMPERATIVE_MEDIA_EDIT_RE.search(text):
+        return True
+    return _canvas_mutation_action_request(text)
+
+
+def _canvas_reference_or_analysis_request(text: str) -> bool:
+    """Recognize read-only reference language without trusting stale UI hints."""
+    normalized = _string(text).strip()
+    return not normalized or bool(_CANVAS_REFERENCE_ANALYSIS_RE.search(normalized) and not _CANVAS_IMPERATIVE_MEDIA_EDIT_RE.search(normalized))
 
 
 def _canvas_explicit_generation_clause(text: str) -> bool:
@@ -3426,7 +3969,7 @@ def _canvas_workflow_item_type(req: AlphartEduChatRequest) -> str:
     if _request_app_scope(req) != "canvas":
         return ""
     text = _canvas_request_text(req)
-    if _canvas_non_execution_question(text) or _canvas_negated_generation_request(text):
+    if _canvas_non_execution_question(text) or _canvas_negated_generation_request(text) or _canvas_negated_graph_mutation_request(text) or _canvas_unsupported_graph_mutation_request(text):
         return ""
     requested_node_type = _string(req.requested_node_type).strip().lower()
     target_operation = _string(req.target_operation).strip().lower()
@@ -4532,12 +5075,19 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         user_content,
         video_reference_message if canvas_input_videos else "",
     )
+    explicit_canvas_mutation = _canvas_explicit_mutation_request(req)
     canvas_audio_analysis_turn = (
         _request_app_scope(req) == "canvas"
+        and not explicit_canvas_mutation
+        and not _canvas_negated_graph_mutation_request(_canvas_request_text(req))
+        and not _canvas_unsupported_graph_mutation_request(_canvas_request_text(req))
         and (
             _canvas_non_execution_question(_canvas_request_text(req))
-            or _string(req.target_operation).strip().lower() in {"answer", "use_as_reference"}
-            or _string(req.requested_action).strip().lower() in {"answer", "reference_nodes"}
+            or _canvas_reference_or_analysis_request(_canvas_request_text(req))
+            or (
+                _string(req.target_operation).strip().lower() in {"answer", "use_as_reference"}
+                or _string(req.requested_action).strip().lower() in {"answer", "reference_nodes"}
+            )
         )
     )
     user_audio_urls = _audio_urls_from_content(user_content)
@@ -4552,7 +5102,13 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         and (
             req.script_only
             or canvas_audio_analysis_turn
+            or (
+                not explicit_canvas_mutation
+                and _canvas_reference_or_analysis_request(_canvas_request_text(req))
+            )
             or _canvas_negated_generation_request(_canvas_request_text(req))
+            or _canvas_negated_graph_mutation_request(_canvas_request_text(req))
+            or _canvas_unsupported_graph_mutation_request(_canvas_request_text(req))
         )
     )
     multimodal_config = _provider_config_for_domain(req.model_configs, "multimodal", multimodal_model)
@@ -4857,8 +5413,11 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
     current_media_attempted = _generation_tool_attempted(current_turn_messages)
     current_media_failed = _generation_tool_effectively_failed(current_turn_messages)
     current_game_failed = _game_tool_failed(current_turn_messages)
-    current_tool_failed = current_media_failed or current_game_failed
-    canvas_tool_error = _generation_tool_error(current_turn_messages) if _request_app_scope(req) == "canvas" else ""
+    current_graph_failed = _canvas_graph_tool_failed(current_turn_messages) if _request_app_scope(req) == "canvas" else False
+    current_tool_failed = current_media_failed or current_game_failed or current_graph_failed
+    canvas_tool_error = (
+        _generation_tool_error(current_turn_messages) or _canvas_graph_tool_error(current_turn_messages)
+    ) if _request_app_scope(req) == "canvas" else ""
     reference_image_generation = (
         bool(input_images)
         and not current_media_attempted
@@ -4866,7 +5425,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         and not _storybook_page_update_intent(user_message)
         and not (
             _request_app_scope(req) == "canvas"
-            and (_canvas_non_execution_question(user_message) or _canvas_negated_generation_request(user_message))
+            and canvas_read_only_turn
         )
         and _media_intent(user_message, has_image_context=True) == "image"
     )
@@ -4955,6 +5514,8 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                 and not _canvas_shot_breakdown_intent(req)
                 and not _canvas_non_execution_question(user_message)
                 and not _canvas_negated_generation_request(user_message)
+                and not _canvas_negated_graph_mutation_request(user_message)
+                and not _canvas_unsupported_graph_mutation_request(user_message)
             ):
                 structured_media_intent = (
                     requested_node_type
@@ -4984,7 +5545,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                 and not req.script_only
                 and not (
                     _request_app_scope(req) == "canvas"
-                    and (_canvas_non_execution_question(user_message) or _canvas_negated_generation_request(user_message))
+                    and canvas_read_only_turn
                 )
             ):
                 forced_messages = _forced_media_tool_messages(
@@ -5023,8 +5584,13 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         else:
             current_media_failed = current_media_failed or _generation_tool_effectively_failed(current_turn_messages)
     current_game_failed = current_game_failed or _game_tool_failed(current_turn_messages)
-    current_tool_failed = current_media_failed or current_game_failed
-    canvas_tool_error = _generation_tool_error(current_turn_messages) if _request_app_scope(req) == "canvas" else ""
+    current_graph_failed = current_graph_failed or (
+        _canvas_graph_tool_failed(current_turn_messages) if _request_app_scope(req) == "canvas" else False
+    )
+    current_tool_failed = current_media_failed or current_game_failed or current_graph_failed
+    canvas_tool_error = (
+        _generation_tool_error(current_turn_messages) or _canvas_graph_tool_error(current_turn_messages)
+    ) if _request_app_scope(req) == "canvas" else ""
     if current_tool_failed:
         final_response = canvas_tool_error or SYSTEM_BUSY_MESSAGE
     if not final_response or (

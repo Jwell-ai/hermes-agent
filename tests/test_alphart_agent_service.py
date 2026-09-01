@@ -15,12 +15,20 @@ from alphart_agent_service import (
     _alphart_enabled_toolsets,
     _canvas_agent_prompt,
     _canvas_audio_analysis_transcription_messages,
+    _canvas_audio_transcript_content,
     _canvas_audio_urls_from_references,
     _canvas_transcribe_audio,
+    _canvas_graph_mutation_action,
     _configure_agent_scope,
+    _canvas_explicit_mutation_request,
+    _canvas_graph_tool_error,
+    _canvas_graph_tool_failed,
+    _canvas_reference_or_analysis_request,
     _canvas_history_user_message,
     _canvas_image_reference_content,
+    _canvas_mutation_action_request,
     _canvas_negated_generation_request,
+    _canvas_negated_graph_mutation_request,
     _canvas_persisted_user_message,
     _canvas_request_text,
     _canvas_non_execution_question,
@@ -30,17 +38,20 @@ from alphart_agent_service import (
     _canvas_video_reference_message,
     _canvas_video_recovery_needed,
     _canvas_workflow_item_type,
+    _canvas_unsupported_graph_mutation_request,
     _download_image_as_data_url,
     _audio_urls_from_content,
     _generation_tool_attempted,
     _generation_tool_effectively_failed,
     _forced_media_tool_messages,
+    _has_non_audio_media_content,
     _input_videos_from_content,
     _media_intent,
     _post_chat_event_callback,
     _post_chat_result_callback,
     _prepare_chat_content_for_model,
     _provider_config_for_domain,
+    _request_messages,
     _title_relay_idempotency_key,
     _uses_jwell_internal_relay,
 )
@@ -471,6 +482,408 @@ def test_canvas_toolset_owns_canvas_graph_mutations():
     assert "execute_code" not in canvas_tools
 
 
+def test_canvas_graph_tool_failures_are_reported():
+    failed = [{
+        "role": "tool",
+        "name": "canvas_connect_nodes",
+        "content": json.dumps({"success": False, "error": "connection already exists"}),
+    }]
+    succeeded = [{
+        "role": "tool",
+        "name": "canvas_connect_nodes",
+        "content": json.dumps({"status": "success", "result": {"id": "edge-1"}}),
+    }]
+
+    assert _canvas_graph_tool_failed(failed) is True
+    assert _canvas_graph_tool_error(failed) == "connection already exists"
+    assert _canvas_graph_tool_failed(succeeded) is False
+
+
+def test_canvas_graph_tool_retry_replaces_failed_attempt():
+    arguments = json.dumps({
+        "source_item_id": "source-1",
+        "target_item_id": "target-1",
+        "source_handle": "out",
+        "target_handle": "in",
+    })
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-failed",
+                "function": {"name": "canvas_connect_nodes", "arguments": arguments},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-failed",
+            "name": "canvas_connect_nodes",
+            "content": json.dumps({"success": False, "error": "temporary conflict"}),
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-retry",
+                "function": {"name": "canvas_connect_nodes", "arguments": arguments},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-retry",
+            "name": "canvas_connect_nodes",
+            "content": json.dumps({"status": "success", "result": {"id": "edge-1"}}),
+        },
+    ]
+
+    assert _canvas_graph_tool_failed(messages) is False
+    assert _canvas_graph_tool_error(messages) == ""
+
+
+def test_canvas_graph_tool_does_not_merge_duplicate_calls_in_same_round():
+    arguments = json.dumps({
+        "item_type": "image",
+        "prompt": "A sunset over the ocean",
+    })
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call-first",
+                    "function": {"name": "canvas_create_node", "arguments": arguments},
+                },
+                {
+                    "id": "call-second",
+                    "function": {"name": "canvas_create_node", "arguments": arguments},
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-first",
+            "name": "canvas_create_node",
+            "content": json.dumps({"success": False, "error": "first creation rejected"}),
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-second",
+            "name": "canvas_create_node",
+            "content": json.dumps({"status": "success", "result": {"id": "node-2"}}),
+        },
+    ]
+
+    assert _canvas_graph_tool_failed(messages) is True
+    assert _canvas_graph_tool_error(messages) == "first creation rejected"
+
+
+def test_canvas_graph_tool_does_not_merge_later_failed_call_with_earlier_success():
+    arguments = json.dumps({
+        "item_type": "image",
+        "prompt": "A sunset over the ocean",
+    })
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-first",
+                "function": {"name": "canvas_create_node", "arguments": arguments},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-first",
+            "name": "canvas_create_node",
+            "content": json.dumps({"status": "success", "result": {"id": "node-1"}}),
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-second",
+                "function": {"name": "canvas_create_node", "arguments": arguments},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-second",
+            "name": "canvas_create_node",
+            "content": json.dumps({"success": False, "error": "second creation rejected"}),
+        },
+    ]
+
+    assert _canvas_graph_tool_failed(messages) is True
+    assert _canvas_graph_tool_error(messages) == "second creation rejected"
+
+
+def test_canvas_graph_tool_retries_repair_one_duplicate_failure_at_a_time():
+    arguments = json.dumps({
+        "item_type": "image",
+        "prompt": "A sunset over the ocean",
+    })
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call-first",
+                    "function": {"name": "canvas_create_node", "arguments": arguments},
+                },
+                {
+                    "id": "call-second",
+                    "function": {"name": "canvas_create_node", "arguments": arguments},
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-first",
+            "name": "canvas_create_node",
+            "content": json.dumps({"success": False, "error": "first creation rejected"}),
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-second",
+            "name": "canvas_create_node",
+            "content": json.dumps({"success": False, "error": "second creation rejected"}),
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-retry",
+                "function": {"name": "canvas_create_node", "arguments": arguments},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-retry",
+            "name": "canvas_create_node",
+            "content": json.dumps({"status": "success", "result": {"id": "node-3"}}),
+        },
+    ]
+
+    assert _canvas_graph_tool_failed(messages) is True
+    assert _canvas_graph_tool_error(messages) == "second creation rejected"
+
+
+def test_canvas_graph_tool_retry_normalizes_omitted_connection_handles():
+    first_arguments = json.dumps({
+        "source_item_id": "source-1",
+        "target_item_id": "target-1",
+    })
+    retry_arguments = json.dumps({
+        "source_item_id": "source-1",
+        "target_item_id": "target-1",
+        "source_handle": "out",
+        "target_handle": "in",
+    })
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-failed",
+                "function": {"name": "canvas_connect_nodes", "arguments": first_arguments},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-failed",
+            "name": "canvas_connect_nodes",
+            "content": json.dumps({"success": False, "error": "temporary conflict"}),
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-retry",
+                "function": {"name": "canvas_connect_nodes", "arguments": retry_arguments},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-retry",
+            "name": "canvas_connect_nodes",
+            "content": json.dumps({"status": "success", "result": {"id": "edge-1"}}),
+        },
+    ]
+
+    assert _canvas_graph_tool_failed(messages) is False
+    assert _canvas_graph_tool_error(messages) == ""
+
+
+def test_canvas_graph_tool_retry_normalizes_create_content_and_source_aliases():
+    first_arguments = json.dumps({
+        "item_type": "image",
+        "title": "Sunset",
+        "prompt": "A sunset over the ocean",
+        "source_item_ids": ["reference-1"],
+    })
+    retry_arguments = json.dumps({
+        "type": "image",
+        "title": "Sunset",
+        "content": {"prompt": "A sunset over the ocean"},
+        "reference_item_ids": ["reference-1"],
+    })
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-failed",
+                "function": {"name": "canvas_create_node", "arguments": first_arguments},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-failed",
+            "name": "canvas_create_node",
+            "content": json.dumps({"success": False, "error": "temporary conflict"}),
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-retry",
+                "function": {"name": "canvas_create_node", "arguments": retry_arguments},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-retry",
+            "name": "canvas_create_node",
+            "content": json.dumps({"status": "success", "result": {"id": "node-2"}}),
+        },
+    ]
+
+    assert _canvas_graph_tool_failed(messages) is False
+    assert _canvas_graph_tool_error(messages) == ""
+
+
+def test_canvas_graph_tool_retry_normalizes_create_source_order():
+    first_arguments = json.dumps({
+        "item_type": "image",
+        "prompt": "A sunset over the ocean",
+        "source_item_ids": ["reference-1", "reference-2"],
+    })
+    retry_arguments = json.dumps({
+        "item_type": "image",
+        "prompt": "A sunset over the ocean",
+        "source_item_ids": ["reference-2", "reference-1"],
+    })
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-failed",
+                "function": {"name": "canvas_create_node", "arguments": first_arguments},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-failed",
+            "name": "canvas_create_node",
+            "content": json.dumps({"success": False, "error": "temporary conflict"}),
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-retry",
+                "function": {"name": "canvas_create_node", "arguments": retry_arguments},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-retry",
+            "name": "canvas_create_node",
+            "content": json.dumps({"status": "success", "result": {"id": "node-2"}}),
+        },
+    ]
+
+    assert _canvas_graph_tool_failed(messages) is False
+    assert _canvas_graph_tool_error(messages) == ""
+
+
+def test_canvas_graph_tool_different_creations_do_not_replace_each_other():
+    first_arguments = json.dumps({
+        "item_type": "image",
+        "title": "Image",
+        "prompt": "A sunset over the ocean",
+    })
+    second_arguments = json.dumps({
+        "item_type": "image",
+        "title": "Image",
+        "prompt": "A snowy mountain at dawn",
+    })
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-first",
+                "function": {"name": "canvas_create_node", "arguments": first_arguments},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-first",
+            "name": "canvas_create_node",
+            "content": json.dumps({"success": False, "error": "first creation rejected"}),
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-second",
+                "function": {"name": "canvas_create_node", "arguments": second_arguments},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-second",
+            "name": "canvas_create_node",
+            "content": json.dumps({"status": "success", "result": {"id": "node-2"}}),
+        },
+    ]
+
+    assert _canvas_graph_tool_failed(messages) is True
+    assert _canvas_graph_tool_error(messages) == "first creation rejected"
+
+
+def test_canvas_graph_tool_different_updates_do_not_replace_each_other():
+    rename_arguments = json.dumps({
+        "canvas_item_id": "node-1",
+        "title": "Renamed",
+    })
+    move_arguments = json.dumps({
+        "canvas_item_id": "node-1",
+        "position_x": 240,
+    })
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-rename",
+                "function": {"name": "canvas_update_node", "arguments": rename_arguments},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-rename",
+            "name": "canvas_update_node",
+            "content": json.dumps({"success": False, "error": "rename rejected"}),
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-move",
+                "function": {"name": "canvas_update_node", "arguments": move_arguments},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-move",
+            "name": "canvas_update_node",
+            "content": json.dumps({"status": "success", "result": {"id": "node-1"}}),
+        },
+    ]
+
+    assert _canvas_graph_tool_failed(messages) is True
+    assert _canvas_graph_tool_error(messages) == "rename rejected"
+
+
 def test_prompt_refinement_does_not_route_to_media_generation():
     assert _media_intent(
         "refine prompt which describe a breathtaking autumn dusk landscape of Yellowstone National Park"
@@ -651,8 +1064,12 @@ def test_canvas_negated_generation_requests_do_not_force_media():
         "不要再生成图片",
         "请不要直接制作视频",
         "不要生成图片；解释如何制作视频",
+        "Brainstorm ideas, but do not generate an image",
     ):
         assert _canvas_negated_generation_request(prompt) is True
+    for prompt in ("do not connect these nodes", "不要连接这些节点"):
+        assert _canvas_negated_generation_request(prompt) is False
+        assert _canvas_negated_graph_mutation_request(prompt) is True
     for prompt in (
         "don't forget to generate an image",
         "do not hesitate to create a video",
@@ -662,6 +1079,10 @@ def test_canvas_negated_generation_requests_do_not_force_media():
         assert _canvas_negated_generation_request(prompt) is False
     assert _canvas_negated_generation_request("do not generate an image; instead generate a video") is False
     assert _canvas_negated_generation_request("do not generate an image; then create a video") is False
+    assert _canvas_negated_generation_request("do not generate an image; write a caption instead") is False
+    assert _canvas_negated_generation_request("do not generate an image; create a video") is False
+    assert _canvas_negated_generation_request("do not brainstorm but create an image") is False
+    assert _canvas_negated_generation_request("do not move @Image [123e4567-e89b-12d3-a456-426614174000]'s subject") is True
     assert _canvas_workflow_item_type(AlphartEduChatRequest(
         app_scope="canvas",
         requested_action="create_video",
@@ -669,6 +1090,114 @@ def test_canvas_negated_generation_requests_do_not_force_media():
         requested_node_type="video",
         messages=[{"role": "user", "content": "do not generate an image; explain how to create a video"}],
     )) == ""
+
+
+def test_canvas_explicit_mutation_overrides_stale_reference_hints():
+    for prompt in (
+        "Create an image of a sunset",
+        "I want an image of a sunset",
+        "Write a short prompt about the ocean",
+        "Brainstorm and write three ideas as text",
+        "Review this image, then write a caption",
+        "Connect the selected nodes",
+        "Create an image and remove the background",
+        "Suggest ways to remove the background, then remove the watermark",
+        "Review this image, then improve it",
+        "Delete the background from the selected image",
+        "Add three ideas as text to this image",
+        "Move @Image [123e4567-e89b-12d3-a456-426614174000]'s subject to the left",
+        "Use @Style [123e4567-e89b-12d3-a456-426614174000] as reference and move the subject of @Image [223e4567-e89b-12d3-a456-426614174000] to the left",
+        "请把三个想法添加到这张图片",
+        "Attach @Watermark [123e4567-e89b-12d3-a456-426614174000] to @Image [223e4567-e89b-12d3-a456-426614174000]",
+        "请生成一张日落图片",
+        "连接这两个节点",
+        "Do not generate an image; write a caption instead",
+        "Review this draft, then improve it",
+    ):
+        assert _canvas_explicit_mutation_request(AlphartEduChatRequest(
+            app_scope="canvas",
+            requested_action="answer",
+            target_operation="use_as_reference",
+            messages=[{"role": "user", "content": prompt}],
+        )) is True
+
+    for prompt in ("What is in this image?", "不要生成图片", "Use this image as a reference", "Brainstorm three ideas using this image", "Suggest ways to edit the background", "Suggest ways to edit @Image [123e4567-e89b-12d3-a456-426614174000]'s background", "Suggest ways to improve this image", "Brainstorm how to enhance this image", "Suggest ways to remove the background", "Review the steps to remove the background", "Brainstorm how we could change the background", "Suggest ways to add and remove the background", "Review this draft", "Delete this node", "Do not move @Image [123e4567-e89b-12d3-a456-426614174000]'s subject", "Review @Image [123e4567-e89b-12d3-a456-426614174000]. Update me when done", "Review the canvas. Update me when done"):
+        assert _canvas_explicit_mutation_request(AlphartEduChatRequest(
+            app_scope="canvas",
+            requested_action="answer",
+            target_operation="use_as_reference",
+            messages=[{"role": "user", "content": prompt}],
+        )) is False
+    assert _canvas_explicit_mutation_request(AlphartEduChatRequest(
+        app_scope="canvas",
+        requested_action="generate_image",
+        target_operation="generate_into_existing",
+        requested_node_type="image",
+        messages=[{"role": "user", "content": "Review this draft"}],
+    )) is False
+    assert _canvas_explicit_mutation_request(AlphartEduChatRequest(
+        app_scope="canvas",
+        requested_action="generate_image",
+        target_operation="generate_into_existing",
+        requested_node_type="image",
+        messages=[{"role": "user", "content": "Suggest ways to edit @Image [123e4567-e89b-12d3-a456-426614174000]'s background"}],
+    )) is False
+    assert _canvas_explicit_mutation_request(AlphartEduChatRequest(
+        app_scope="edu",
+        requested_action="generate_image",
+        target_operation="generate_into_existing",
+        messages=[{"role": "user", "content": "Suggest ways to improve this image"}],
+    )) is False
+    assert _canvas_unsupported_graph_mutation_request("Delete this node") is True
+    assert _canvas_unsupported_graph_mutation_request("Delete the image node with the blue background") is True
+    assert _canvas_unsupported_graph_mutation_request("Remove the node containing the foreground subject") is True
+    assert _canvas_unsupported_graph_mutation_request("On this node, delete it") is True
+    assert _canvas_unsupported_graph_mutation_request("Delete @Sunset [123e4567-e89b-12d3-a456-426614174000]") is True
+    assert _canvas_unsupported_graph_mutation_request("Delete @Background [123e4567-e89b-12d3-a456-426614174000]") is True
+    assert _canvas_unsupported_graph_mutation_request("Do not delete this node") is False
+    assert _canvas_unsupported_graph_mutation_request("Do not delete this node; create an image") is False
+    assert _canvas_unsupported_graph_mutation_request("On this image node, remove the background") is False
+    assert _canvas_unsupported_graph_mutation_request("Create an image and remove the background") is False
+    assert _canvas_unsupported_graph_mutation_request("Remove the background from the selected image") is False
+    assert _canvas_unsupported_graph_mutation_request("Remove the background from the selected image node") is False
+    assert _canvas_unsupported_graph_mutation_request("Remove the image node's background") is False
+    assert _canvas_unsupported_graph_mutation_request("删除图片节点的背景") is False
+    assert _canvas_unsupported_graph_mutation_request("Remove @Image [123e4567-e89b-12d3-a456-426614174000]'s background") is False
+    assert _canvas_unsupported_graph_mutation_request("Use @Style [123e4567-e89b-12d3-a456-426614174000] as reference and remove the background from the selected image node") is False
+    assert _canvas_mutation_action_request("Connect the background node to the foreground node") is True
+    assert _canvas_mutation_action_request("Attach @Watermark [123e4567-e89b-12d3-a456-426614174000] to @Image [223e4567-e89b-12d3-a456-426614174000]") is True
+    assert _canvas_mutation_action_request("Rename @Sunset [123e4567-e89b-12d3-a456-426614174000] to Evening") is True
+    assert _canvas_mutation_action_request("Rename @Research and Development [123e4567-e89b-12d3-a456-426614174000] to R&D") is True
+    assert _canvas_mutation_action_request("Review the background of @Image [123e4567-e89b-12d3-a456-426614174000]. Move the canvas node") is True
+    assert _canvas_mutation_action_request("Move @Image [123e4567-e89b-12d3-a456-426614174000]'s subject to the left") is True
+    assert _canvas_mutation_action_request("Use @Style [123e4567-e89b-12d3-a456-426614174000] as reference and move the subject of @Image [223e4567-e89b-12d3-a456-426614174000] to the left") is True
+    assert _canvas_mutation_action_request("Move the selected image node's subject to the left") is True
+    assert _canvas_mutation_action_request("Delete the background from the selected image") is True
+    assert _canvas_graph_mutation_action("move", "Move the selected image node's subject to the left", 0) is False
+    assert _canvas_graph_mutation_action("move", "Move @Image [123e4567-e89b-12d3-a456-426614174000]'s subject to the left", 0) is False
+    assert _canvas_graph_mutation_action("移动", "移动 @Image [123e4567-e89b-12d3-a456-426614174000] 的主体到左边", 0) is False
+    assert _canvas_negated_graph_mutation_request("Do not delete this node") is True
+    assert _canvas_negated_graph_mutation_request("Do not delete this node; create an image") is False
+    assert _canvas_mutation_action_request("Attach a watermark to this image") is True
+    assert _canvas_negated_generation_request("Do not attach a watermark to this image") is True
+    assert _canvas_explicit_mutation_request(AlphartEduChatRequest(
+        app_scope="canvas",
+        requested_action="answer",
+        target_operation="use_as_reference",
+        messages=[{"role": "user", "content": "Attach @Watermark [asset:logo] to this image"}],
+    )) is True
+    assert _canvas_mutation_action_request("Review @Image [123e4567-e89b-12d3-a456-426614174000]. Update me when done") is False
+    assert _canvas_workflow_item_type(AlphartEduChatRequest(
+        app_scope="canvas",
+        requested_action="refine_node",
+        target_operation="refine_existing",
+        requested_node_type="text",
+        messages=[{"role": "user", "content": "Delete this node"}],
+    )) == ""
+    assert not _canvas_reference_or_analysis_request("I want an image of a sunset")
+    assert _canvas_reference_or_analysis_request("Use this image as a reference")
+    assert not _canvas_reference_or_analysis_request("Add three ideas as text to this image")
+    assert not _canvas_reference_or_analysis_request("请把三个想法添加到这张图片")
 
 
 def test_canvas_audio_reference_urls_are_available_for_analysis_pipeline():
