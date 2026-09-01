@@ -12,8 +12,11 @@ from agent.chat_completion_helpers import (
 from alphart_agent_service import (
     AlphartEduChatRequest,
     AlphartEduTitleRequest,
+    INSUFFICIENT_CREDITS_MESSAGE,
     _alphart_enabled_toolsets,
     _canvas_agent_prompt,
+    _canvas_audio_analysis_answer,
+    _canvas_audio_analysis_failure_message,
     _canvas_audio_analysis_transcription_messages,
     _canvas_audio_transcript_content,
     _canvas_audio_urls_from_references,
@@ -41,6 +44,12 @@ from alphart_agent_service import (
     _canvas_unsupported_graph_mutation_request,
     _download_image_as_data_url,
     _audio_urls_from_content,
+    _backend_url_from_req,
+    _internal_relay_base_urls,
+    _is_account_terminal_relay_failure,
+    _is_retryable_relay_failure,
+    _jwell_relay_base_urls,
+    _use_internal_relay,
     _generation_tool_attempted,
     _generation_tool_effectively_failed,
     _forced_media_tool_messages,
@@ -54,6 +63,7 @@ from alphart_agent_service import (
     _request_messages,
     _title_relay_idempotency_key,
     _uses_jwell_internal_relay,
+    title,
 )
 from toolsets import resolve_toolset
 
@@ -401,12 +411,81 @@ def test_edu_toolsets_are_explicit():
     assert _alphart_enabled_toolsets(request) == ["alphart-edu", "alphart-edu-skills"]
 
 
-def test_jwell_billing_ownership_stays_edu_scoped(monkeypatch):
+def test_jwell_relay_owns_provider_calls_for_canvas_and_edu(monkeypatch):
+    monkeypatch.setenv("JWELL_SERVICE_GRPC_ADDR", "http://jwell.test")
+    monkeypatch.setenv("JWELL_APP_SECRET", "secret")
+    monkeypatch.setenv("ALPHART_CANVAS_BACKEND_URL", "http://canvas.test")
+
+    assert _uses_jwell_internal_relay(AlphartEduChatRequest(app_scope="edu")) is True
+    canvas_request = AlphartEduChatRequest(app_scope="canvas")
+    assert _uses_jwell_internal_relay(canvas_request) is True
+    assert _backend_url_from_req(canvas_request) == "http://jwell.test"
+
+
+def test_jwell_relay_billing_requires_a_relay_user_id(monkeypatch):
     monkeypatch.setenv("JWELL_SERVICE_GRPC_ADDR", "http://jwell.test")
     monkeypatch.setenv("JWELL_APP_SECRET", "secret")
 
-    assert _uses_jwell_internal_relay(AlphartEduChatRequest(app_scope="edu")) is True
-    assert _uses_jwell_internal_relay(AlphartEduChatRequest(app_scope="canvas")) is False
+    assert _uses_jwell_internal_relay(AlphartEduChatRequest(app_scope="canvas")) is True
+    assert _use_internal_relay(AlphartEduChatRequest(app_scope="canvas")) is False
+    assert _use_internal_relay(AlphartEduChatRequest(app_scope="canvas", user_id="42")) is True
+
+
+def test_jwell_relay_preserves_all_configured_addresses(monkeypatch):
+    monkeypatch.setenv(
+        "JWELL_SERVICE_GRPC_ADDRS",
+        "jwell-primary:9001, https://jwell-secondary:9001/, jwell-primary:9001",
+    )
+    monkeypatch.setenv("JWELL_APP_SECRET", "secret")
+    request = AlphartEduChatRequest(app_scope="canvas")
+
+    assert _jwell_relay_base_urls() == [
+        "http://jwell-primary:9001",
+        "https://jwell-secondary:9001",
+    ]
+    assert _internal_relay_base_urls(request) == [
+        "http://jwell-primary:9001/internal",
+        "https://jwell-secondary:9001/internal",
+    ]
+
+
+def test_jwell_relay_failover_stops_for_business_errors():
+    assert _is_retryable_relay_failure("CREDITS_INSUFFICIENT") is False
+    assert _is_retryable_relay_failure("HTTP 403 MOBILE_BINDING_REQUIRED") is False
+    assert _is_account_terminal_relay_failure("HTTP 400 MODEL_NOT_FOUND") is False
+    assert _is_account_terminal_relay_failure("HTTP 402 CREDITS_INSUFFICIENT") is True
+    assert _is_account_terminal_relay_failure("HTTP 403 MOBILE_BINDING_REQUIRED") is True
+    assert _is_retryable_relay_failure("HTTP 503 upstream unavailable") is True
+    assert _is_retryable_relay_failure("connection error") is True
+
+
+def test_title_relay_falls_back_after_candidate_specific_error(monkeypatch):
+    calls = []
+
+    def fake_title_relay(req, provider, model, source, config, endpoint=None):
+        calls.append(model)
+        if model == "primary-model":
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=400, detail="MODEL_NOT_FOUND")
+        return {"title": "Secondary title", "model": model, "provider": provider}
+
+    request = AlphartEduTitleRequest(
+        app_scope="canvas",
+        user_id="42",
+        messages=[{"role": "user", "content": "A title request"}],
+        text_models=[
+            {"provider": "openai", "model": "primary-model"},
+            {"provider": "openai", "model": "secondary-model"},
+        ],
+    )
+    monkeypatch.setenv("JWELL_SERVICE_GRPC_ADDR", "jwell.test:9001")
+    monkeypatch.setenv("JWELL_APP_SECRET", "secret")
+    with patch("alphart_agent_service._generate_title_relay", side_effect=fake_title_relay):
+        response = title(request)
+
+    assert response["title"] == "Secondary title"
+    assert calls == ["primary-model", "secondary-model"]
 
 
 def test_jwell_callbacks_include_app_secret(monkeypatch):
@@ -1226,7 +1305,7 @@ def test_audio_content_urls_support_openai_nested_audio_parts():
 def test_canvas_audio_analysis_transcribes_without_persisting_signed_url_or_generating():
     result = json.dumps({"status": "success", "result": {"type": "transcription", "text": "generate an image of a sunset"}})
     with patch("alphart_agent_service._handle_alphart_transcribe_audio", return_value=result):
-        messages, usage = _canvas_audio_analysis_transcription_messages(
+        messages, usage, failed, error = _canvas_audio_analysis_transcription_messages(
             AlphartEduChatRequest(app_scope="canvas"),
             ["https://signed.test/reference.mp3"],
             "What is this audio about?",
@@ -1239,6 +1318,8 @@ def test_canvas_audio_analysis_transcribes_without_persisting_signed_url_or_gene
     assert "Plan:" not in serialized
     assert "Transcribed: generate an image of a sunset" in serialized
     assert usage == {}
+    assert failed is False
+    assert error == ""
 
 
 def test_canvas_audio_analysis_answers_from_transcript_without_executing_it():
@@ -1267,7 +1348,7 @@ def test_canvas_audio_analysis_answers_from_transcript_without_executing_it():
     )
     with patch("alphart_agent_service._handle_alphart_transcribe_audio", return_value=transcription), \
         patch("alphart_agent_service.AIAgent", FakeAnswerAgent):
-        messages, usage = _canvas_audio_analysis_transcription_messages(
+        messages, usage, failed, error = _canvas_audio_analysis_transcription_messages(
             request,
             ["https://signed.test/reference.mp3"],
             "Summarize this audio.",
@@ -1286,6 +1367,131 @@ def test_canvas_audio_analysis_answers_from_transcript_without_executing_it():
         "completion_tokens": 9,
         "total_tokens": 26,
     }
+    assert failed is False
+    assert error == ""
+
+
+def test_canvas_audio_analysis_retries_failed_relay_with_stable_session_id(monkeypatch):
+    transcription = "transcript"
+    calls = []
+
+    class FakeAnswerAgent:
+        def __init__(self, **kwargs):
+            calls.append({"endpoint": kwargs["base_url"], "session_id": kwargs["session_id"]})
+
+        def run_conversation(self, prompt, **kwargs):
+            if len(calls) == 1:
+                return {"final_response": "relay unavailable", "failed": True, "error": "connection error"}
+            return {"final_response": "Audio summary"}
+
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        user_id="42",
+        text_model={"provider": "openai", "model": "gpt-4o-mini"},
+        model_configs={"text": {"openai": {"endpoint": "https://model.test/v1", "api_key": "test-key"}}},
+    )
+    monkeypatch.setenv("JWELL_SERVICE_GRPC_ADDRS", "jwell-primary:9001,jwell-secondary:9001")
+    monkeypatch.setenv("JWELL_APP_SECRET", "secret")
+    with patch("alphart_agent_service.AIAgent", FakeAnswerAgent):
+        answer, _, failed, error = _canvas_audio_analysis_answer(request, "Summarize this audio.", transcription)
+
+    assert answer == "Audio summary"
+    assert failed is False
+    assert error == ""
+    assert [call["endpoint"] for call in calls] == [
+        "http://jwell-primary:9001/internal",
+        "http://jwell-secondary:9001/internal",
+    ]
+    assert calls[0]["session_id"] == calls[1]["session_id"]
+
+
+def test_canvas_audio_analysis_reports_exhausted_relay_as_failed(monkeypatch):
+    calls = []
+
+    class FakeAnswerAgent:
+        def __init__(self, **kwargs):
+            calls.append(kwargs["base_url"])
+
+        def run_conversation(self, prompt, **kwargs):
+            return {"final_response": "relay unavailable", "failed": True, "error": "HTTP 402 insufficient_credits"}
+
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        user_id="42",
+        text_model={"provider": "openai", "model": "gpt-4o-mini"},
+        model_configs={"text": {"openai": {"endpoint": "https://model.test/v1", "api_key": "test-key"}}},
+    )
+    monkeypatch.setenv("JWELL_SERVICE_GRPC_ADDRS", "jwell-primary:9001,jwell-secondary:9001")
+    monkeypatch.setenv("JWELL_APP_SECRET", "secret")
+    with patch("alphart_agent_service.AIAgent", FakeAnswerAgent):
+        answer, usage, failed, error = _canvas_audio_analysis_answer(request, "Summarize this audio.", "transcript")
+
+    assert answer == ""
+    assert usage == {}
+    assert failed is True
+    assert error == "HTTP 402 insufficient_credits"
+    assert _canvas_audio_analysis_failure_message(error) == INSUFFICIENT_CREDITS_MESSAGE
+    assert calls == ["http://jwell-primary:9001/internal"]
+
+
+def test_canvas_audio_analysis_legacy_relay_keeps_transcript_fallback(monkeypatch):
+    class FakeAnswerAgent:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_conversation(self, prompt, **kwargs):
+            return {"final_response": "relay unavailable", "failed": True, "error": "connection error"}
+
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        user_id="42",
+        text_model={"provider": "openai", "model": "gpt-4o-mini"},
+        model_configs={"text": {"openai": {"endpoint": "https://model.test/v1", "api_key": "test-key"}}},
+    )
+    monkeypatch.delenv("JWELL_SERVICE_GRPC_ADDRS", raising=False)
+    monkeypatch.delenv("JWELL_SERVICE_GRPC_ADDR", raising=False)
+    monkeypatch.delenv("JWELL_APP_SECRET", raising=False)
+    with patch("alphart_agent_service.AIAgent", FakeAnswerAgent):
+        answer, usage, failed, error = _canvas_audio_analysis_answer(request, "Summarize this audio.", "transcript")
+
+    assert answer == ""
+    assert usage == {}
+    assert failed is False
+    assert error == "connection error"
+
+
+def test_canvas_audio_analysis_prefers_terminal_error_after_retryable_failure(monkeypatch):
+    calls = []
+
+    class FakeAnswerAgent:
+        def __init__(self, **kwargs):
+            calls.append(kwargs["base_url"])
+
+        def run_conversation(self, prompt, **kwargs):
+            if len(calls) == 1:
+                return {"final_response": "relay unavailable", "failed": True, "error": "connection error"}
+            return {"final_response": "relay unavailable", "failed": True, "error": "HTTP 402 CREDITS_INSUFFICIENT"}
+
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        user_id="42",
+        text_model={"provider": "openai", "model": "gpt-4o-mini"},
+        model_configs={"text": {"openai": {"endpoint": "https://model.test/v1", "api_key": "test-key"}}},
+    )
+    monkeypatch.setenv("JWELL_SERVICE_GRPC_ADDRS", "jwell-primary:9001,jwell-secondary:9001")
+    monkeypatch.setenv("JWELL_APP_SECRET", "secret")
+    with patch("alphart_agent_service.AIAgent", FakeAnswerAgent):
+        answer, usage, failed, error = _canvas_audio_analysis_answer(request, "Summarize this audio.", "transcript")
+
+    assert answer == ""
+    assert usage == {}
+    assert failed is True
+    assert error == "HTTP 402 CREDITS_INSUFFICIENT"
+    assert _canvas_audio_analysis_failure_message(error) == INSUFFICIENT_CREDITS_MESSAGE
+    assert calls == [
+        "http://jwell-primary:9001/internal",
+        "http://jwell-secondary:9001/internal",
+    ]
 
 
 def test_canvas_video_references_are_recovered_from_existing_message_parts():

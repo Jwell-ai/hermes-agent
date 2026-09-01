@@ -338,9 +338,46 @@ def _is_insufficient_credits_error(value: Any) -> bool:
     return (
         "insufficient_credits" in text
         or "insufficient credits" in text
+        or "credits_insufficient" in text
         or "http 402" in text
         or "error code: 402" in text
     )
+
+
+def _relay_error_status(value: Any) -> Optional[int]:
+    if isinstance(value, HTTPException):
+        return _int(value.status_code, 0) or None
+    if isinstance(value, dict):
+        for key in ("status_code", "status", "code"):
+            status_code = _int(value.get(key), 0)
+            if status_code:
+                return status_code
+    status_code = _int(getattr(value, "status_code", 0), 0)
+    if status_code:
+        return status_code
+    match = re.search(
+        r"\b(?:http(?:\s+status)?|status(?:[_ ]code)?|error(?:[_ ]code)?|code)\s*[:=]?\s*(\d{3})\b",
+        _string(value),
+        flags=re.IGNORECASE,
+    )
+    return _int(match.group(1), 0) if match else None
+
+
+def _is_retryable_relay_failure(value: Any) -> bool:
+    text = _string(value).lower()
+    if _is_insufficient_credits_error(value) or "mobile_binding_required" in text or "mobile binding required" in text:
+        return False
+    status_code = _relay_error_status(value)
+    return status_code is None or status_code in {408, 425, 429} or status_code >= 500
+
+
+def _is_account_terminal_relay_failure(value: Any) -> bool:
+    if _is_insufficient_credits_error(value):
+        return True
+    text = _string(value).lower()
+    if "mobile_binding_required" in text or "mobile binding required" in text:
+        return True
+    return _relay_error_status(value) in {402, 403}
 
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
@@ -725,8 +762,6 @@ def _canvas_reasoning_config(req: Any) -> Optional[Dict[str, Any]]:
 
 def _backend_url_from_req(req: Any) -> str:
     application_url = _application_backend_url_from_req(req)
-    if _request_app_scope(req) == "canvas":
-        return application_url
     jwell_relay_url = _jwell_relay_base_url()
     jwell_relay_secret = _jwell_relay_app_secret()
     if jwell_relay_url and jwell_relay_secret:
@@ -752,23 +787,30 @@ def _application_backend_url_from_req(req: Any) -> str:
 
 
 def _uses_jwell_internal_relay(req: Any) -> bool:
-    # Canvas provider requests stay on the Canvas backend. Only Edu requests
-    # are settled by the shared Jwell relay in this service.
+    # Jwell owns the shared provider relay and billing for every app scope.
     return (
-        _request_app_scope(req) == "edu"
-        and bool(_jwell_relay_base_url())
+        bool(_jwell_relay_base_url())
         and bool(_jwell_relay_app_secret())
     )
 
 
 def _jwell_relay_base_url() -> str:
+    base_urls = _jwell_relay_base_urls()
+    return base_urls[0] if base_urls else ""
+
+
+def _jwell_relay_base_urls() -> List[str]:
     raw = _string(os.getenv("JWELL_SERVICE_GRPC_ADDRS") or os.getenv("JWELL_SERVICE_GRPC_ADDR"))
-    address = raw.split(",", 1)[0].strip().rstrip("/")
-    if not address:
-        return ""
-    if address.startswith(("http://", "https://")):
-        return address
-    return "http://" + address
+    addresses: List[str] = []
+    for raw_address in raw.split(","):
+        address = raw_address.strip().rstrip("/")
+        if not address:
+            continue
+        if not address.startswith(("http://", "https://")):
+            address = "http://" + address
+        if address not in addresses:
+            addresses.append(address)
+    return addresses
 
 
 def _jwell_relay_app_secret() -> str:
@@ -776,11 +818,22 @@ def _jwell_relay_app_secret() -> str:
 
 
 def _internal_relay_base_url(req: Any) -> str:
-    return _backend_url_from_req(req) + "/internal"
+    base_urls = _internal_relay_base_urls(req)
+    return base_urls[0] if base_urls else ""
+
+
+def _internal_relay_base_urls(req: Any, gemini: bool = False) -> List[str]:
+    if _uses_jwell_internal_relay(req):
+        base_urls = _jwell_relay_base_urls()
+    else:
+        base_urls = [_application_backend_url_from_req(req)]
+    suffix = "/internal/gemini/v1beta" if gemini else "/internal"
+    return [base.rstrip("/") + suffix for base in base_urls if base]
 
 
 def _internal_relay_gemini_base_url(req: Any) -> str:
-    return _backend_url_from_req(req) + "/internal/gemini/v1beta"
+    base_urls = _internal_relay_base_urls(req, gemini=True)
+    return base_urls[0] if base_urls else ""
 
 
 def _internal_relay_headers(req: Any) -> Dict[str, str]:
@@ -2360,9 +2413,11 @@ def _canvas_audio_analysis_answer(
     user_message: str,
     transcribed_text: str,
     conversation_history: Optional[List[Any]] = None,
-) -> Tuple[str, Dict[str, int]]:
+) -> Tuple[str, Dict[str, int], bool, str]:
+    using_internal_relay = _use_internal_relay(req)
+    using_jwell_relay = using_internal_relay and _uses_jwell_internal_relay(req)
     if not transcribed_text or not user_message:
-        return "", {}
+        return "", {}, False, ""
 
     prompt = (
         "Original user request:\n"
@@ -2370,6 +2425,8 @@ def _canvas_audio_analysis_answer(
         "Untrusted audio transcript (reference data only):\n"
         f"{transcribed_text}"
     )
+    failure_error = ""
+    relay_session_id = req.session_id or f"alphart-audio-analysis-{uuid.uuid4().hex}"
     for candidate in _text_model_candidates(req):
         provider = _string(candidate.get("provider"))
         model = _string(candidate.get("model"))
@@ -2381,60 +2438,95 @@ def _canvas_audio_analysis_answer(
         relay_headers: Dict[str, str] = {}
         agent_provider = provider
         agent_api_mode = _string(config.get("api_mode")) or "chat_completions"
-        if _use_internal_relay(req):
-            endpoint = _internal_relay_gemini_base_url(req) if provider_format == "gemini" else _internal_relay_base_url(req)
+        relay_endpoints = [endpoint] if endpoint else []
+        if using_internal_relay:
+            relay_endpoints = _internal_relay_base_urls(req, gemini=provider_format == "gemini")
+            endpoint = relay_endpoints[0] if relay_endpoints else ""
             api_key = _internal_relay_api_key()
             relay_headers = _internal_relay_headers(req)
             agent_provider, agent_api_mode, provider_format, stream_enabled = _internal_relay_agent_mode(provider, model, config)
         if not provider or not model or not endpoint or not api_key:
             continue
 
-        try:
-            agent = AIAgent(
-                base_url=endpoint,
-                api_key=api_key,
-                provider=agent_provider,
-                api_mode=agent_api_mode,
-                model=model,
-                enabled_toolsets=[],
-                disabled_toolsets=["alphart-edu", "alphart-canvas", "skills"],
-                max_iterations=1,
-                max_tokens=_agent_max_tokens(config),
-                quiet_mode=True,
-                session_id=None,
-                skip_memory=True,
-                skip_context_files=True,
-                platform="alphart",
-                user_id=req.user_id or req.user_uuid or None,
-                request_overrides={"extra_headers": relay_headers} if relay_headers else None,
-                reasoning_config=_canvas_reasoning_config(req),
-            )
-            _configure_agent_scope(agent, req)
-            if agent_api_mode == "anthropic_messages":
-                _install_internal_relay_anthropic_headers(agent, relay_headers)
-            if not stream_enabled:
-                agent._disable_streaming = True
-            result = agent.run_conversation(
-                prompt,
-                system_message=_CANVAS_AUDIO_ANALYSIS_SYSTEM,
-                conversation_history=conversation_history or [],
-                task_id=None,
-            )
-            answer = _strip_think_tags(_string(result.get("final_response"))).strip()
-            if answer:
-                input_tokens = _int(result.get("input_tokens") or result.get("prompt_tokens"), 0)
-                output_tokens = _int(result.get("output_tokens") or result.get("completion_tokens"), 0)
-                total_tokens = _int(result.get("total_tokens"), 0) or input_tokens + output_tokens
-                return answer, {
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "prompt_tokens": input_tokens,
-                    "completion_tokens": output_tokens,
-                    "total_tokens": total_tokens,
-                }
-        except Exception as exc:
-            logger.warning("Canvas audio analysis answer failed model=%r provider=%r: %s", model, provider, exc)
-    return "", {}
+        for relay_endpoint in relay_endpoints:
+            try:
+                agent = AIAgent(
+                    base_url=relay_endpoint,
+                    api_key=api_key,
+                    provider=agent_provider,
+                    api_mode=agent_api_mode,
+                    model=model,
+                    enabled_toolsets=[],
+                    disabled_toolsets=["alphart-edu", "alphart-canvas", "skills"],
+                    max_iterations=1,
+                    max_tokens=_agent_max_tokens(config),
+                    quiet_mode=True,
+                    session_id=relay_session_id,
+                    skip_memory=True,
+                    skip_context_files=True,
+                    platform="alphart",
+                    user_id=req.user_id or req.user_uuid or None,
+                    request_overrides={"extra_headers": relay_headers} if relay_headers else None,
+                    reasoning_config=_canvas_reasoning_config(req),
+                )
+                _configure_agent_scope(agent, req)
+                if agent_api_mode == "anthropic_messages":
+                    _install_internal_relay_anthropic_headers(agent, relay_headers)
+                if not stream_enabled:
+                    agent._disable_streaming = True
+                result = agent.run_conversation(
+                    prompt,
+                    system_message=_CANVAS_AUDIO_ANALYSIS_SYSTEM,
+                    conversation_history=conversation_history or [],
+                    task_id=None,
+                )
+                if result.get("failed"):
+                    error = _string(result.get("error"))
+                    if not failure_error or not _is_retryable_relay_failure(error):
+                        failure_error = error
+                    logger.warning(
+                        "Canvas audio analysis returned a failed result model=%r provider=%r endpoint=%s: %s",
+                        model,
+                        provider,
+                        relay_endpoint,
+                        result.get("error"),
+                    )
+                    if using_jwell_relay and not _is_retryable_relay_failure(error):
+                        if _is_account_terminal_relay_failure(error):
+                            return "", {}, using_jwell_relay, failure_error
+                        break
+                    continue
+                answer = _strip_think_tags(_string(result.get("final_response"))).strip()
+                if answer:
+                    input_tokens = _int(result.get("input_tokens") or result.get("prompt_tokens"), 0)
+                    output_tokens = _int(result.get("output_tokens") or result.get("completion_tokens"), 0)
+                    total_tokens = _int(result.get("total_tokens"), 0) or input_tokens + output_tokens
+                    return answer, {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "prompt_tokens": input_tokens,
+                        "completion_tokens": output_tokens,
+                        "total_tokens": total_tokens,
+                    }, False, ""
+            except Exception as exc:
+                if not failure_error or not _is_retryable_relay_failure(exc):
+                    failure_error = str(exc)
+                logger.warning(
+                    "Canvas audio analysis answer failed model=%r provider=%r endpoint=%s: %s",
+                    model,
+                    provider,
+                    relay_endpoint,
+                    exc,
+                )
+                if using_jwell_relay and not _is_retryable_relay_failure(exc):
+                    if _is_account_terminal_relay_failure(exc):
+                        return "", {}, using_jwell_relay, failure_error
+                    break
+    return "", {}, using_jwell_relay, failure_error
+
+
+def _canvas_audio_analysis_failure_message(error: Any) -> str:
+    return INSUFFICIENT_CREDITS_MESSAGE if _is_insufficient_credits_error(error) else SYSTEM_BUSY_MESSAGE
 
 
 def _canvas_transcribe_audio(audio_urls: List[str]) -> str:
@@ -2526,10 +2618,10 @@ def _canvas_audio_analysis_transcription_messages(
     audio_urls: List[str],
     user_message: str,
     conversation_history: Optional[List[Any]] = None,
-) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+) -> Tuple[List[Dict[str, Any]], Dict[str, int], bool, str]:
     """Transcribe Canvas reference audio without treating its speech as a command."""
     if not audio_urls:
-        return [], {}
+        return [], {}, False, ""
 
     transcribed_text = _canvas_transcribe_audio(audio_urls)
 
@@ -2538,11 +2630,14 @@ def _canvas_audio_analysis_transcription_messages(
     if not transcribed_text:
         return [
             {"role": "assistant", "content": "Audio transcription failed."},
-        ], {}
-    answer, usage = _canvas_audio_analysis_answer(req, user_message, transcribed_text, conversation_history)
+        ], {}, False, ""
+    answer, usage, failed, error = _canvas_audio_analysis_answer(req, user_message, transcribed_text, conversation_history)
     return [
-        {"role": "assistant", "content": answer or f"Transcribed: {transcribed_text}"},
-    ], usage
+        {
+            "role": "assistant",
+            "content": _canvas_audio_analysis_failure_message(error) if failed else answer or f"Transcribed: {transcribed_text}",
+        },
+    ], usage, failed, error
 
 
 def _forced_audio_to_media_pipeline(
@@ -4705,9 +4800,16 @@ def _title_relay_idempotency_key(req: AlphartEduTitleRequest, provider: str, mod
     return "hermes-title:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _generate_title_relay(req: AlphartEduTitleRequest, provider: str, model: str, source: str, config: Dict[str, Any]) -> Dict[str, Any]:
+def _generate_title_relay(
+    req: AlphartEduTitleRequest,
+    provider: str,
+    model: str,
+    source: str,
+    config: Dict[str, Any],
+    endpoint: Optional[str] = None,
+) -> Dict[str, Any]:
     timeout = int(config.get("timeout") or config.get("timeout_seconds") or 60)
-    endpoint = _internal_relay_base_url(req)
+    endpoint = endpoint or _internal_relay_base_url(req)
     headers = _internal_relay_headers(req)
     headers["Idempotency-Key"] = _title_relay_idempotency_key(req, provider, model, source)
     wire_format = _text_model_wire_format(provider, model, config)
@@ -4979,6 +5081,8 @@ def health() -> Dict[str, Any]:
 @app.post("/api/v1/agent/chats")
 def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
     _check_auth(authorization)
+    jwell_relay_request = _use_internal_relay(req) and _uses_jwell_internal_relay(req)
+    relay_session_id = req.session_id or f"alphart-chat-{uuid.uuid4().hex}"
 
     candidates = _text_model_candidates(req)
     if not candidates:
@@ -5175,6 +5279,9 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
     # transcript is untrusted reference data, so it must never be exposed to a
     # tool-enabled generation pass first. Mixed-media turns continue through a
     # single model pass so their image/video evidence is kept.
+    relay_billing_settled = jwell_relay_request
+    audio_analysis_failed = False
+    audio_analysis_error = ""
     if canvas_audio_analysis_turn and user_audio_urls:
         with alphart_context(context):
             transcribed_text = _canvas_transcribe_audio(user_audio_urls)
@@ -5191,14 +5298,17 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                 model_user_message = _canvas_audio_transcript_content(model_user_message, transcribed_text)
                 audio_analysis_handled = True
             else:
-                answer, audio_analysis_usage = _canvas_audio_analysis_answer(
+                answer, audio_analysis_usage, audio_analysis_failed, audio_analysis_error = _canvas_audio_analysis_answer(
                     req,
                     user_message,
                     transcribed_text,
                     conversation_history,
                 )
                 audio_analysis_messages = [
-                    {"role": "assistant", "content": answer or f"Transcribed: {transcribed_text}"},
+                    {
+                        "role": "assistant",
+                        "content": _canvas_audio_analysis_failure_message(audio_analysis_error) if audio_analysis_failed else answer or f"Transcribed: {transcribed_text}",
+                    },
                 ]
                 audio_analysis_handled = True
         audio_analysis_precomputed = bool(audio_analysis_messages)
@@ -5209,12 +5319,16 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
     result: Dict[str, Any] = {}
     last_provider = ""
     last_model = ""
+    replay_unsafe = False
+    terminal_relay_failure = False
     if audio_analysis_precomputed:
         result = {
             "messages": [{"role": "user", "content": user_message}, *audio_analysis_messages],
             "final_response": audio_analysis_messages[-1].get("content", ""),
             "model": _string(primary_text_model.get("model")),
             "provider": _string(primary_text_model.get("provider")),
+            "failed": audio_analysis_failed,
+            "error": _canvas_audio_analysis_failure_message(audio_analysis_error) if audio_analysis_failed else "",
             **audio_analysis_usage,
         }
     for candidate in ([] if audio_analysis_precomputed else candidates):
@@ -5232,8 +5346,10 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         relay_headers: Dict[str, str] = {}
         agent_provider = provider
         agent_api_mode = _string(config.get("api_mode")) or "chat_completions"
+        relay_endpoints = [endpoint] if endpoint else []
         if _use_internal_relay(req):
-            endpoint = _internal_relay_gemini_base_url(req) if provider_format == "gemini" else _internal_relay_base_url(req)
+            relay_endpoints = _internal_relay_base_urls(req, gemini=provider_format == "gemini")
+            endpoint = relay_endpoints[0] if relay_endpoints else ""
             api_key = _internal_relay_api_key()
             relay_headers = _internal_relay_headers(req)
             agent_provider, agent_api_mode, provider_format, stream_enabled = _internal_relay_agent_mode(provider, model, config)
@@ -5251,8 +5367,13 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
             continue
         last_provider, last_model = provider, model
         retry_count = max(1, _int(candidate.get("retry"), 1))
+        relay_session_db = None
+        relay_session_db_created = False
+        relay_persisted_prefix = len(conversation_history) + 1
+        candidate_relay_failure = False
         for attempt in range(1, retry_count + 1):
             attempt_events: List[Dict[str, Any]] = []
+            live_event_types = {"delta", "tool_call", "tool_call_arguments", "tool_call_result"}
 
             def on_delta(*args: Any, **kwargs: Any) -> None:
                 text = ""
@@ -5324,65 +5445,117 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                     },
                 })
 
-            with alphart_context(context):
-                try:
-                    agent = AIAgent(
-                        base_url=endpoint,
-                        api_key=api_key,
-                        provider=agent_provider,
-                        api_mode=agent_api_mode,
-                        model=model,
-                        enabled_toolsets=_alphart_enabled_toolsets(req),
-                        max_iterations=_agent_max_iterations(config),
-                        max_tokens=_agent_max_tokens(config, is_game=is_game_request),
-                        quiet_mode=True,
-                        session_id=req.session_id or None,
-                        stream_delta_callback=on_delta if stream_enabled else None,
-                        interim_assistant_callback=on_interim_assistant,
-                        tool_start_callback=on_tool_start,
-                        tool_complete_callback=on_tool_complete,
-                        status_callback=on_status,
-                        platform="alphart",
-                        user_id=req.user_id or req.user_uuid or None,
-                        chat_id=req.session_id or None,
-                        skip_memory=True,
-                        skip_context_files=True,
-                        request_overrides={"extra_headers": relay_headers} if relay_headers else None,
-                        reasoning_config=_canvas_reasoning_config(req),
-                    )
-                    # Keep product-specific session behavior explicit instead
-                    # of inferring it from the shared `platform` field.
-                    _configure_agent_scope(agent, req)
-                    if agent_api_mode == "anthropic_messages":
-                        _install_internal_relay_anthropic_headers(agent, relay_headers)
-                    if not stream_enabled:
-                        agent._disable_streaming = True
-                    system_message = _system_prompt(req)
-                    result = agent.run_conversation(
-                        model_user_message,
-                        system_message=system_message,
-                        conversation_history=conversation_history,
-                        task_id=req.session_id or None,
-                        # Keep the exact opaque-reference turn in history so
-                        # resumed requests retain the same provider prefix.
-                        # The frontend display sanitizer hides this internal
-                        # context, and no presigned URL is persisted.
-                        persist_user_message=_canvas_history_user_message(
-                            user_message,
-                            persisted_user_message,
-                            has_video_references=bool(canvas_input_videos),
-                        ),
-                    )
-                except Exception as exc:
+            for endpoint_index, relay_endpoint in enumerate(relay_endpoints):
+                attempt_events = []
+                agent = None
+                with alphart_context(context):
+                    try:
+                        agent = AIAgent(
+                            base_url=relay_endpoint,
+                            api_key=api_key,
+                            provider=agent_provider,
+                            api_mode=agent_api_mode,
+                            model=model,
+                            enabled_toolsets=_alphart_enabled_toolsets(req),
+                            max_iterations=_agent_max_iterations(config),
+                            max_tokens=_agent_max_tokens(config, is_game=is_game_request),
+                            quiet_mode=True,
+                            session_id=relay_session_id,
+                            stream_delta_callback=on_delta if stream_enabled else None,
+                            interim_assistant_callback=on_interim_assistant,
+                            tool_start_callback=on_tool_start,
+                            tool_complete_callback=on_tool_complete,
+                            status_callback=on_status,
+                            platform="alphart",
+                            user_id=req.user_id or req.user_uuid or None,
+                            chat_id=req.session_id or None,
+                            skip_memory=True,
+                            skip_context_files=True,
+                            request_overrides={"extra_headers": relay_headers} if relay_headers else None,
+                            reasoning_config=_canvas_reasoning_config(req),
+                        )
+                        if relay_session_db is not None:
+                            agent._session_db = relay_session_db
+                            agent._session_db_created = relay_session_db_created
+                            agent._last_flushed_db_idx = relay_persisted_prefix
+                        # Keep product-specific session behavior explicit instead
+                        # of inferring it from the shared `platform` field.
+                        _configure_agent_scope(agent, req)
+                        if agent_api_mode == "anthropic_messages":
+                            _install_internal_relay_anthropic_headers(agent, relay_headers)
+                        if not stream_enabled:
+                            agent._disable_streaming = True
+                        system_message = _system_prompt(req)
+                        result = agent.run_conversation(
+                            model_user_message,
+                            system_message=system_message,
+                            conversation_history=conversation_history,
+                            task_id=req.session_id or None,
+                            # Keep the exact opaque-reference turn in history so
+                            # resumed requests retain the same provider prefix.
+                            # The frontend display sanitizer hides this internal
+                            # context, and no presigned URL is persisted.
+                            persist_user_message=_canvas_history_user_message(
+                                user_message,
+                                persisted_user_message,
+                                has_video_references=bool(canvas_input_videos),
+                            ),
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[alphart-agent] chat model failed session_id={req.session_id} provider={provider} "
+                            f"model={model} attempt={attempt}/{retry_count} endpoint={relay_endpoint} error={exc}",
+                            flush=True,
+                        )
+                        result = {"failed": True, "error": str(exc), "model": model, "provider": provider}
+
+                if result.get("failed") and agent is not None:
+                    persisted_db = getattr(agent, "_session_db", None)
+                    if persisted_db is not None and getattr(agent, "_last_flushed_db_idx", 0) > 0:
+                        relay_session_db = persisted_db
+                        relay_session_db_created = bool(getattr(agent, "_session_db_created", False))
+
+                events = attempt_events
+                if not result.get("failed"):
+                    relay_billing_settled = jwell_relay_request
+                    break
+                if jwell_relay_request and not _is_retryable_relay_failure(result.get("error")):
+                    if _is_account_terminal_relay_failure(result.get("error")):
+                        terminal_relay_failure = True
+                        break
+                    if any(event.get("type") in live_event_types for event in attempt_events):
+                        print(
+                            f"[alphart-agent] not replaying failed chat turn after live events "
+                            f"session_id={req.session_id} provider={provider} model={model} "
+                            f"endpoint={relay_endpoint}",
+                            flush=True,
+                        )
+                        break
+                    candidate_relay_failure = True
+                    break
+                if any(event.get("type") in live_event_types for event in attempt_events):
                     print(
-                        f"[alphart-agent] chat model failed session_id={req.session_id} provider={provider} "
-                        f"model={model} attempt={attempt}/{retry_count} error={exc}",
+                        f"[alphart-agent] not replaying failed chat turn after live events "
+                        f"session_id={req.session_id} provider={provider} model={model} "
+                        f"endpoint={relay_endpoint}",
                         flush=True,
                     )
-                    result = {"failed": True, "error": str(exc), "model": model, "provider": provider}
+                    break
+                if endpoint_index + 1 < len(relay_endpoints):
+                    print(
+                        f"[alphart-agent] retrying chat model on relay endpoint session_id={req.session_id} "
+                        f"provider={provider} model={model} next_endpoint={relay_endpoints[endpoint_index + 1]}",
+                        flush=True,
+                    )
 
             if not result.get("failed"):
-                events = attempt_events
+                break
+            if candidate_relay_failure:
+                break
+            if terminal_relay_failure:
+                break
+            if any(event.get("type") in live_event_types for event in attempt_events):
+                replay_unsafe = True
                 break
             print(
                 f"[alphart-agent] chat model attempt failed session_id={req.session_id} provider={provider} "
@@ -5390,6 +5563,12 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
                 flush=True,
             )
             events = attempt_events
+        if replay_unsafe:
+            break
+        if terminal_relay_failure:
+            break
+        if candidate_relay_failure:
+            continue
         if not result.get("failed"):
             break
 
@@ -5468,12 +5647,15 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
             current_turn_messages = _messages_after_latest_user(response_messages)
             if user_audio_urls and not audio_analysis_handled and not _generation_tool_attempted(current_turn_messages, "audio"):
                 if canvas_audio_analysis_turn:
-                    forced_messages, extra_usage = _canvas_audio_analysis_transcription_messages(
+                    forced_messages, extra_usage, forced_audio_analysis_failed, forced_audio_analysis_error = _canvas_audio_analysis_transcription_messages(
                         req,
                         user_audio_urls,
                         user_message,
                         conversation_history,
                     )
+                    if forced_audio_analysis_failed:
+                        result["failed"] = True
+                        result["error"] = _canvas_audio_analysis_failure_message(forced_audio_analysis_error)
                 else:
                     forced_messages = _forced_audio_to_media_pipeline(
                         user_audio_urls,
@@ -5634,7 +5816,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "total_tokens": base_total_tokens + extra_usage["total_tokens"],
         "input_tokens": base_input_tokens + extra_usage["input_tokens"],
         "output_tokens": base_output_tokens + extra_usage["output_tokens"],
-        "relay_billing_settled": _uses_jwell_internal_relay(req),
+        "relay_billing_settled": relay_billing_settled,
         "interrupted": bool(result.get("interrupted") or current_tool_failed),
         "failed": bool(result.get("failed") or current_tool_failed or empty_result_error),
         "error": empty_result_error or ((canvas_tool_error or SYSTEM_BUSY_MESSAGE) if current_tool_failed else _string(result.get("error"))),
@@ -5700,6 +5882,7 @@ def title(req: AlphartEduTitleRequest, authorization: Optional[str] = Header(def
 
     last_exc: Optional[HTTPException] = None
     result: Optional[Dict[str, Any]] = None
+    terminal_relay_failure = False
     for candidate in candidates:
         cand_provider = _string(candidate.get("provider"))
         cand_model = _string(candidate.get("model"))
@@ -5712,7 +5895,47 @@ def title(req: AlphartEduTitleRequest, authorization: Optional[str] = Header(def
             if not _use_internal_relay(req) and (not cand_endpoint or not cand_key):
                 continue
             if _use_internal_relay(req):
-                result = _generate_title_relay(req, cand_provider, cand_model, source, cand_config)
+                relay_endpoints = _internal_relay_base_urls(req)
+                for relay_endpoint in relay_endpoints:
+                    try:
+                        result = _generate_title_relay(
+                            req,
+                            cand_provider,
+                            cand_model,
+                            source,
+                            cand_config,
+                            endpoint=relay_endpoint,
+                        )
+                        break
+                    except HTTPException as exc:
+                        logger.warning(
+                            "title relay failed provider=%r model=%r endpoint=%s status=%s: %s",
+                            cand_provider,
+                            cand_model,
+                            relay_endpoint,
+                            exc.status_code,
+                            exc.detail,
+                        )
+                        last_exc = exc
+                        if _uses_jwell_internal_relay(req) and not _is_retryable_relay_failure(exc):
+                            terminal_relay_failure = _is_account_terminal_relay_failure(exc)
+                            break
+                    except Exception as exc:
+                        logger.warning(
+                            "title relay error provider=%r model=%r endpoint=%s: %s",
+                            cand_provider,
+                            cand_model,
+                            relay_endpoint,
+                            exc,
+                        )
+                        last_exc = HTTPException(status_code=502, detail=str(exc))
+                        if _uses_jwell_internal_relay(req) and not _is_retryable_relay_failure(exc):
+                            terminal_relay_failure = _is_account_terminal_relay_failure(exc)
+                            break
+                if terminal_relay_failure:
+                    break
+                if result is None:
+                    continue
             else:
                 result = _generate_title_direct(cand_provider, cand_endpoint, cand_key, cand_model, source, cand_config)
             break

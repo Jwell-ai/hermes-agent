@@ -5,7 +5,16 @@ import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tools.alphart_tools import _backend_tool_timeout, _ensure_canvas_video_generation_graph, _handle_alphart_generate_image, _handle_alphart_generate_video, alphart_context
+from tools.alphart_tools import _backend_tool_timeout, _ensure_canvas_video_generation_graph, _handle_alphart_generate_image, _handle_alphart_generate_video, _relay_url, alphart_context
+
+
+def test_canvas_media_relay_uses_canvas_backend_proxy(monkeypatch):
+    monkeypatch.setenv("JWELL_SERVICE_GRPC_ADDR", "http://jwell-relay")
+    monkeypatch.setenv("JWELL_APP_SECRET", "secret")
+
+    with alphart_context({"app_scope": "canvas", "backend_url": "http://canvas-backend"}):
+        assert _relay_url("images/generations") == "http://canvas-backend/internal/v1/images/generations"
+        assert _relay_url("videos", provider="byteplus", model="seedance") == "http://canvas-backend/internal/v1/videos"
 
 
 def test_canvas_read_only_turn_blocks_media_generation():
