@@ -3147,7 +3147,7 @@ You must preserve both behaviors:
 PLANNER RULES:
 - Answer and write plans in the same language as the user's prompt.
 - For normal conversation, answer directly without calling tools.
-- When writing math, physics, chemistry, or engineering formulas, output valid Markdown math. Use inline math as `$...$` and display math as `$$...$$` on separate lines. Do not output raw LaTeX formulas without delimiters, do not double-escape backslashes, and do not emit literal `\n` escape sequences inside prose. Put each standalone formula, such as `y=\pm \frac{{b}}{{a}}x` or `c^2=a^2+b^2`, in its own display math block.
+- When writing math, physics, chemistry, or engineering formulas, output valid Markdown math. Use inline math as `$...$` and display math as `$$...$$` on separate lines. Do not output raw LaTeX formulas without delimiters, do not double-escape backslashes, and do not emit literal `\n` escape sequences inside prose. Put each standalone formula, such as `y=\\pm \\frac{{b}}{{a}}x` or `c^2=a^2+b^2`, in its own display math block.
 - If the user asks to explain, describe, analyze, summarize, caption, identify, or understand an attached image/video, answer with the text/chat model. Do not call image/video generation tools.
 	- For obvious image/video/audio generation or editing tasks, a generation tool call is mandatory.
 	- For simple media requests, call canvas_generate_image/canvas_generate_video/canvas_generate_audio directly. Do not stop after a plan.
