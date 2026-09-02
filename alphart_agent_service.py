@@ -3525,9 +3525,12 @@ NODE OWNERSHIP RULES:
 - When canvas_item_id is present, operate ONLY on that existing node. Never create,
   replace, or connect another node unless the user explicitly asks to do so.
 - When canvas_item_id is absent and the user asks to create content, use
-  the Canvas Graph Skill: understand the request, create a Prompt text node with the
-  enriched prompt, create the requested output node, connect the graph, and generate
-  only into the output node. Do not stop after creating nodes.
+  the Canvas Graph Skill: for a media request with supplied image/video references,
+  create only the requested output node, connect it to those references, and generate
+  only into the output node. Do not create an intermediate Prompt node unless the user
+  explicitly asks for one. Without supplied media references, create a Prompt text node
+  with the enriched prompt, create the requested output node, connect the graph, and
+  generate only into the output node. Do not stop after creating nodes.
 - When canvas_item_id is absent but a selected text node is supplied in graph context
   and the user asks for media, use it as an input and create a downstream media graph.
 - Treat reference_item_ids and the supplied connected node context as the complete
@@ -4047,6 +4050,24 @@ def _canvas_reference_or_analysis_request(text: str) -> bool:
     """Recognize read-only reference language without trusting stale UI hints."""
     normalized = _string(text).strip()
     return not normalized or bool(_CANVAS_REFERENCE_ANALYSIS_RE.search(normalized) and not _CANVAS_IMPERATIVE_MEDIA_EDIT_RE.search(normalized))
+
+
+def _canvas_read_only_turn(req: AlphartEduChatRequest) -> bool:
+    if _request_app_scope(req) != "canvas":
+        return False
+    text = _canvas_request_text(req)
+    explicit_mutation = _canvas_explicit_mutation_request(req)
+    return bool(
+        req.script_only
+        or (
+            not explicit_mutation
+            and _canvas_reference_or_analysis_request(text)
+        )
+        or _canvas_non_execution_question(text)
+        or _canvas_negated_generation_request(text)
+        or _canvas_negated_graph_mutation_request(text)
+        or _canvas_unsupported_graph_mutation_request(text)
+    )
 
 
 def _canvas_explicit_generation_clause(text: str) -> bool:
@@ -5232,20 +5253,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
     audio_analysis_usage: Dict[str, int] = {}
     audio_analysis_precomputed = False
     audio_analysis_handled = False
-    canvas_read_only_turn = (
-        _request_app_scope(req) == "canvas"
-        and (
-            req.script_only
-            or canvas_audio_analysis_turn
-            or (
-                not explicit_canvas_mutation
-                and _canvas_reference_or_analysis_request(_canvas_request_text(req))
-            )
-            or _canvas_negated_generation_request(_canvas_request_text(req))
-            or _canvas_negated_graph_mutation_request(_canvas_request_text(req))
-            or _canvas_unsupported_graph_mutation_request(_canvas_request_text(req))
-        )
-    )
+    canvas_read_only_turn = _canvas_read_only_turn(req) or canvas_audio_analysis_turn
     multimodal_config = _provider_config_for_domain(req.model_configs, "multimodal", multimodal_model)
     context = {
         "session_id": req.session_id,

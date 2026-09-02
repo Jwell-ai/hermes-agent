@@ -36,6 +36,7 @@ from alphart_agent_service import (
     _canvas_negated_graph_mutation_request,
     _canvas_persisted_user_message,
     _canvas_request_text,
+    _canvas_read_only_turn,
     _canvas_non_execution_question,
     _canvas_turn_context_content,
     _canvas_visual_reference_turn,
@@ -1168,6 +1169,19 @@ def test_canvas_non_execution_questions_do_not_force_structured_media_intent():
         requested_node_type="image",
         messages=[{"role": "user", "content": "Please explain how to generate an image?"}],
     )) == ""
+
+
+def test_canvas_reference_generation_with_constraints_is_writable():
+    prompt = "@image this is a summer image, generate remain seasons' image, do not change the figure and the background, beware of the clothe styles of difference seasons"
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        requested_action="answer",
+        target_operation="use_as_reference",
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    assert _canvas_explicit_mutation_request(request) is True
+    assert _canvas_read_only_turn(request) is False
 
 
 def test_canvas_negated_generation_requests_do_not_force_media():
