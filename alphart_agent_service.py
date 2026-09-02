@@ -2066,6 +2066,36 @@ def _canvas_graph_tool_failed(messages: List[Any]) -> bool:
     )
 
 
+def _canvas_media_relay_failure(
+    req: "AlphartEduChatRequest",
+    media_failed: bool,
+    graph_failed: bool,
+    game_failed: bool,
+) -> bool:
+    return (
+        _request_app_scope(req) == "canvas"
+        and media_failed
+        and not graph_failed
+        and not game_failed
+    )
+
+
+def _canvas_media_tool_call_id(messages: List[Any]) -> str:
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        name = _string(msg.get("name") or msg.get("tool_name")).strip().lower()
+        if not any(
+            marker in name
+            for marker in ("generate_image", "generate_video", "generate_audio")
+        ):
+            continue
+        tool_call_id = _string(msg.get("tool_call_id")).strip()
+        if tool_call_id:
+            return tool_call_id
+    return ""
+
+
 def _canvas_graph_tool_error(messages: List[Any]) -> str:
     attempts = _canvas_graph_tool_attempts(messages)
     repaired_attempts = _canvas_graph_tool_repaired_attempts(attempts)
@@ -4421,6 +4451,7 @@ def _post_chat_result_callback(req: AlphartEduChatRequest, response: Dict[str, A
         {
             "session_id": req.session_id,
             "canvas_id": req.canvas_id,
+            "canvas_item_id": response.get("canvas_item_id") or req.canvas_item_id,
             "user_id": req.user_id,
             "request_messages": req.messages,
         }
@@ -5265,6 +5296,9 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "audio_language_type": _normalize_audio_language_type(req.audio_language_type) or _ui_audio_language_type(req.ui_language),
         "ui_language": req.ui_language,
         "canvas_read_only_turn": canvas_read_only_turn,
+        # Keep created-node IDs available across the per-attempt context copies
+        # so the callback can identify a media result from a new-node workflow.
+        "_canvas_created_nodes": [],
     }
     if _request_app_scope(req) == "canvas":
         context["multimodal_runtime"] = {
@@ -5773,6 +5807,13 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
     canvas_tool_error = (
         _generation_tool_error(current_turn_messages) or _canvas_graph_tool_error(current_turn_messages)
     ) if _request_app_scope(req) == "canvas" else ""
+    canvas_media_relay_failure = _canvas_media_relay_failure(
+        req,
+        current_media_failed,
+        current_graph_failed,
+        current_game_failed,
+    )
+    canvas_tool_call_id = _canvas_media_tool_call_id(current_turn_messages)
     if current_tool_failed:
         final_response = canvas_tool_error or SYSTEM_BUSY_MESSAGE
     if not final_response or (
@@ -5817,10 +5858,28 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "input_tokens": base_input_tokens + extra_usage["input_tokens"],
         "output_tokens": base_output_tokens + extra_usage["output_tokens"],
         "relay_billing_settled": relay_billing_settled,
+        "canvas_media_relay_failure": canvas_media_relay_failure,
+        "canvas_tool_call_id": canvas_tool_call_id,
         "interrupted": bool(result.get("interrupted") or current_tool_failed),
         "failed": bool(result.get("failed") or current_tool_failed or empty_result_error),
         "error": empty_result_error or ((canvas_tool_error or SYSTEM_BUSY_MESSAGE) if current_tool_failed else _string(result.get("error"))),
     }
+    if _request_app_scope(req) == "canvas":
+        canvas_item_id = _string(req.canvas_item_id).strip()
+        preferred_type = _string(req.force_media_intent or req.canvas_item_type or req.requested_node_type).strip().lower()
+        created_nodes = context.get("_canvas_created_nodes") or []
+        for node in reversed(created_nodes):
+            if not isinstance(node, dict):
+                continue
+            item_type = _string(node.get("item_type")).strip().lower()
+            if canvas_item_id or (preferred_type and item_type != preferred_type):
+                continue
+            candidate_id = _string(node.get("id")).strip()
+            if candidate_id:
+                canvas_item_id = candidate_id
+                break
+        if canvas_item_id:
+            response["canvas_item_id"] = canvas_item_id
     if persisted_user_message is not None:
         response["persisted_user_message"] = persisted_user_message
     _post_chat_result_callback(req, response)

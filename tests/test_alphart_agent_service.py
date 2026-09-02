@@ -26,6 +26,8 @@ from alphart_agent_service import (
     _canvas_explicit_mutation_request,
     _canvas_graph_tool_error,
     _canvas_graph_tool_failed,
+    _canvas_media_tool_call_id,
+    _canvas_media_relay_failure,
     _canvas_reference_or_analysis_request,
     _canvas_history_user_message,
     _canvas_image_reference_content,
@@ -506,6 +508,21 @@ def test_jwell_callbacks_include_app_secret(monkeypatch):
         assert "X-App-Secret" not in call.kwargs["headers"]
 
 
+def test_canvas_result_callback_preserves_generated_item_id(monkeypatch):
+    monkeypatch.setenv("ALPHART_EDU_BACKEND_URL", "http://canvas-backend")
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        session_id="canvas-session",
+        canvas_id="canvas-1",
+    )
+    response = SimpleNamespace(status_code=200, text="{}")
+
+    with patch("alphart_agent_service.requests.post", return_value=response) as post:
+        _post_chat_result_callback(request, {"canvas_item_id": "generated-image-1"})
+
+    assert post.call_args.kwargs["json"]["canvas_item_id"] == "generated-image-1"
+
+
 def test_internal_relay_text_key_is_stable_for_retries_and_changes_per_turn():
     agent = SimpleNamespace(
         session_id="session-1",
@@ -576,6 +593,24 @@ def test_canvas_graph_tool_failures_are_reported():
     assert _canvas_graph_tool_failed(failed) is True
     assert _canvas_graph_tool_error(failed) == "connection already exists"
     assert _canvas_graph_tool_failed(succeeded) is False
+
+
+def test_canvas_media_relay_failure_excludes_graph_and_game_failures():
+    request = AlphartEduChatRequest(app_scope="canvas")
+    assert _canvas_media_relay_failure(request, True, False, False) is True
+    assert _canvas_media_relay_failure(request, True, True, False) is False
+    assert _canvas_media_relay_failure(request, True, False, True) is False
+    assert _canvas_media_relay_failure(AlphartEduChatRequest(app_scope="edu"), True, False, False) is False
+
+
+def test_canvas_media_tool_call_id_uses_the_latest_generation_tool_result():
+    messages = [
+        {"role": "tool", "name": "canvas_generate_image", "tool_call_id": "image-old"},
+        {"role": "tool", "name": "canvas_analyze_video", "tool_call_id": "analysis"},
+        {"role": "tool", "name": "canvas_generate_image", "tool_call_id": "image-current"},
+    ]
+    assert _canvas_media_tool_call_id(messages) == "image-current"
+    assert _canvas_media_tool_call_id([{"role": "tool", "name": "canvas_analyze_video", "tool_call_id": "analysis"}]) == ""
 
 
 def test_canvas_graph_tool_retry_replaces_failed_attempt():
