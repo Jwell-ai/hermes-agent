@@ -141,7 +141,7 @@ _CANVAS_DIRECT_GRAPH_ACTION_RE = re.compile(
 _CANVAS_ATTACH_GRAPH_ACTION_RE = re.compile(r"^(?:attach|附加)$", re.IGNORECASE)
 _CANVAS_IMPERATIVE_MEDIA_EDIT_RE = re.compile(
     r"^\s*(?:please\s+)?(?:add|put|place|overlay|insert|apply|write|attach)\b[\s\S]*\b(?:to|onto|on|in|into)\s+(?:(?:the|this|selected)\s+)?(?:image|picture|photo|video|audio|node)\b"
-    r"|^\s*(?:请)?(?:添加|放置|叠加|插入|应用|写入|附加)[\s\S]*(?:到|至|在)[\s\S]*(?:图片|图像|照片|视频|音频|节点)",
+    r"|^\s*(?:请)?(?:把[^，。！？；,.!?]+?)?(?:添加|放置|叠加|插入|应用|写入|附加)[\s\S]*(?:到|至|在)[\s\S]*(?:图片|图像|照片|视频|音频|节点)",
     re.IGNORECASE,
 )
 _CANVAS_GRAPH_CONTEXT_RE = re.compile(
@@ -3980,6 +3980,21 @@ def _canvas_unsupported_graph_mutation_request(text: str) -> bool:
     return False
 
 
+def _canvas_negation_clause_start(text: str, action_start: int) -> int:
+    clause_start = 0
+    for boundary in _CANVAS_CLAUSE_BOUNDARY_RE.finditer(text[:action_start]):
+        if _canvas_boundary_inside_mention(text, boundary.start()):
+            continue
+        # In Chinese, "再" can be an adverb inside a negated phrase ("不要再…"),
+        # not a boundary between two independent actions.
+        if boundary.group() == "再" and _CANVAS_NEGATED_ACTION_RE.search(
+            text[max(0, boundary.start() - 64):boundary.start()].strip()
+        ):
+            continue
+        clause_start = boundary.end()
+    return clause_start
+
+
 def _canvas_negated_action_request(
     text: str,
     desired_action: Any,
@@ -3993,7 +4008,8 @@ def _canvas_negated_action_request(
     conflict_action = conflicts_with_negated_action or desired_action
     previous_action_end = 0
     for match in matches:
-        prefix = text[:match.start()][-64:]
+        clause_start = _canvas_negation_clause_start(text, match.start())
+        prefix = text[clause_start:match.start()][-64:]
         negation_prefix = _CANVAS_POSITIVE_ACTION_RE.sub("", prefix).strip()
         if not _CANVAS_NEGATED_ACTION_RE.search(negation_prefix):
             between_actions = text[previous_action_end:match.start()]
