@@ -89,6 +89,7 @@ class AlphartEduChatRequest(BaseModel):
     system_prompt: str = ""
     audio_language_type: str = ""
     ui_language: str = ""
+    ai_generation_watermark: bool = False
 
 
 class AlphartEduTitleRequest(BaseModel):
@@ -5277,6 +5278,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "storage_prefix": req.storage_prefix,
         "org_no": req.org_no,
         "auth_token": req.auth_token,
+        "ai_generation_watermark": bool(req.ai_generation_watermark),
         "backend_url": _backend_url_from_req(req),
         "application_backend_url": _application_backend_url_from_req(req),
         "app_scope": _request_app_scope(req),

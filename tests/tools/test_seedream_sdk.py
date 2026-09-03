@@ -32,6 +32,7 @@ def test_create_image_uses_internal_base_url_headers_and_options():
             aspect_ratio="16:9",
             resolution="2K",
             quantity=2,
+            watermark=True,
         )
 
     assert result == {
@@ -51,4 +52,5 @@ def test_create_image_uses_internal_base_url_headers_and_options():
         "provider": "byteplus",
         "aspect_ratio": "16:9",
         "n": 2,
+        "watermark": True,
     }

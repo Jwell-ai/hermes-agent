@@ -1572,6 +1572,7 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
             "image_provider": args.get("image_provider"),
             "image_model": args.get("image_model"),
             "input_images": args.get("input_images") or [],
+            "watermark": bool(_ctx().get("ai_generation_watermark")),
         }
         gen_resp, generated = _generate_storybook_images_with_retries(storybook_id, generate_payload, timeout)
         if gen_resp.status_code < 200 or gen_resp.status_code >= 300:
@@ -1890,6 +1891,7 @@ def _handle_alphart_update_storybook_page(args: Dict[str, Any], **_: Any) -> str
             "generate_images": True,
             "aspect_ratio": args.get("aspect_ratio") or "1:1",
             "input_images": args.get("input_images") or [],
+            "watermark": bool(_ctx().get("ai_generation_watermark")),
         }
         if args.get("image_provider"):
             regen_payload["image_provider"] = args.get("image_provider")
@@ -1982,6 +1984,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
             or _latest_canvas_created_node_id("image")
         ),
         "tool_call_id": kwargs.get("tool_call_id") or args.get("tool_call_id"),
+        "watermark": bool(_ctx().get("ai_generation_watermark")),
     }
     if args.get("quantity"):
         payload["n"] = args.get("quantity")
@@ -2012,6 +2015,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
                 aspect_ratio=str(args.get("aspect_ratio") or ""),
                 resolution=str(args.get("resolution") or ""),
                 quantity=args.get("quantity"),
+                watermark=bool(payload.get("watermark")),
                 idempotency_key=str(payload.get("tool_call_id") or "").strip(),
                 timeout=_backend_tool_timeout(),
             )
@@ -2222,6 +2226,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         "canvas_item_id": canvas_item_id,
         "generate_audio": bool(args.get("generate_audio")),
         "tool_call_id": kwargs.get("tool_call_id") or args.get("tool_call_id"),
+        "watermark": bool(_ctx().get("ai_generation_watermark")),
     }
     if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
         payload.update({
@@ -2280,6 +2285,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
                 resolution=str(payload.get("resolution") or "").strip(),
                 duration=int(payload["duration"]) if payload.get("duration") is not None else None,
                 generate_audio=bool(payload.get("generate_audio")),
+                watermark=bool(payload.get("watermark")),
                 timeout=_backend_tool_timeout(),
             )
             response_status = 202
