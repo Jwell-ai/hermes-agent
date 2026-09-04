@@ -1583,12 +1583,17 @@ def _strip_audio_preferences(text: str) -> str:
 def _clean_audio_topic(text: str) -> str:
     value = _strip_audio_preferences(text)
     value = re.sub(
-        r"^\s*(/audio|generate\s+(an?\s+)?audio|create\s+(an?\s+)?audio|generate\s+speech|create\s+speech|"
-        r"生成一段?音频|生成一段?音訊|生成音频|生成音訊|生成语音|生成語音|生成旁白)\s*[:：,，-]*\s*",
+        r"^\s*(/audio|(?:generate|create|make|produce)\s+(?:an?\s+)?"
+        r"(?:\d{1,3}\s*(?:minutes?|mins?|m|seconds?|secs?|s)|\d{1,3}\s*分钟?|\d{1,3}\s*秒)?\s*"
+        r"(?:audio|speech|voiceover|narration)|generate\s+speech|create\s+speech|"
+        r"生成(?:一段?)?(?:\d{1,3}\s*(?:分钟?|秒))?\s*(?:音频|音訊|语音|語音|旁白)"
+        r"|生成一段?音频|生成一段?音訊|生成音频|生成音訊|生成语音|生成語音|生成旁白)\s*[:：,，-]*\s*",
         "",
         value,
         flags=re.I,
     ).strip()
+    value = re.sub(r"^(?:介绍|介紹|讲解|講解|朗读|朗讀)\s*", "", value)
+    value = re.sub(r"^(?:that\s+)?(?:explains?|describes?|teaches?|talks?\s+about|about|on)\s+", "", value, flags=re.I)
     value = re.sub(r"\b(use|in|with)\s+(mandarin|cantonese|english)\b", "", value, flags=re.I).strip()
     value = re.sub(r"(用|以)?(中文|普通话|普通話|粤语|粵語|广东话|廣東話|英文|英语|英語)(介绍|介紹|朗读|朗讀|讲解|講解)?", "", value).strip()
     return value or _strip_audio_preferences(text).strip()
@@ -3139,7 +3144,10 @@ def _forced_media_tool_messages(
 
     if intent == "audio":
         call_id = str(uuid.uuid4())
-        script = _string(approved_audio_script) or _last_assistant_text(response_messages)
+        # Only an explicitly approved script may come from prior assistant
+        # output. Arbitrary assistant prose can contain planner/system prompt
+        # scaffolding, which must never be sent to a speech provider.
+        script = _string(approved_audio_script)
         language_type = _audio_language_type_from_text(user_message) or _normalize_audio_language_type(_ctx().get("audio_language_type"))
         if not script or script.strip() == user_message.strip() or script.strip().lower().startswith("plan:"):
             script = _audio_script_from_request(user_message, language_type)
@@ -3148,12 +3156,9 @@ def _forced_media_tool_messages(
             "tool_call_id": call_id,
             "language_type": language_type,
         }
-        # Canvas prompt values are authoritative over the UI fallback. Edu's
-        # legacy audio flow intentionally keeps its existing request behavior.
-        if _string(_ctx().get("app_scope")).lower() == "canvas":
-            duration_seconds = _video_duration_seconds_from_text(user_message)
-            if duration_seconds:
-                args["duration_seconds"] = duration_seconds
+        duration_seconds = _video_duration_seconds_from_text(user_message)
+        if duration_seconds:
+            args["duration_seconds"] = duration_seconds
         print(
             f"[alphart-agent] forcing audio generation session_intent={intent} tool_count={len(_selected_media_tools(intent))}",
             flush=True,
@@ -5346,6 +5351,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "application_backend_url": _application_backend_url_from_req(req),
         "app_scope": _request_app_scope(req),
         "user_message": user_message,
+        "system_prompt": req.system_prompt,
         "tool_list": req.tool_list,
         "input_images": input_images,
         "input_audio": canvas_input_audio,

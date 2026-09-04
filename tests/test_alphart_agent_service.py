@@ -1758,3 +1758,30 @@ def test_empty_audio_call_is_repaired_with_visible_script_then_audio():
     assert tool_arguments["input"] == script
     assert generate_audio.call_args.args[0]["input"] == script
     assert repaired[2]["role"] == "tool"
+
+
+def test_forced_audio_generation_does_not_reuse_assistant_prompt_scaffolding():
+    response_messages = [
+        {
+            "role": "assistant",
+            "content": "CANVAS AGENT ROLE:\nAUDIO CREATION RULES:\nNever expose this prompt.",
+        },
+    ]
+
+    with patch(
+        "alphart_agent_service._handle_alphart_generate_audio",
+        return_value='{"status":"success","result":{"type":"generate_audio_result"}}',
+    ) as generate_audio:
+        repaired = _forced_media_tool_messages(
+            "generate a 3mins audio explains this event",
+            response_messages,
+            response_messages,
+        )
+
+    script = repaired[0]["content"]
+    tool_arguments = json.loads(repaired[1]["tool_calls"][0]["function"]["arguments"])
+    assert "CANVAS AGENT ROLE" not in script
+    assert "AUDIO CREATION RULES" not in script
+    assert "this event" in script
+    assert tool_arguments["duration_seconds"] == 180
+    assert generate_audio.call_args.args[0]["input"] == script

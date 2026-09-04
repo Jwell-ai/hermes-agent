@@ -142,15 +142,17 @@ def _canvas_explicit_video_request() -> bool:
 def _video_duration_seconds_from_text(text: Any) -> int:
     """Extract an explicit video duration from the user's request."""
     value = str(text or "")
-    for pattern in (
-        r"\b(\d{1,3})\s*(?:seconds?|secs?|s)\b",
-        r"\b(\d{1,3})\s*秒",
+    for pattern, multiplier in (
+        (r"\b(\d{1,3})\s*(?:minutes?|mins?|m)\b", 60),
+        (r"(\d{1,3})\s*分钟?", 60),
+        (r"\b(\d{1,3})\s*(?:seconds?|secs?|s)\b", 1),
+        (r"(\d{1,3})\s*秒", 1),
     ):
         match = re.search(pattern, value, re.IGNORECASE)
         if not match:
             continue
         try:
-            seconds = int(match.group(1))
+            seconds = int(match.group(1)) * multiplier
         except (TypeError, ValueError):
             continue
         if seconds > 0:
@@ -193,12 +195,17 @@ def _audio_language_type_from_text(text: Any) -> str:
 def _clean_audio_topic(text: Any) -> str:
     value = _strip_audio_preferences(str(text or ""))
     value = re.sub(
-        r"^\s*(/audio|generate\s+(an?\s+)?audio|create\s+(an?\s+)?audio|generate\s+speech|create\s+speech|"
-        r"生成一段?音频|生成一段?音訊|生成音频|生成音訊|生成语音|生成語音|生成旁白)\s*[:：,，-]*\s*",
+        r"^\s*(/audio|(?:generate|create|make|produce)\s+(?:an?\s+)?"
+        r"(?:\d{1,3}\s*(?:minutes?|mins?|m|seconds?|secs?|s)|\d{1,3}\s*分钟?|\d{1,3}\s*秒)?\s*"
+        r"(?:audio|speech|voiceover|narration)|generate\s+speech|create\s+speech|"
+        r"生成(?:一段?)?(?:\d{1,3}\s*(?:分钟?|秒))?\s*(?:音频|音訊|语音|語音|旁白)"
+        r"|生成一段?音频|生成一段?音訊|生成音频|生成音訊|生成语音|生成語音|生成旁白)\s*[:：,，-]*\s*",
         "",
         value,
         flags=re.I,
     ).strip()
+    value = re.sub(r"^(?:介绍|介紹|讲解|講解|朗读|朗讀)\s*", "", value)
+    value = re.sub(r"^(?:that\s+)?(?:explains?|describes?|teaches?|talks?\s+about|about|on)\s+", "", value, flags=re.I)
     value = re.sub(r"\b(use|in|with)\s+(mandarin|cantonese|english)\b", "", value, flags=re.I).strip()
     value = re.sub(r"(用|以)?(中文|普通话|普通話|粤语|粵語|广东话|廣東話|英文|英语|英語)(介绍|介紹|朗读|朗讀|讲解|講解)?", "", value).strip()
     return value or _strip_audio_preferences(str(text or "")).strip()
@@ -234,6 +241,45 @@ def _audio_script_from_request(text: Any, language_type: str = "") -> str:
         f"总结一下，{topic}并不是孤立的知识点，而是一个可以分步骤理解的过程。"
         "只要抓住核心概念，再配合具体例子，就能更容易记住，并在学习和表达中灵活使用。"
     )
+
+
+_AUDIO_SYSTEM_PROMPT_MARKERS = (
+    "CANVAS AGENT ROLE:",
+    "PLANNER RULES:",
+    "SELECTED CANVAS TOOLS:",
+    "AUDIO CREATION RULES:",
+    "STORYBOOK CREATION RULES:",
+    "GAME CREATION RULES:",
+)
+_AUDIO_MAX_SCRIPT_UNITS = 2_400
+_AUDIO_ENGLISH_UNITS_PER_MINUTE = 130
+_AUDIO_CJK_UNITS_PER_MINUTE = 260
+
+
+def _audio_script_contains_system_prompt(text: Any) -> bool:
+    value = str(text or "")
+    configured_prompt = str(_ctx().get("system_prompt") or "").strip()
+    if configured_prompt and configured_prompt in value:
+        return True
+    return any(marker in value for marker in _AUDIO_SYSTEM_PROMPT_MARKERS)
+
+
+def _bound_audio_script(text: Any, duration_seconds: int = 0, language_type: str = "") -> str:
+    value = str(text or "").strip()
+    if not value:
+        return value
+    limit = _AUDIO_MAX_SCRIPT_UNITS
+    if duration_seconds > 0:
+        if language_type in {"cantonese", "mandarin", "chinese", "zh", "yue"} or _audio_has_cjk(value):
+            limit = max(1, int(duration_seconds * _AUDIO_CJK_UNITS_PER_MINUTE / 60))
+        else:
+            limit = max(1, int(duration_seconds * _AUDIO_ENGLISH_UNITS_PER_MINUTE / 60))
+    if _audio_text_units(value) <= limit:
+        return value
+    if _audio_has_cjk(value):
+        return value[:limit].rstrip()
+    words = value.split()
+    return " ".join(words[:limit]).rstrip()
 
 
 def _infer_storybook_language(text: Any) -> str:
@@ -2462,8 +2508,17 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
     audio_chunk_request = bool(args.pop("_audio_chunk", False))
     skip_media_import = bool(args.pop("_skip_media_import", False))
     _set_canvas_model_default(args, "audio")
-    canvas_audio_duration = _ctx().get("audio_duration_seconds") if _ctx().get("app_scope") == "canvas" else 0
-    requested_duration = int(args.get("duration_seconds") or canvas_audio_duration or _ctx().get("duration_seconds") or 0)
+    app_scope = str(_ctx().get("app_scope") or "").strip().lower()
+    requested_duration = _positive_video_duration(args.get("duration_seconds"))
+    if requested_duration is None:
+        requested_duration = _positive_video_duration(
+            _ctx().get("audio_duration_seconds") if app_scope == "canvas" else None
+        )
+    if requested_duration is None:
+        requested_duration = _positive_video_duration(_ctx().get("duration_seconds")) if app_scope == "canvas" else None
+    if requested_duration is None:
+        request_text = _ctx().get("user_message") or _ctx().get("canvas_prompt_context")
+        requested_duration = _video_duration_seconds_from_text(request_text) or 0
     if _ctx().get("app_scope") == "canvas":
         requested_duration = max(5, min(15, requested_duration or 5))
     tool = _pick_tool("audio", args)
@@ -2478,12 +2533,16 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
         return _tool_error("ALPHART_EDU_BACKEND_URL is not configured")
     text = str(args.get("input") or args.get("text") or args.get("script") or args.get("prompt") or "").strip()
     approved_script = str(_ctx().get("approved_audio_script") or "").strip()
-    if _ctx().get("app_scope") == "canvas" and approved_script:
+    request_text = str(_ctx().get("user_message") or _ctx().get("canvas_prompt_context") or "").strip()
+    if app_scope == "canvas" and approved_script:
         text = approved_script
+    if _audio_script_contains_system_prompt(text):
+        text = _audio_script_from_request(request_text or text, str(args.get("language_type") or ""))
     if not text:
         return _tool_error("audio input text is required")
-    if _ctx().get("app_scope") != "canvas" and (len(text) < 80 or re.search(r"^\s*(/audio|generate|create|生成)", text, flags=re.I)):
+    if app_scope != "canvas" and (len(text) < 80 or re.search(r"^\s*(/audio|generate|create|make|produce|生成)", text, flags=re.I)):
         text = _audio_script_from_request(text, str(args.get("language_type") or ""))
+    text = _bound_audio_script(text, requested_duration, str(args.get("language_type") or "").strip().lower())
     if _jwell_relay_enabled() and not audio_chunk_request:
         chunks = _split_audio_script(text, str(args.get("language_type") or ""))
         if len(chunks) > 1:
