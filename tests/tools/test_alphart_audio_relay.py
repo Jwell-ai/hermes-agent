@@ -92,6 +92,28 @@ def test_audio_request_parses_minutes_and_removes_prompt_scaffolding():
     assert "this event" in payload["input"]
 
 
+def test_openai_audio_request_uses_a_valid_default_voice():
+    response = MagicMock(status_code=200, text="")
+    response.json.return_value = {"data": {"url": "https://storage.example/audio.wav"}}
+
+    with (
+        alphart_context({"app_scope": "edu", "user_message": "generate an audio"}),
+        patch("tools.alphart_tools._relay_url", return_value="http://relay/audio/speech"),
+        patch("tools.alphart_tools._jwell_relay_enabled", return_value=False),
+        patch("tools.alphart_tools._backend_tool_timeout", return_value=10),
+        patch("tools.alphart_tools._relay_headers", return_value={}),
+        patch("tools.alphart_tools.requests.post", return_value=response) as post,
+    ):
+        result = json.loads(_handle_alphart_generate_audio({
+            "provider": "openai",
+            "model": "gpt-4o-mini-tts",
+            "input": "Explain this event in a clear and concise way.",
+        }))
+
+    assert result["status"] == "success"
+    assert post.call_args.kwargs["json"]["voice"] == "alloy"
+
+
 def test_chunked_audio_retries_each_chunk_and_concatenates_wav():
     chunks = ["First sentence. " + "first " * 80, "Second sentence. " + "second " * 80]
     wav = base64.b64encode(_wav_bytes(100)).decode("ascii")

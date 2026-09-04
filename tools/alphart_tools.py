@@ -396,6 +396,15 @@ def _set_tool_defaults(args: Dict[str, Any], tool: Dict[str, Any]) -> None:
         args["model"] = model
 
 
+def _default_audio_voice(provider: Any, model: Any) -> str:
+    """Return a provider-valid voice when the selected audio model needs one."""
+    normalized_provider = str(provider or "").strip().lower()
+    normalized_model = str(model or "").strip().lower()
+    if normalized_provider == "openai" or normalized_model == "gpt-4o-mini-tts":
+        return "alloy"
+    return ""
+
+
 def _set_canvas_model_default(args: Dict[str, Any], media_type: str) -> None:
     """Use the frontend-selected provider:model when the model omits tool args."""
     if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
@@ -2558,11 +2567,12 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
                 flush=True,
             )
             return _generate_chunked_audio(args, text, chunks, kwargs.get("tool_call_id") or "")
+    voice = str(args.get("voice") or "").strip() or _default_audio_voice(selected_provider, selected_model)
     payload = {
         "provider": selected_provider,
         "model": args.get("model"),
         "input": text,
-        "voice": args.get("voice"),
+        "voice": voice or None,
         "language_type": args.get("language_type"),
         "response_format": args.get("response_format") or "wav",
         "duration_seconds": requested_duration or None,
