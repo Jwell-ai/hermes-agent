@@ -1985,7 +1985,6 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
             or _latest_canvas_created_node_id("image")
         ),
         "tool_call_id": kwargs.get("tool_call_id") or args.get("tool_call_id"),
-        "watermark": bool(_ctx().get("ai_generation_watermark")),
     }
     if args.get("quantity"):
         payload["n"] = args.get("quantity")
@@ -2015,7 +2014,6 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
                 image_urls=payload.get("images") or [],
                 aspect_ratio=str(args.get("aspect_ratio") or ""),
                 resolution=str(args.get("resolution") or ""),
-                watermark=bool(_ctx().get("ai_generation_watermark")),
                 quantity=args.get("quantity"),
                 watermark=bool(payload.get("watermark")),
                 idempotency_key=str(payload.get("tool_call_id") or "").strip(),

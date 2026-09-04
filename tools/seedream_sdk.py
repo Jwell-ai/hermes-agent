@@ -29,7 +29,6 @@ def create_seedream_image(
     resolution: str = "",
     watermark: bool | None = None,
     quantity: int | None = None,
-    watermark: bool | None = None,
     idempotency_key: str = "",
     timeout: float = 900,
 ) -> dict[str, Any]:
@@ -48,8 +47,6 @@ def create_seedream_image(
         extra_body["provider"] = str(provider).strip()
     if str(aspect_ratio or "").strip():
         extra_body["aspect_ratio"] = str(aspect_ratio).strip()
-    if watermark is not None:
-        extra_body["watermark"] = bool(watermark)
     if quantity is not None and int(quantity) > 1:
         extra_body["n"] = int(quantity)
     if watermark is not None:
