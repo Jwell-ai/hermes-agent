@@ -1602,7 +1602,8 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
     pages = generated.get("pages") if isinstance(generated, dict) else []
     storybook = generated.get("storybook") if isinstance(generated, dict) else {}
     image_report = generated.get("image_generation") if isinstance(generated, dict) else None
-    generation_status = _storybook_result_status(image_report, pages)
+    audio_report = generated.get("audio_generation") if isinstance(generated, dict) else None
+    generation_status = _storybook_result_status(image_report, pages, audio_report)
     generation_warning = ""
     if isinstance(image_report, dict):
         required = int(image_report.get("required") or 0)
@@ -1615,6 +1616,18 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
             generation_warning = f"{required - missing}/{required} illustrations generated, {missing} still pending."
             if first_error:
                 generation_warning += f" {first_error}"
+    if isinstance(audio_report, dict):
+        required = int(audio_report.get("required") or 0)
+        missing = int(audio_report.get("missing") or 0)
+        errors = audio_report.get("errors") or []
+        if required > 0 and missing > 0:
+            audio_warning = f"{required - missing}/{required} read-aloud tracks generated, {missing} still pending."
+            first_error = str(errors[0]) if errors else ""
+            if len(first_error) > 180:
+                first_error = first_error[:180].rstrip() + "..."
+            if first_error:
+                audio_warning += f" {first_error}"
+            generation_warning = f"{generation_warning} {audio_warning}".strip()
     result = {
         "type": "storybook",
         "status": generation_status,
@@ -1629,6 +1642,7 @@ def _handle_alphart_create_storybook(args: Dict[str, Any], **_: Any) -> str:
         "org_no": payload.get("org_no"),
         "pages": pages or [],
         "image_generation": image_report,
+        "audio_generation": audio_report,
         "canvas_element": {
             "type": "embeddable",
             "link": "",
@@ -1657,9 +1671,10 @@ def _partial_storybook_result(
     pages = generated.get("pages") if isinstance(generated, dict) else []
     storybook = generated.get("storybook") if isinstance(generated, dict) else {}
     image_report = generated.get("image_generation") if isinstance(generated, dict) else None
+    audio_report = generated.get("audio_generation") if isinstance(generated, dict) else None
     return {
         "type": "storybook",
-        "status": _storybook_result_status(image_report, pages),
+        "status": _storybook_result_status(image_report, pages, audio_report),
         "warning": warning,
         "presentation_mode": "flipbook",
         "read_aloud": True,
@@ -1671,6 +1686,7 @@ def _partial_storybook_result(
         "org_no": payload.get("org_no"),
         "pages": pages or [],
         "image_generation": image_report,
+        "audio_generation": audio_report,
         "canvas_element": {
             "type": "embeddable",
             "link": "",
@@ -1701,8 +1717,8 @@ def _generate_storybook_images_with_retries(storybook_id: str, payload: Dict[str
             )
         except requests.RequestException as exc:
             last_body = _fetch_storybook_after_generation_error(storybook_id, str(exc))
-            last_resp = _synthetic_response(200 if not _storybook_image_report_has_missing(last_body.get("image_generation")) else 502, json.dumps(last_body, ensure_ascii=False))
-            if not _storybook_image_report_has_missing(last_body.get("image_generation")) or attempt >= attempts:
+            last_resp = _synthetic_response(200 if not _storybook_generation_report_has_missing(last_body) else 502, json.dumps(last_body, ensure_ascii=False))
+            if not _storybook_generation_report_has_missing(last_body) or attempt >= attempts:
                 return last_resp, last_body
             time.sleep(min(2 * attempt, 5))
             continue
@@ -1719,9 +1735,9 @@ def _generate_storybook_images_with_retries(storybook_id: str, payload: Dict[str
             f"report={json.dumps(report, ensure_ascii=False)}",
             flush=True,
         )
-        if resp.status_code in {401, 403} or _storybook_image_report_has_permanent_failure(report):
+        if resp.status_code in {401, 403} or _storybook_generation_report_has_permanent_failure(last_body):
             return resp, last_body
-        if not _storybook_image_report_has_missing(report):
+        if not _storybook_generation_report_has_missing(last_body):
             return resp, last_body
         if attempt < attempts:
             time.sleep(min(2 * attempt, 5))
@@ -1740,22 +1756,33 @@ def _fetch_storybook_after_generation_error(storybook_id: str, error: str) -> Di
         "storybook": {"id": storybook_id},
         "pages": [],
         "image_generation": {"required": 0, "generated": 0, "skipped": 0, "missing": 0, "errors": [error]},
+        "audio_generation": {"required": 0, "generated": 0, "skipped": 0, "missing": 0, "errors": [error]},
     }
     try:
         resp = requests.get(_internal_api_url(f"storybooks/{storybook_id}"), headers=_internal_relay_headers(), timeout=30)
         if resp.status_code < 200 or resp.status_code >= 300:
             body["image_generation"] = {"required": 0, "generated": 0, "skipped": 0, "missing": 0, "errors": [f"{error}; fetch status={resp.status_code}"]}
+            body["audio_generation"] = {"required": 0, "generated": 0, "skipped": 0, "missing": 0, "errors": [f"{error}; fetch status={resp.status_code}"]}
             return body
         fetched = resp.json()
     except (ValueError, requests.RequestException) as exc:
         body["image_generation"] = {"required": 0, "generated": 0, "skipped": 0, "missing": 0, "errors": [f"{error}; fetch failed: {exc}"]}
+        body["audio_generation"] = {"required": 0, "generated": 0, "skipped": 0, "missing": 0, "errors": [f"{error}; fetch failed: {exc}"]}
         return body
     if isinstance(fetched, dict):
         pages = fetched.get("pages") if isinstance(fetched.get("pages"), list) else []
         report = _storybook_image_report_from_pages(pages)
+        audio_report = _storybook_audio_report_from_pages(pages)
         if report.get("missing"):
             report["errors"] = [error]
-        body = {"storybook": fetched.get("storybook") or fetched, "pages": pages, "image_generation": report}
+        if audio_report.get("missing"):
+            audio_report["errors"] = [error]
+        body = {
+            "storybook": fetched.get("storybook") or fetched,
+            "pages": pages,
+            "image_generation": report,
+            "audio_generation": audio_report,
+        }
     return body
 
 
@@ -1790,19 +1817,42 @@ def _storybook_page_has_content(page: Dict[str, Any]) -> bool:
     return bool(str(page.get("title") or "").strip() or str(page.get("narration") or "").strip())
 
 
-def _storybook_result_status(report: Any, pages: Any) -> str:
+def _storybook_audio_report_from_pages(pages: Any) -> Dict[str, Any]:
+    report = {"required": 0, "generated": 0, "skipped": 0, "missing": 0, "planned_pages": 0}
+    if not isinstance(pages, list):
+        return report
+    report["planned_pages"] = len(pages)
+    for page in pages:
+        if not isinstance(page, dict) or not str(page.get("narration") or "").strip():
+            continue
+        report["required"] += 1
+        if str(page.get("audio_s3_object_name") or page.get("audio_url") or page.get("audio") or "").strip():
+            report["generated"] += 1
+        else:
+            report["missing"] += 1
+    return report
+
+
+def _storybook_result_status(image_report: Any, pages: Any, audio_report: Any = None) -> str:
     page_count = len(pages) if isinstance(pages, list) else 0
     text_pages = 0
-    if isinstance(report, dict):
+    if isinstance(image_report, dict):
         try:
-            required = int(report.get("required") or 0)
-            generated = int(report.get("generated") or 0)
-            missing = int(report.get("missing") or 0)
-            text_pages = int(report.get("text_pages") or 0)
+            required = int(image_report.get("required") or 0)
+            generated = int(image_report.get("generated") or 0)
+            missing = int(image_report.get("missing") or 0)
+            text_pages = int(image_report.get("text_pages") or 0)
         except (TypeError, ValueError):
             required = generated = missing = 0
         if required > 0 and missing > 0:
             return "partial_finished" if generated > 0 or text_pages > 0 or page_count > 0 else "failed"
+    if _storybook_report_has_missing(audio_report):
+        return "partial_finished" if page_count > 0 else "failed"
+    if isinstance(image_report, dict):
+        try:
+            required = int(image_report.get("required") or 0)
+        except (TypeError, ValueError):
+            required = 0
         if required > 0:
             return "completed"
     if page_count > 0:
@@ -1819,6 +1869,29 @@ def _storybook_image_report_has_missing(report: Any) -> bool:
     except (TypeError, ValueError):
         return False
     return required > 0 and missing > 0
+
+
+def _storybook_report_has_missing(report: Any) -> bool:
+    if not isinstance(report, dict):
+        return False
+    try:
+        required = int(report.get("required") or 0)
+        missing = int(report.get("missing") or 0)
+    except (TypeError, ValueError):
+        return False
+    return required > 0 and missing > 0
+
+
+def _storybook_generation_report_has_missing(body: Any) -> bool:
+    if not isinstance(body, dict):
+        return False
+    return _storybook_report_has_missing(body.get("image_generation")) or _storybook_report_has_missing(body.get("audio_generation"))
+
+
+def _storybook_generation_report_has_permanent_failure(body: Any) -> bool:
+    if not isinstance(body, dict):
+        return False
+    return _storybook_image_report_has_permanent_failure(body.get("image_generation")) or _storybook_image_report_has_permanent_failure(body.get("audio_generation"))
 
 
 def _storybook_image_report_has_permanent_failure(report: Any) -> bool:

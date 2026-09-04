@@ -5,6 +5,8 @@ import requests
 
 from tools.alphart_tools import _storybook_image_report_has_permanent_failure
 from tools.alphart_tools import _generate_storybook_images_with_retries
+from tools.alphart_tools import _storybook_generation_report_has_missing
+from tools.alphart_tools import _storybook_result_status
 
 
 def test_storybook_image_report_detects_permanent_relay_authorization_failure():
@@ -57,3 +59,43 @@ def test_storybook_image_generation_does_not_retry_permanent_authorization_failu
 
     post.assert_called_once()
     sleep.assert_not_called()
+
+
+def test_storybook_generation_does_not_retry_permanent_audio_authorization_failure():
+    response = requests.Response()
+    response.status_code = 502
+    response._content = json.dumps(
+        {
+            "audio_generation": {
+                "required": 1,
+                "generated": 0,
+                "missing": 1,
+                "errors": [
+                    "relay request failed: status=401 code=UNAUTHORIZED message=internal user uuid does not match resolved user"
+                ],
+            }
+        }
+    ).encode()
+
+    with (
+        patch("tools.alphart_tools.requests.post", return_value=response) as post,
+        patch("tools.alphart_tools.time.sleep") as sleep,
+        patch("tools.alphart_tools._internal_api_url", return_value="http://edu/internal"),
+        patch("tools.alphart_tools._internal_relay_headers", return_value={}),
+    ):
+        _generate_storybook_images_with_retries("storybook-1", {}, timeout=1)
+
+    post.assert_called_once()
+    sleep.assert_not_called()
+
+
+def test_storybook_audio_generation_is_incomplete_until_all_tracks_exist():
+    pages = [{"narration": "Read this page aloud."}]
+    audio_report = {"required": 1, "generated": 0, "missing": 1}
+
+    assert _storybook_generation_report_has_missing({"audio_generation": audio_report})
+    assert _storybook_result_status(
+        {"required": 1, "generated": 1, "missing": 0},
+        pages,
+        audio_report,
+    ) == "partial_finished"
