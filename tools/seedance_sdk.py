@@ -109,6 +109,7 @@ def create_seedance_task(
     resolution: str = "",
     duration: int | None = None,
     generate_audio: bool | None = None,
+    watermark: bool | None = None,
     timeout: float = 900,
 ) -> dict[str, Any]:
     """Create one task through Ark while sending it to Jwell's relay."""
@@ -142,6 +143,7 @@ def create_seedance_task(
                 resolution=resolution or None,
                 duration=duration,
                 generate_audio=generate_audio,
+                watermark=watermark,
                 timeout=timeout,
             )
             return _model_to_dict(response)

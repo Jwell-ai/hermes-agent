@@ -1972,6 +1972,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
         "aspect_ratio": args.get("aspect_ratio"),
         "quality": args.get("quality"),
         "resolution": args.get("resolution"),
+        "watermark": bool(_ctx().get("ai_generation_watermark")),
         "session_id": _ctx().get("session_id"),
         "canvas_id": _ctx().get("canvas_id"),
         "canvas_item_id": (
@@ -2011,6 +2012,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
                 image_urls=payload.get("images") or [],
                 aspect_ratio=str(args.get("aspect_ratio") or ""),
                 resolution=str(args.get("resolution") or ""),
+                watermark=bool(_ctx().get("ai_generation_watermark")),
                 quantity=args.get("quantity"),
                 idempotency_key=str(payload.get("tool_call_id") or "").strip(),
                 timeout=_backend_tool_timeout(),
@@ -2217,6 +2219,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         "aspect_ratio": args.get("aspect_ratio"),
         "resolution": args.get("resolution"),
         "duration": args.get("duration"),
+        "watermark": bool(_ctx().get("ai_generation_watermark")),
         "session_id": _ctx().get("session_id"),
         "canvas_id": _ctx().get("canvas_id"),
         "canvas_item_id": canvas_item_id,
@@ -2280,6 +2283,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
                 resolution=str(payload.get("resolution") or "").strip(),
                 duration=int(payload["duration"]) if payload.get("duration") is not None else None,
                 generate_audio=bool(payload.get("generate_audio")),
+                watermark=bool(payload.get("watermark")),
                 timeout=_backend_tool_timeout(),
             )
             response_status = 202

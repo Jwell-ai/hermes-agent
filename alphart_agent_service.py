@@ -57,6 +57,7 @@ class AlphartEduChatRequest(BaseModel):
     image_aspect_ratio: str = ""
     image_quality: str = ""
     image_resolution: str = ""
+    ai_generation_watermark: bool = False
     video_model: str = ""
     audio_model: str = ""
     input_images: List[Any] = Field(default_factory=list)
@@ -155,7 +156,7 @@ _CANVAS_TEXT_TARGET_RE = re.compile(r"\b(?:draft|text|copy|script|caption|descri
 _CANVAS_TEXT_PRONOUN_RE = re.compile(r"\b(?:it|this|that|them)\b|其|它|这(?:段|份|个)|那(?:段|份|个)", re.IGNORECASE)
 _CANVAS_MEDIA_EDIT_VERB_RE = re.compile(
     r"\b(?:add|apply|attach|change|delete|edit|enhance|fix|improve|refine|upscale|transform|remove|replace|retouch|blur|sharpen|crop|move|resize|update)\b"
-    r"|添加|应用|附加|修改|增强|优化|精修|放大|变换|修复|移除|删除|替换|润色|模糊|锐化|裁剪|移动|调整|更新",
+    r"|添加|应用|附加|编辑|修改|增强|优化|精修|放大|变换|修复|移除|删除|替换|润色|模糊|锐化|裁剪|移动|调整|更新",
     re.IGNORECASE,
 )
 _CANVAS_CLAUSE_BOUNDARY_RE = re.compile(
@@ -169,6 +170,11 @@ _CANVAS_STRONG_CLAUSE_BOUNDARY_RE = re.compile(
 _CANVAS_IMPERATIVE_LEAD_RE = re.compile(
     r"^(?:(?:please|kindly|can you|could you|would you|then|also|and|but|i want to|i need to|i'd like to)(?:\s+|$))*$"
     r"|^(?:请|请帮我|请直接|然后|同时|再|并且|并)\s*$",
+    re.IGNORECASE,
+)
+_CANVAS_INTERROGATIVE_LEAD_RE = re.compile(
+    r"^(?:how|why|when|where|what|which|who|should|can|could|would|may|do|does|is|are)\b"
+    r"|^(?:怎么|为什么|如何|什么|是否|能不能|可不可以|哪|我该|应该)",
     re.IGNORECASE,
 )
 _CANVAS_MEDIA_EDIT_RELATION_RE = re.compile(r"\b(?:from|of|on|in|into|using|with)\b|从|的|在|到|于", re.IGNORECASE)
@@ -3730,6 +3736,8 @@ def _canvas_non_execution_question(text: str) -> bool:
         if text.startswith(prefix):
             text = text.removeprefix(prefix).strip()
             break
+    if _canvas_option_question(text):
+        return True
     if _canvas_explicit_generation_clause(text):
         return False
     return bool(
@@ -3738,6 +3746,33 @@ def _canvas_non_execution_question(text: str) -> bool:
             text,
         )
     )
+
+
+def _canvas_option_question(text: str) -> bool:
+    text = _string(text).strip().lower()
+    if not text:
+        return False
+    choice_prefix = text.startswith(("what are the options", "what are my options", "what are your options", "what should ", "should i ", "which ", "我该", "应该"))
+    for marker in (" or ", "还是", "或"):
+        parts = text.split(marker)
+        if len(parts) < 2:
+            continue
+        has_media_action = bool(_CANVAS_MEDIA_EDIT_VERB_RE.search(text) or _CANVAS_GENERATION_ACTION_RE.search(text))
+        has_action_alternative = any(
+            _CANVAS_MEDIA_EDIT_VERB_RE.search(part) or _CANVAS_GENERATION_ACTION_RE.search(part)
+            for part in parts[1:]
+        )
+        if has_media_action and choice_prefix and has_action_alternative:
+            return True
+        if has_media_action and choice_prefix and any(
+            (option := part.strip().rstrip("?？.!。！；;,:，：").strip()) in {"leave", "keep", "skip"}
+            or option.startswith(("leave ", "keep ", "do nothing", "skip "))
+            or option.startswith(("unchanged", "as is"))
+            or option.startswith(("不变", "不修改", "不处理"))
+            for part in parts[1:]
+        ):
+            return True
+    return False
 
 
 def _canvas_negated_generation_request(text: str) -> bool:
@@ -4056,10 +4091,15 @@ def _canvas_read_only_turn(req: AlphartEduChatRequest) -> bool:
     if _request_app_scope(req) != "canvas":
         return False
     text = _canvas_request_text(req)
+    if req.script_only:
+        return True
+    if _canvas_non_execution_question(text) or _canvas_negated_generation_request(text):
+        return True
+    if _canvas_negated_graph_mutation_request(text) or _canvas_unsupported_graph_mutation_request(text):
+        return True
     explicit_mutation = _canvas_explicit_mutation_request(req)
     return bool(
-        req.script_only
-        or (
+        (
             not explicit_mutation
             and _canvas_reference_or_analysis_request(text)
         )
@@ -4078,6 +4118,7 @@ def _canvas_explicit_generation_clause(text: str) -> bool:
         "并且", "然后", "同时", "再", "并",
     )
     actions = ("create ", "generate ", "make ", "draw ", "render ", "produce ", "design ", "paint ", "sketch ", "illustrate ", "regenerate ", "redo ", "remake ", "replace ", "inpaint ", "edit ", "transform ", "turn ", "convert ", "animate ", "upscale ", "enhance ", "improve ", "refine ", "创建", "生成", "制作", "设计", "绘画", "素描", "插画", "重新生成", "重做", "重制", "替换", "局部重绘", "绘制", "渲染", "产出", "编辑", "转换", "转成", "变成", "动画化", "放大", "增强", "优化", "修改")
+    compound_edit_separators = {" and then ", " then ", " also ", "?", "？", "!", "！", ".", "。", ";", "；", "并且", "然后", "同时", "再", "并"}
     for separator in separators:
         search_start = 0
         while search_start < len(text):
@@ -4096,6 +4137,12 @@ def _canvas_explicit_generation_clause(text: str) -> bool:
             if any(suffix.startswith(action) for action in actions):
                 action = next(action for action in actions if suffix.startswith(action))
                 if separator.strip() == "and" and not _CANVAS_EXPLICIT_OUTPUT_RE.match(suffix[len(action):]):
+                    search_start = index + len(separator)
+                    continue
+                is_question_like_punctuation = separator.strip() in {",", "，", ":", "："} and bool(
+                    re.match(r"^(?:how|why|when|where|what|which|who)\b|^(?:怎么|为什么|如何|什么|是否|哪)", text[:index].strip(), flags=re.IGNORECASE)
+                )
+                if _CANVAS_MEDIA_EDIT_VERB_RE.fullmatch(action.strip()) and separator not in compound_edit_separators and not is_question_like_punctuation:
                     search_start = index + len(separator)
                     continue
                 return True
@@ -5297,6 +5344,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "image_quality": req.image_quality,
         "image_resolution": req.image_resolution,
         "image_aspect_ratio": req.image_aspect_ratio,
+        "ai_generation_watermark": bool(req.ai_generation_watermark),
         "generate_audio": bool(req.generate_audio),
         "video_caption_script": req.video_caption_script,
         "script_only": bool(req.script_only),

@@ -111,6 +111,7 @@ def test_create_task_uses_internal_base_url_and_headers():
             resolution="720p",
             duration=5,
             generate_audio=False,
+            watermark=True,
         )
 
     assert result == {"id": "relay-request-1", "status": "queued"}
@@ -119,4 +120,5 @@ def test_create_task_uses_internal_base_url_and_headers():
     assert captured["client"]["http_client"].headers["Idempotency-Key"] == "call-1"
     assert captured["kwargs"]["model"] == "doubao-seedance-2-0-260128"
     assert captured["kwargs"]["ratio"] == "16:9"
+    assert captured["kwargs"]["watermark"] is True
     assert captured["kwargs"]["content"][1]["image_url"]["url"].endswith("keyframe.png")

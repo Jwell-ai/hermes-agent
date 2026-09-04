@@ -1162,6 +1162,20 @@ def test_canvas_non_execution_questions_do_not_force_structured_media_intent():
     assert _canvas_non_execution_question("What is this? Tell me more? Could you generate a video") is False
     assert _canvas_non_execution_question("解释这个，然后生成图片") is False
     assert _canvas_non_execution_question("How do I edit an image and make it a video?") is False
+    assert _canvas_non_execution_question("What do you think? Improve this image.") is False
+    assert _canvas_non_execution_question("What do you think, then improve this image.") is False
+    assert _canvas_non_execution_question("What do you think, improve this image.") is False
+    assert _canvas_non_execution_question("What do you think: improve this image.") is False
+    assert _canvas_non_execution_question("What are the options: improve this image or leave it unchanged?") is True
+    assert _canvas_non_execution_question("What are the options: improve this image or leave it unchanged") is True
+    assert _canvas_non_execution_question("What should I do? Improve this image or generate a new one?") is True
+    assert _canvas_non_execution_question("Should I improve this image or leave it unchanged?") is True
+    assert _canvas_non_execution_question("Can you generate this or skip?") is False
+    assert _canvas_non_execution_question("What should I use as reference? Generate an image with a red or blue palette?") is False
+    assert _canvas_non_execution_question("Can you improve this image or generate a new one?") is False
+    assert _canvas_non_execution_question("Can you generate an image with a red or blue palette?") is False
+    assert _canvas_non_execution_question("Can you generate a spring or winter version while keeping the person unchanged?") is False
+    assert _canvas_non_execution_question("生成春季或冬季版本，同时保持人物不变？") is False
     assert _canvas_workflow_item_type(AlphartEduChatRequest(
         app_scope="canvas",
         requested_action="create_image",
@@ -1181,6 +1195,38 @@ def test_canvas_reference_generation_with_constraints_is_writable():
     )
 
     assert _canvas_explicit_mutation_request(request) is True
+    assert _canvas_read_only_turn(request) is False
+
+
+def test_canvas_advisory_generation_options_remain_read_only():
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        requested_action="answer",
+        target_operation="use_as_reference",
+        messages=[{"role": "user", "content": "Explain the options: improve the lighting or refine the colors"}],
+    )
+    assert _canvas_read_only_turn(request) is True
+
+    request.messages = [{"role": "user", "content": "建议如何编辑这张图片？"}]
+    assert _canvas_read_only_turn(request) is True
+
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        requested_action="generate_image",
+        target_operation="generate_into_existing",
+        messages=[{"role": "user", "content": "Can you generate a spring or winter version while keeping the person unchanged?"}],
+    )
+    assert _canvas_read_only_turn(request) is False
+
+    request.messages = [{"role": "user", "content": "生成春季或冬季版本，同时保持人物不变？"}]
+    assert _canvas_read_only_turn(request) is False
+
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        requested_action="answer",
+        target_operation="use_as_reference",
+        messages=[{"role": "user", "content": "Generate the image or skip if no valid reference is available"}],
+    )
     assert _canvas_read_only_turn(request) is False
 
 
