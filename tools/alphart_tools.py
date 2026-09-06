@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+from copy import deepcopy
 import ast
 import base64
 import binascii
@@ -452,6 +453,7 @@ def _audio_script_from_request(text: Any, language_type: str = "") -> str:
 
 
 _AUDIO_SYSTEM_PROMPT_MARKERS = (
+    "ALPHART EDU AGENT ROLE:",
     "CANVAS AGENT ROLE:",
     "PLANNER RULES:",
     "SELECTED CANVAS TOOLS:",
@@ -3003,7 +3005,7 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
     if not text:
         return _tool_error("audio input text is required")
     is_canvas = app_scope == "canvas"
-    if not is_canvas and (len(text) < 80 or re.search(r"^\s*(/audio|generate|create|make|produce|生成)", text, flags=re.I)):
+    if not is_canvas and not audio_chunk_request and (len(text) < 80 or re.search(r"^\s*(/audio|generate|create|make|produce|生成)", text, flags=re.I)):
         text = _audio_script_from_request(text, str(args.get("language_type") or ""))
     if not is_canvas:
         text = _bound_audio_script(text, requested_duration, str(args.get("language_type") or "").strip().lower())
@@ -4205,7 +4207,7 @@ def _generic_generation_schema(
     excluded_fields: Iterable[str] = (),
 ) -> Dict[str, Any]:
     excluded = {"canvas_operation", "canvas_item_id", *excluded_fields}
-    return {
+    return deepcopy({
         **canvas_schema,
         "name": name,
         "parameters": {
@@ -4216,17 +4218,40 @@ def _generic_generation_schema(
                 if key not in excluded
             },
         },
-    }
+    })
 
 
 # Canvas intent and node identity must never be exposed to Edu's generic tools.
 GENERATE_IMAGE_SCHEMA = _generic_generation_schema(CANVAS_GENERATE_IMAGE_SCHEMA, "generate_image")
+GENERATE_IMAGE_SCHEMA["description"] = (
+    "Generate or edit images through the selected Alphart Edu image model. "
+    "Use this for a requested image output, including illustrations of an explanation. "
+    "The backend stores results and returns the media artifact."
+)
+GENERATE_IMAGE_SCHEMA["parameters"]["properties"]["tool_id"]["description"] = "Selected image tool id, when known."
+GENERATE_IMAGE_SCHEMA["parameters"]["properties"]["resolution"]["description"] = "Image resolution: auto, 1K, 2K, or 4K."
 GENERATE_VIDEO_SCHEMA = _generic_generation_schema(
     CANVAS_GENERATE_VIDEO_SCHEMA,
     "generate_video",
     {"caption_script", "input_audio"},
 )
 GENERATE_AUDIO_SCHEMA = _generic_generation_schema(CANVAS_GENERATE_AUDIO_SCHEMA, "generate_audio")
+GENERATE_VIDEO_SCHEMA["description"] = (
+    "Submit a video generation task through the selected Alphart video model. "
+    "Use this for text-to-video and image-to-video tasks. Video result polling stays in the Go backend."
+)
+GENERATE_VIDEO_SCHEMA["parameters"]["properties"]["tool_id"]["description"] = "Selected video tool id, when known."
+GENERATE_AUDIO_SCHEMA["description"] = (
+    "Generate spoken audio through the selected Alphart Edu TTS/audio model. "
+    "Use this when the user requests audio as the output, including a spoken explanation, "
+    "analysis, summary, narration, voiceover, or read-aloud of content in the conversation. "
+    "Pass the complete ready-to-speak narration grounded in that content as input. "
+    "Long narration is automatically chunked and combined into one audio result."
+)
+GENERATE_AUDIO_SCHEMA["parameters"]["properties"]["duration_seconds"]["description"] = (
+    "Requested listening duration in seconds. Convert minutes to seconds (2 minutes = 120). "
+    "Write narration to match this duration; Edu audio is not limited to 5-15 seconds."
+)
 
 CANVAS_CREATE_STORYBOOK_SCHEMA = {
     "name": "canvas_create_storybook",

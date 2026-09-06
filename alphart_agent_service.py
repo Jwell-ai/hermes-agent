@@ -10,6 +10,7 @@ import os
 import re
 import uuid
 import base64
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, urljoin
@@ -26,6 +27,9 @@ import requests
 from run_agent import AIAgent
 from tools.skills_sync import sync_skills
 from tools.alphart_tools import (
+    GENERATE_AUDIO_SCHEMA,
+    GENERATE_IMAGE_SCHEMA,
+    GENERATE_VIDEO_SCHEMA,
     _ctx,
     _handle_alphart_create_storybook,
     _handle_alphart_generate_audio,
@@ -3210,12 +3214,9 @@ def _forced_media_tool_messages(
             "tool_call_id": call_id,
             "language_type": language_type,
         }
-        # Canvas prompt values are authoritative over the UI fallback. Edu's
-        # legacy audio flow intentionally keeps its existing request behavior.
-        if _string(_ctx().get("app_scope")).lower() == "canvas":
-            duration_seconds = _video_duration_seconds_from_text(user_message)
-            if duration_seconds:
-                args["duration_seconds"] = duration_seconds
+        duration_seconds = _video_duration_seconds_from_text(user_message)
+        if duration_seconds:
+            args["duration_seconds"] = duration_seconds
         target_id = _forced_canvas_edit_target(intent, user_message)
         if target_id:
             args["canvas_item_id"] = target_id
@@ -3340,7 +3341,7 @@ def _alphart_agent_prompt(req: AlphartEduChatRequest) -> str:
     return f"""
 {req.system_prompt.strip()}
 
-CANVAS AGENT ROLE:
+ALPHART EDU AGENT ROLE:
 You are replacing the old planner + image_video_creator LangGraph swarm.
 You must preserve both behaviors:
 1. Planner behavior: understand the user request, write an execution plan when the task is complex, and route media tasks to generation immediately.
@@ -3350,13 +3351,14 @@ PLANNER RULES:
 - Answer and write plans in the same language as the user's prompt.
 - For normal conversation, answer directly without calling tools.
 - When writing math, physics, chemistry, or engineering formulas, output valid Markdown math. Use inline math as `$...$` and display math as `$$...$$` on separate lines. Do not output raw LaTeX formulas without delimiters, do not double-escape backslashes, and do not emit literal `\n` escape sequences inside prose. Put each standalone formula, such as `y=\\pm \\frac{{b}}{{a}}x` or `c^2=a^2+b^2`, in its own display math block.
-- If the user asks to explain, describe, analyze, summarize, caption, identify, or understand an attached image/video, answer with the text/chat model. Do not call image/video generation tools.
+- Infer both the subject and the requested output format from the full user request and conversation context. An explanation, analysis, or summary can be requested as spoken audio, an image, or a video; the explanatory verb does not override the requested output format. The user does not need to say "generate" or "create" to request a media result.
+- Resolve references such as "this", "it", or "the above" using the supplied content and conversation history. Base the answer and any narration on that actual content. If the referenced content is unavailable, ask for it before generating.
+- When the user asks only to explain, describe, analyze, summarize, caption, identify, or understand an attached image/video, answer in text. When they request a media output for that explanation, prepare the explanation from the reference and call the corresponding generation tool.
 	- For obvious image/video/audio generation or editing tasks, a generation tool call is mandatory.
 	- For simple media requests, call canvas_generate_image/canvas_generate_video/canvas_generate_audio directly. Do not stop after a plan.
 	- Use the selected tool metadata for provider/model. Do not invent provider/model names and do not rely on backend-selected defaults. If no selected image/video/audio tool is listed for the requested capability, return a concise configuration error.
 - For complex media requests, you may call write_plan first, but you must continue to the generation tool after the plan result.
-- For Canvas requests where the user asks you to create/manage canvas nodes, use canvas_create_node/canvas_update_node/canvas_connect_nodes. For image generation on Canvas, create an image node first with the enriched professional prompt, then call canvas_generate_image with that node's canvas_item_id so the backend updates the same node with the generated asset.
-- If you create a planning/prompt node and a final media node, connect them with canvas_connect_nodes after both node ids are known.
+- Edu media tools return native chat/canvas artifacts directly. The canvas_generate_* names are legacy aliases for the generation tools in this app; they do not require Canvas node creation, node IDs, or graph operations.
 - Do not ask for approval before media generation unless the backend returns a confirmation request.
 - Do not call multiple tools in the same assistant turn. Always wait for one tool result before making another tool call.
 - If a tool call fails, explain the error to the user and do not retry automatically.
@@ -3391,6 +3393,8 @@ IMAGE CREATION RULES:
 		- Use canvas_generate_audio or generate_audio for spoken-audio tasks, including "generate an audio", "create a voiceover", "read aloud", "生成一段音频", "生成一段音訊", "生成语音", "生成語音", "用粤语/粵語/广东话/廣東話介绍", and equivalent requests.
 		- Audio generation must produce two user-visible outputs: first a normal assistant text message containing the educational narration/script, then the generated audio result. Do not replace the script with a plan.
 		- The audio tool input must be the same ready-to-speak script text from the assistant message, not the raw command.
+		- A request to use audio or speak an explanation requires a spoken-audio result even when the main task is to explain, analyze, or summarize existing content. Write a substantive narration grounded in that content, not a generic introduction or a description of what you plan to explain.
+		- Honor the requested listening duration. Convert minutes to seconds for duration_seconds and write enough narration for approximately that duration (about 130 English words per minute). Edu audio supports minute-long narration; the separate Canvas app's 5-15 second setting does not apply here. Long narration is chunked by the audio tool.
 		- Match the requested spoken language: language_type="cantonese" for 粤语/粵語/广东话/廣東話/Cantonese, language_type="mandarin" for 中文/普通话/普通話/Mandarin, and language_type="english" for English.
 		- Do not ask the user to choose an audio model. Use the selected audio tool metadata from SELECTED CANVAS TOOLS, including provider and model.
 
@@ -4308,9 +4312,26 @@ def _canvas_explicit_generation_clause(text: str) -> bool:
 
 
 def _configure_agent_scope(agent: Any, req: AlphartEduChatRequest) -> str:
-    """Apply product-specific session behavior without changing Edu agents."""
+    """Keep shared media aliases on the requesting product's tool contract."""
     scope = _request_app_scope(req)
     agent._alphart_app_scope = scope
+    if scope == "edu" and isinstance(getattr(agent, "tools", None), list):
+        schemas = {
+            "image": GENERATE_IMAGE_SCHEMA,
+            "video": GENERATE_VIDEO_SCHEMA,
+            "audio": GENERATE_AUDIO_SCHEMA,
+        }
+        overrides = {
+            name: {**schema, "name": name}
+            for media_type, schema in schemas.items()
+            for name in (f"generate_{media_type}", f"canvas_generate_{media_type}")
+        }
+        # Registry definitions can be cached/shared with Canvas agents.
+        agent.tools = [
+            {**tool, "function": deepcopy(overrides[tool["function"]["name"]])}
+            if tool.get("function", {}).get("name") in overrides else tool
+            for tool in agent.tools
+        ]
     return scope
 
 

@@ -464,6 +464,40 @@ def test_audio_request_parses_minutes_and_removes_prompt_scaffolding():
     assert "this event" in payload["input"]
 
 
+def test_edu_two_minute_audio_preserves_narration_through_short_final_chunk():
+    script = " ".join(f"word{index}" for index in range(155))
+    response = MagicMock(status_code=200, text="")
+    response.json.return_value = {
+        "data": {"url": "data:audio/wav;base64," + base64.b64encode(_wav_bytes()).decode("ascii")},
+    }
+    with (
+        alphart_context({"app_scope": "edu", "user_message": "use 2mins audio explain this poem"}),
+        patch("tools.alphart_tools._relay_url", return_value="http://relay/audio/speech"),
+        patch("tools.alphart_tools._jwell_relay_enabled", return_value=True),
+        patch("tools.alphart_tools._backend_tool_timeout", return_value=10),
+        patch("tools.alphart_tools._relay_headers", return_value={}),
+        patch("tools.alphart_tools.requests.post", return_value=response) as post,
+        patch("tools.alphart_tools._import_jwell_media", return_value={
+            "url": "https://storage.example/narration.wav",
+            "s3_object_name": "org/narration.wav",
+        }) as import_media,
+    ):
+        result = json.loads(_handle_alphart_generate_audio({
+            "provider": "openai",
+            "model": "gpt-4o-mini-tts",
+            "input": script,
+        }))
+
+    assert result["status"] == "success"
+    assert result["result"]["script"] == script
+    payloads = [call.kwargs["json"] for call in post.call_args_list]
+    assert len(payloads) == 3
+    assert " ".join(payload["input"] for payload in payloads) == script
+    assert all(payload["duration_seconds"] == 120 for payload in payloads)
+    assert all(payload["voice"] == "alloy" for payload in payloads)
+    import_media.assert_called_once()
+
+
 def test_openai_audio_request_uses_a_valid_default_voice():
     response = MagicMock(status_code=200, text="")
     response.json.return_value = {"data": {"url": "https://storage.example/audio.wav"}}
