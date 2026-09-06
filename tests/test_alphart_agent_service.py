@@ -1094,6 +1094,23 @@ def test_canvas_explicit_video_request_overrides_selected_image():
     assert _canvas_workflow_item_type(request) == "video"
 
 
+def test_canvas_specialist_skill_markers_are_writable_and_route_media():
+    for marker, prompt, expected_type in (
+        ("image-keyframe", "Compose a polished hero keyframe", "image"),
+        ("video-cinematic-shot", "Direct a cinematic shot with a clear ending", "video"),
+    ):
+        text = f"[skill:{marker}] {prompt}"
+        request = AlphartEduChatRequest(
+            app_scope="canvas",
+            selected_canvas_item_type="audio",
+            messages=[{"role": "user", "content": text}],
+        )
+
+        assert _canvas_generation_request_is_writable(text) is True
+        assert _canvas_read_only_turn(request) is False
+        assert _canvas_workflow_item_type(request) == expected_type
+
+
 def test_canvas_structured_intent_uses_latest_turn_over_history():
     request = AlphartEduChatRequest(
         app_scope="canvas",

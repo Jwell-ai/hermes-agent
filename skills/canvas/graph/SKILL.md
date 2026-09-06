@@ -43,7 +43,38 @@ Choose the narrowest applicable workflow:
 3. `canvas-seedance2-video-director` is the default video workflow. Use it for all other video generation, including a new graph with text/image/audio references. Preserve reference roles and call exactly one `canvas_generate_video` for the output node.
 4. Image, audio, and text requests use the matching Canvas tool and do not load a video workflow.
 
-Capacity rules are explicit: video duration is supported from 5 to 15 seconds and must be clamped to that range; do not silently change a requested ratio, resolution, quality, language, or model to an invented value. A connected soundtrack/background-music node disables provider-generated audio; a voice-print reference is not a soundtrack. Every video generation call includes a bounded ready-to-speak `caption_script`; Canvas uses it to create the voiceover and SRT separately from the visual prompt. Audio and caption artifacts are separate Canvas nodes when the user asks for them.
+### Specialist Media Skill Graphs
+
+The visible `[skill:...]` marker is an explicit workflow selection. Apply the
+following graph contract based on the actual referenced node types; do not infer
+a different workflow from fixed natural-language keywords.
+
+For `[skill:image-keyframe]`:
+
+1. With no referenced nodes, refine the user's brief, create one text Prompt
+   node containing that refined prompt, create one image node sourced from the
+   Prompt node, then generate into the image node.
+2. With a referenced text/note Prompt node, do not create another Prompt node.
+   Create one image node sourced from that exact Prompt node, then generate into
+   the image node using the referenced prompt content.
+3. With a referenced image node, treat the request as an edit of that image.
+   Call `canvas_generate_image` with `canvas_operation=edit_existing` and that
+   image's id. Do not create a Prompt node or replacement image node.
+
+For `[skill:video-cinematic-shot]`:
+
+1. With no referenced nodes, refine the user's brief, create one text Prompt
+   node containing that refined prompt, create one video node sourced from the
+   Prompt node, then generate into the video node.
+2. With a referenced text/note Prompt node, do not create another Prompt node.
+   Create one video node sourced from that exact Prompt node, then generate into
+   the video node using the referenced prompt content.
+3. With one or more referenced image nodes, do not create a Prompt node. Create
+   one video node sourced from every referenced image, preserve their supplied
+   keyframe order/roles, pass all of them to `canvas_generate_video`, and generate
+   into the video node.
+
+Capacity rules are explicit: video duration is supported from 5 to 15 seconds and must be clamped to that range; do not silently change a requested ratio, resolution, quality, language, or model to an invented value. Ask the selected video model to generate synchronized audio and visible captions natively in the requested language. Set `generate_audio=true` unless a connected audio track (including background music, narration, or dialogue) or an explicit user instruction disables provider-generated audio; a voice-print-only reference does not disable native audio. Do not create separate TTS, voiceover, caption-script, SRT, or subtitle-burning work for a video generation.
 
 For a new graph, create only the nodes needed for the selected workflow and connect them before generation. For an existing target, update only that target unless the user explicitly asks for a downstream result. Do not duplicate a task because a tool response is delayed or because a request is retried by the transport.
 
@@ -52,7 +83,7 @@ For a new graph, create only the nodes needed for the selected workflow and conn
 For a new image, video, or audio design, first decide whether the request needs a persisted Prompt/brief node. Use one tool call at a time and wait for each result.
 
 1. Comprehend the user's intent and write a production-ready prompt in the user's language or the language requested by the user.
-2. Create a Prompt/brief text node only when the user explicitly asks for a prompt, plan, brief, or other persisted intermediate artifact, or when the selected specialist workflow requires one. Do not create one merely because a provider needs prompt text.
+2. Create a Prompt/brief text node only when the user explicitly asks for a prompt, plan, brief, or other persisted intermediate artifact, or when the selected specialist workflow requires one. In particular, the no-reference `image-keyframe` and `video-cinematic-shot` workflows require this node. Do not create one merely because a provider needs prompt text.
 3. Create one output node of the requested type with a concise summary title in that same language using `canvas_create_node`. Put the enriched generation prompt on that output node when no separate Prompt node is needed.
 4. Pass every explicitly named input node id in `source_item_ids` on the output node. The Canvas backend persists source-to-target lines automatically. Also call `canvas_connect_nodes` only for a semantic edge not covered by those source ids. Do not create duplicate lines.
 5. Generate only into the output node using the matching Canvas generation tool and its returned `canvas_item_id`.
@@ -66,7 +97,7 @@ When `canvas_item_id` is present:
 
 - Text/note: refine or replace only its text content. Preserve the previous content if the model or backend fails.
 - Image: call `canvas_generate_image` with the selected node id, the enriched prompt, selected quality/ratio, and only the requested upstream image references.
-- Video: call `canvas_generate_video` with the selected node id, exact duration (5-15 seconds), ratio, resolution, keyframes, soundtrack/voice-print roles, and a bounded ready-to-speak `caption_script`. Preserve first/intermediate/last frame roles.
+- Video: call `canvas_generate_video` with the selected node id, exact duration (5-15 seconds), ratio, resolution, keyframes, soundtrack/voice-print roles, and provider-native audio enabled when allowed. Put the requested dialogue and visible-caption direction in the video prompt so the selected model creates both natively. Preserve first/intermediate/last frame roles.
 - Audio: produce a ready-to-speak script first, then call `canvas_generate_audio` with the exact script and selected duration/model. Do not save a failure message as the script.
 - Do not create a Prompt node or downstream node for an existing-node request unless the user explicitly asks for a new graph.
 

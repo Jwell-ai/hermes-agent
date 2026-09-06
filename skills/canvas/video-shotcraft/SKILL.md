@@ -47,17 +47,19 @@ not a decorative montage.
    mechanism such as card-deal, camera push, orbit, match cut, type reveal, or
    controlled transition. Describe the mechanism; do not claim access to the
    original demo implementation or gallery assets.
-6. Do not put dialogue, captions, subtitles, or on-screen text instructions in
-   the provider prompt. Canvas owns TTS and SRT separately. If a soundtrack or
-   BGM node is attached, preserve it and disable provider-generated audio;
-   otherwise allow only ambient provider audio.
+6. Put requested dialogue, sound, and visible captions in the provider prompt so
+   the selected model generates and synchronizes them natively. If any playable
+   audio track such as soundtrack, BGM, narration, or dialogue is attached,
+   preserve it and set `generate_audio=false`. A voice-print-only reference keeps
+   native audio enabled unless the user disables it.
 
 ## Prompt Shape
 
 Write in this order:
 
 `product/subject and continuity; setting and visual language; one action;
-camera framing and movement; timed progression; final hold; audio constraints.`
+camera framing and movement; timed progression; final hold; dialogue, sound,
+and visible-caption constraints.`
 
 For a longer video use compact timing such as `0-3s`, `3-7s`, and `7-10s`.
 Be concrete about what becomes visible and when. Keep the prompt concise enough
@@ -66,8 +68,8 @@ for the selected video provider.
 ## Dispatch
 
 Call `canvas_generate_video` exactly once with the selected node, connected
-references, selected model, ratio, resolution, and exact requested duration.
-Canvas owns storage, billing, task polling, captions, and media persistence.
+references, selected model, ratio, resolution, exact requested duration, and the
+native-audio decision. Canvas owns storage, billing, task polling, and media persistence.
 Report a concrete tool error without overwriting existing node content.
 
 ## Provenance

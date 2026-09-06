@@ -408,7 +408,7 @@ def test_canvas_video_relay_uses_local_task_id_when_provider_id_is_not_ready():
     assert captured["url"] == "http://canvas-backend/internal/v1/videos"
 
 
-def test_canvas_video_relay_keeps_canvas_caption_script():
+def test_canvas_video_relay_preserves_agent_native_media_prompt():
     captured = {}
 
     def fake_post(url, **kwargs):
@@ -424,7 +424,7 @@ def test_canvas_video_relay_keeps_canvas_caption_script():
             "app_scope": "canvas",
             "backend_url": "http://canvas-backend",
             "canvas_item_id": "video-node",
-            "video_caption_script": "Keep walking toward the sunrise.",
+            "generate_audio": True,
         }
     ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
         result = json.loads(
@@ -434,7 +434,41 @@ def test_canvas_video_relay_keeps_canvas_caption_script():
         )
 
     assert result["status"] == "success"
-    assert captured["json"]["caption_script"] == "Keep walking toward the sunrise."
+    assert result["result"]["canvas_item_id"] == "video-node"
+    assert captured["json"]["generate_audio"] is True
+    assert "caption_script" not in captured["json"]
+    assert captured["json"]["prompt"] == "A cinematic sunrise"
+
+
+def test_canvas_video_relay_preserves_explicit_caption_opt_out():
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    prompt = "A silent landscape. No captions, subtitles, dialogue, or on-screen text."
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_item_id": "video-node",
+            "user_message": prompt,
+            "generate_audio": False,
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": prompt, "provider": "peanut-video", "model": "seedance", "generate_audio": False}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["prompt"] == prompt
 
 
 def test_canvas_image_relay_targets_newly_created_image_node():
@@ -464,6 +498,7 @@ def test_canvas_image_relay_targets_newly_created_image_node():
         )
 
     assert result["status"] == "success"
+    assert result["result"]["canvas_item_id"] == "image-node"
     assert captured["json"]["canvas_item_id"] == "image-node"
     assert captured["json"]["tool_call_id"] == "image-call-1"
 
@@ -768,6 +803,37 @@ def test_canvas_image_recovery_connects_references_to_existing_output():
         "source_item_id": "image-reference",
         "target_item_id": "image-node",
     }]
+
+
+def test_image_keyframe_without_references_recovers_prompt_first_graph():
+    created_bodies = []
+
+    def fake_post(url, **kwargs):
+        assert url.endswith("/internal/api/v1/canvas/nodes")
+        body = kwargs["json"]
+        created_bodies.append(body)
+        item_type = body["item_type"]
+        return SimpleNamespace(
+            status_code=201,
+            text=json.dumps({"item": {"id": f"{item_type}-node"}}),
+            json=lambda item_type=item_type: {"item": {"id": f"{item_type}-node"}},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "user_message": "[skill:image-keyframe] Compose a polished hero keyframe",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        output_node_id, error = _ensure_canvas_image_generation_graph("Refined image prompt")
+
+    assert error == ""
+    assert output_node_id == "image-node"
+    assert [body["item_type"] for body in created_bodies] == ["text", "image"]
+    assert created_bodies[0]["content"]["text"] == "Refined image prompt"
+    assert created_bodies[1]["source_item_ids"] == ["text-node"]
 
 
 def test_canvas_image_relay_without_asset_is_failure():
@@ -1132,6 +1198,37 @@ def test_canvas_video_graph_hides_source_id_when_reused_node_connection_fails():
     assert source_id not in error
 
 
+def test_cinematic_shot_without_references_recovers_prompt_first_graph():
+    created_bodies = []
+
+    def fake_post(url, **kwargs):
+        assert url.endswith("/internal/api/v1/canvas/nodes")
+        body = kwargs["json"]
+        created_bodies.append(body)
+        item_type = body["item_type"]
+        return SimpleNamespace(
+            status_code=201,
+            text=json.dumps({"item": {"id": f"{item_type}-node"}}),
+            json=lambda item_type=item_type: {"item": {"id": f"{item_type}-node"}},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "user_message": "[skill:video-cinematic-shot] Direct a cinematic shot",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        output_node_id, error = _ensure_canvas_video_generation_graph("Refined video prompt")
+
+    assert error == ""
+    assert output_node_id == "video-node"
+    assert [body["item_type"] for body in created_bodies] == ["text", "video"]
+    assert created_bodies[0]["content"]["text"] == "Refined video prompt"
+    assert created_bodies[1]["source_item_ids"] == ["text-node"]
+
+
 def test_canvas_timeout_does_not_inherit_edu_only_value():
     with patch.dict(os.environ, {"ALPHART_EDU_BACKEND_TOOL_TIMEOUT_SECONDS": "180"}, clear=True):
         with alphart_context({"app_scope": "canvas"}):
@@ -1278,6 +1375,45 @@ def test_canvas_video_prompt_audio_preference_overrides_ui_fallback():
         result = json.loads(
             _handle_alphart_generate_video(
                 {"prompt": "Animate the scene", "provider": "peanut-video", "model": "seedance"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["generate_audio"] is False
+
+
+def test_canvas_video_narration_reference_disables_provider_audio():
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    narration = {"s3_object_name": "org/doc/narration.mp3", "role": "narration"}
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_item_id": "video-node",
+            "input_audio": [narration],
+            "generate_audio": True,
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post), patch(
+        "tools.alphart_tools._resolve_jwell_media_urls",
+        return_value=[{"url": "https://example.test/narration.mp3", "role": "narration"}],
+    ):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {
+                    "prompt": "Animate the scene",
+                    "provider": "peanut-video",
+                    "model": "seedance",
+                    "generate_audio": True,
+                }
             )
         )
 

@@ -13,8 +13,8 @@ and do not create extra Canvas nodes unless the user explicitly requests one.
 
 Treat the Canvas context as authoritative:
 
-- Connected text/note nodes are visual narrative direction. Canvas owns approved
-  voiceover and caption rendering outside Seedance.
+- Connected text/note nodes provide visual narrative, dialogue, sound, and
+  visible-caption direction for the selected video model.
 - `@Image as first frame` anchors the opening composition.
 - `@Image as last frame` anchors the closing composition.
 - `@Image as keyframe`, `@Image as intermediate frame`, or an unqualified image
@@ -43,18 +43,18 @@ or report a concrete error.
    short timed beats with a clear ending. Do not pad with repetitive motion.
 5. State lighting, material, atmosphere, grade, and realism/stylization only
    when they materially improve the intended result.
-6. Do not add dialogue, spoken words, captions, subtitles, or text overlays to
-   the Seedance prompt. Canvas renders the approved TTS voiceover and SRT itself.
-7. When a soundtrack/BGM reference is attached, preserve it and disable
-   provider-generated audio. When no soundtrack/BGM reference exists, allow the
-   provider to generate ambient audio only.
+6. Put requested dialogue, sound, and visible captions in the Seedance prompt so
+   the model generates and synchronizes them natively in the requested language.
+7. When any playable audio track such as soundtrack, BGM, narration, or dialogue
+   is attached, preserve it and set `generate_audio=false`. A voice-print-only
+   reference keeps native audio enabled unless the user disables it.
 
 ## Prompt Shape
 
 Write a concise cinematic instruction in this order:
 
 `subject and continuity; setting and lighting; action; camera/framing/motion;
-temporal progression; visual finish; ambient sound constraints.`
+temporal progression; visual finish; dialogue, sound, and caption constraints.`
 
 For longer clips, use compact segments such as `0-3s`, `3-7s`, and `7-10s`.
 Mention first and last frame constraints in prose only when those references
@@ -64,10 +64,9 @@ exist. Do not promise exact interpolation from an intermediate reference.
 
 Call `canvas_generate_video` exactly once with the selected Canvas video node,
 its supplied image/audio references, the selected model, ratio, resolution, exact
-requested duration, and a concise ready-to-speak `caption_script`. The caption
-script is used by Canvas to generate the voiceover and SRT; it is separate from
-the visual video prompt. The Canvas relay owns storage, task polling, billing,
-and provider-specific media roles.
+requested duration, native-audio decision, and one production prompt containing
+the requested dialogue and visible-caption direction. The Canvas relay owns
+storage, task polling, billing, and provider-specific media roles.
 
 ## Upstream
 

@@ -254,6 +254,40 @@ def _canvas_generation_source_ids() -> List[str]:
     return list(dict.fromkeys(str(value).strip() for value in source_ids if str(value).strip()))
 
 
+def _canvas_selected_skill() -> str:
+    """Return the explicit Canvas skill marker selected for this turn."""
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
+        return ""
+    text = str(_ctx().get("user_message") or _ctx().get("canvas_prompt_context") or "")
+    matches = re.findall(r"\[skill:([^\]]+)\]", text, flags=re.IGNORECASE)
+    return str(matches[-1]).strip().lower() if matches else ""
+
+
+def _ensure_specialist_prompt_node(media_type: str, prompt: str, source_ids: List[str]) -> Tuple[str, str]:
+    """Create the persisted brief required by a no-reference specialist skill."""
+    required_skill = {
+        "image": "image-keyframe",
+        "video": "video-cinematic-shot",
+    }.get(str(media_type or "").strip().lower())
+    if not required_skill or _canvas_selected_skill() != required_skill or source_ids:
+        return "", ""
+    existing_id = _latest_canvas_created_node_id("text") or _latest_canvas_created_node_id("note")
+    if existing_id:
+        return existing_id, ""
+    result = _handle_canvas_create_node({
+        "canvas_id": _ctx().get("canvas_id"),
+        "item_type": "text",
+        "title": "Prompt",
+        "text": prompt,
+    })
+    if not _canvas_tool_succeeded(result):
+        return "", "Canvas prompt node creation failed"
+    prompt_node_id = _latest_canvas_created_node_id("text")
+    if not prompt_node_id:
+        return "", "Canvas prompt node was not created"
+    return prompt_node_id, ""
+
+
 def _connect_canvas_generation_sources(output_node_id: str, source_ids: Iterable[Any]) -> str:
     """Attach references to an output node the model created earlier in this turn."""
     output_node_id = str(output_node_id or "").strip()
@@ -1505,6 +1539,8 @@ def _generate_chunked_audio(
         "usage": total_usage,
         "_credit_settled": True,
     }
+    if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
+        result["canvas_item_id"] = canvas_item_id
     return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
 
 
@@ -1616,6 +1652,11 @@ def _ensure_canvas_image_generation_graph(prompt: str, force_new: bool = False) 
     )
     source_ids = _canvas_generation_source_ids()
 
+    if not prompt_node_id:
+        prompt_node_id, prompt_error = _ensure_specialist_prompt_node("image", prompt, source_ids)
+        if prompt_error:
+            return "", prompt_error
+
     if prompt_node_id:
         source_ids.append(prompt_node_id)
         source_ids = list(dict.fromkeys(source_ids))
@@ -1672,6 +1713,11 @@ def _ensure_canvas_video_generation_graph(prompt: str, force_new: bool = False) 
     elif not _ctx().get("_canvas_generation_submitted"):
         prompt_node_id = _latest_canvas_created_node_id("text") or _latest_canvas_created_node_id("note")
         output_node_id = _latest_canvas_created_node_id("video")
+
+    if not prompt_node_id:
+        prompt_node_id, prompt_error = _ensure_specialist_prompt_node("video", prompt, source_ids)
+        if prompt_error:
+            return "", prompt_error
 
     if not output_node_id:
         output_args: Dict[str, Any] = {
@@ -2709,6 +2755,8 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
         "_credit_settled": bool(asset.get("_credit_settled")),
         "_credit_reference_id": asset.get("_credit_reference_id"),
     }
+    if is_canvas:
+        result["canvas_item_id"] = str(payload.get("canvas_item_id") or "").strip()
     if is_canvas and not str(result.get("s3_object_name") or "").strip():
         return _tool_error("Canvas image relay returned no stored image asset")
     if is_canvas:
@@ -2773,7 +2821,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         canvas_audio = [entry for entry in (_ctx().get("input_audio") or []) if isinstance(entry, dict)]
         requested_audio = [entry for entry in (args.get("input_audio") or []) if isinstance(entry, dict)]
         # Directly connected Canvas audio is authoritative. Preserve any additional
-        # model-selected references without allowing it to discard the soundtrack.
+        # model-selected references without allowing it to discard an audio track.
         merged_audio = list(canvas_audio)
         known_audio = {
             str(entry.get("s3_object_name") or entry.get("object_key") or entry.get("url") or "")
@@ -2787,15 +2835,15 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         args["input_audio"] = merged_audio
     elif not args.get("input_audio") and _ctx().get("input_audio"):
         args["input_audio"] = _ctx().get("input_audio")
-    has_canvas_soundtrack = (
+    has_canvas_audio_track = (
         str(_ctx().get("app_scope") or "").strip().lower() == "canvas"
         and any(
-            str((entry or {}).get("role") or "").strip().lower() in {"soundtrack", "background_music"}
+            str((entry or {}).get("role") or "soundtrack").strip().lower() != "voiceprint"
             for entry in (args.get("input_audio") or [])
             if isinstance(entry, dict)
         )
     )
-    if has_canvas_soundtrack:
+    if has_canvas_audio_track:
         args["generate_audio"] = False
     elif "generate_audio" not in args:
         # The user's explicit audio instruction wins over the tool and product
@@ -2867,14 +2915,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         "tool_call_id": generation_tool_call_id if is_canvas else (kwargs.get("tool_call_id") or args.get("tool_call_id")),
     }
     if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
-        payload.update({
-            # The tool argument is authoritative when the model supplied one;
-            # the request-level value covers the selected-node composer path.
-            "caption_script": str(args.get("caption_script") or _ctx().get("video_caption_script") or "").strip(),
-            "audio_model": _ctx().get("audio_model"),
-            "language_type": _ctx().get("audio_language_type"),
-            "create_if_missing": auto_created_video_node,
-        })
+        payload["create_if_missing"] = auto_created_video_node
         payload.update({
             "user_id": _ctx().get("user_id"),
             "user_uuid": _ctx().get("user_uuid"),
@@ -3016,6 +3057,8 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         "provider": selected_provider,
         "model": selected_model,
     }
+    if is_canvas:
+        result["canvas_item_id"] = canvas_item_id
     return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
 
 
@@ -3264,6 +3307,8 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
         "_credit_settled": bool(asset.get("_credit_settled")),
         "_credit_reference_id": asset.get("_credit_reference_id"),
     }
+    if is_canvas and not audio_chunk_request:
+        result["canvas_item_id"] = canvas_item_id
     return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
 
 
@@ -4213,17 +4258,13 @@ CANVAS_GENERATE_VIDEO_SCHEMA = {
             },
             "input_audio": {
                 "type": "array",
-                "items": {"type": "object", "properties": {"s3_object_name": {"type": "string"}, "url": {"type": "string"}, "filename": {"type": "string"}, "role": {"type": "string", "enum": ["soundtrack", "background_music", "voiceprint"]}}},
-                "description": "Soundtrack audio references. Canvas sends these from connected sound nodes.",
+                "items": {"type": "object", "properties": {"s3_object_name": {"type": "string"}, "url": {"type": "string"}, "filename": {"type": "string"}, "role": {"type": "string", "description": "Audio role such as soundtrack, background_music, narration, dialogue, or voiceprint."}}},
+                "description": "Audio references from connected sound nodes. Any supplied track except a voice-print-only reference disables provider-generated audio.",
             },
             "duration_seconds": {"type": "integer", "description": "Requested video duration in seconds."},
             "resolution": {"type": "string", "description": "Video resolution, for example 480p, 720p, 1080p."},
             "aspect_ratio": {"type": "string", "description": "Video aspect ratio, for example 16:9 or 9:16."},
             "generate_audio": {"type": "boolean", "description": "Whether the generated video should include audio."},
-            "caption_script": {
-                "type": "string",
-                "description": "Ready-to-speak caption/voiceover script for Canvas. Keep it within the requested duration; do not put it in the visual video prompt.",
-            },
             "wait": {"type": "boolean", "default": False},
         },
         "required": ["prompt"],
@@ -4294,7 +4335,7 @@ GENERATE_IMAGE_SCHEMA["parameters"]["properties"]["resolution"]["description"] =
 GENERATE_VIDEO_SCHEMA = _generic_generation_schema(
     CANVAS_GENERATE_VIDEO_SCHEMA,
     "generate_video",
-    {"caption_script", "input_audio"},
+    {"input_audio"},
 )
 GENERATE_AUDIO_SCHEMA = _generic_generation_schema(CANVAS_GENERATE_AUDIO_SCHEMA, "generate_audio")
 GENERATE_VIDEO_SCHEMA["description"] = (

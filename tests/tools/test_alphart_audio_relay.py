@@ -78,6 +78,7 @@ def test_canvas_audio_relay_targets_newly_created_audio_node():
         )
 
     assert result["status"] == "success"
+    assert result["result"]["canvas_item_id"] == "new-audio-node"
     assert captured["json"]["canvas_item_id"] == "new-audio-node"
 
 

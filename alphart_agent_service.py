@@ -75,7 +75,6 @@ class AlphartEduChatRequest(BaseModel):
     aspect_ratio: str = ""
     resolution: str = ""
     generate_audio: bool = False
-    video_caption_script: str = ""
     script_only: bool = False
     approved_audio_script: str = ""
     user_id: str = ""
@@ -3648,19 +3647,21 @@ MEDIA RULES:
 - The selected Canvas workflow is preloaded below. Apply it before dispatching
   media; do not skip it, expose it as a planning document, or substitute an
   external CLI, API key, local file, or non-Canvas storage path.
+- For [skill:image-keyframe] and [skill:video-cinematic-shot], follow the
+  marker-specific graph contract in the Canvas Graph Skill. A no-reference run
+  requires a persisted Prompt node before its media output.
 - Canvas-only workflows are available through skills_list and skill_view in the
   Canvas app scope. Do not load Edu-only skills for a Canvas request.
 - For an image, video, or audio generation request, call the matching Canvas tool
   immediately. Use the selected provider/model metadata and do not invent values.
 - Preserve the requested duration, ratio, quality, and model. For video, pass the
   exact requested duration (5-15 seconds) when supplied.
-- Canvas generates the approved voiceover and burns its SRT separately. For every
-  Canvas video request, write a concise ready-to-speak `caption_script` from the
-  user's brief and connected text/caption nodes, keep it within the requested
-  duration, and pass it in the `canvas_generate_video` tool arguments. Never put
-  caption or dialogue text into the visual video-provider prompt. With no
-  soundtrack/BGM reference, let the video provider generate ambient audio; with a
-  soundtrack/BGM reference, pass that reference and disable provider-generated audio.
+- For every Canvas video request, ask the selected video model to generate its
+  synchronized dialogue, sound, and visible captions natively in the requested
+  language. Set `generate_audio=true` unless an audio track (such as background
+  music or narration) is connected or the user explicitly disables audio. A
+  voice-print-only reference does not disable native audio. Do not create a separate TTS,
+  voiceover, caption-script, SRT, or subtitle-burning workflow.
 - For audio generation, first produce a ready-to-speak script in the requested
   language, then call canvas_generate_audio with that exact script. The script must
   fit the requested duration and must not be a generic status message.
@@ -4215,6 +4216,8 @@ def _canvas_generation_request_is_writable(text: str) -> bool:
     normalized = _string(text).strip()
     if not normalized or _canvas_non_execution_question(normalized) or _canvas_negated_generation_request(normalized):
         return False
+    if re.search(r"\[skill:(?:image-keyframe|video-cinematic-shot)\]", normalized, flags=re.IGNORECASE):
+        return True
     if _canvas_generation_advisory_request(normalized):
         return False
     # Advice about a reference is still read-only unless the generation action
@@ -4355,6 +4358,10 @@ def _canvas_workflow_item_type(req: AlphartEduChatRequest) -> str:
         "create_new", "generate_into_existing", "refine_existing", "use_as_reference",
     }:
         return requested_node_type
+    if re.search(r"\[skill:image-keyframe\]", text, flags=re.IGNORECASE):
+        return "image"
+    if re.search(r"\[skill:video-cinematic-shot\]", text, flags=re.IGNORECASE):
+        return "video"
     # An explicit native-language media request or Canvas skill is stronger
     # than the current UI selection. A selected image is often the keyframe
     # for a new downstream video and must not force the image workflow.
@@ -5534,7 +5541,6 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "image_aspect_ratio": req.image_aspect_ratio,
         "ai_generation_watermark": bool(req.ai_generation_watermark),
         "generate_audio": bool(req.generate_audio),
-        "video_caption_script": req.video_caption_script,
         "script_only": bool(req.script_only),
         "approved_audio_script": req.approved_audio_script,
         "audio_language_type": _normalize_audio_language_type(req.audio_language_type) or _ui_audio_language_type(req.ui_language),
