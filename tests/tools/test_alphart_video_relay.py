@@ -5,7 +5,7 @@ import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tools.alphart_tools import _backend_tool_timeout, _ensure_canvas_image_generation_graph, _ensure_canvas_video_generation_graph, _handle_alphart_generate_image, _handle_alphart_generate_video, _relay_url, alphart_context
+from tools.alphart_tools import _backend_tool_timeout, _ensure_canvas_image_generation_graph, _ensure_canvas_video_generation_graph, _explicit_audio_preference, _handle_alphart_generate_image, _handle_alphart_generate_video, _relay_url, alphart_context
 
 
 def test_canvas_media_relay_uses_canvas_backend_proxy(monkeypatch):
@@ -54,6 +54,107 @@ def test_edu_video_relay_does_not_send_canvas_caption_script():
     assert result["status"] == "success"
     assert captured["url"] == "http://edu-backend/internal/v1/videos"
     assert "caption_script" not in captured["json"]
+
+
+def test_edu_video_relay_defaults_to_generated_audio():
+    captured = {}
+
+    def fake_post(_url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "edu",
+            "backend_url": "http://edu-backend",
+            "user_message": "Generate a video of a sunrise",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "A cinematic sunrise", "provider": "peanut-video", "model": "seedance"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["generate_audio"] is True
+
+
+def test_edu_video_relay_honors_explicit_mute_request():
+    captured = {}
+
+    def fake_post(_url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "edu",
+            "backend_url": "http://edu-backend",
+            "user_message": "Generate a video, but do not include audio",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "A cinematic sunrise", "provider": "peanut-video", "model": "seedance"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["generate_audio"] is False
+
+
+def test_video_audio_preference_keeps_requested_narration_without_music():
+    assert _explicit_audio_preference("Generate a video with narration but no background music") is True
+
+
+def test_video_audio_preference_does_not_mute_silent_subject_matter():
+    assert _explicit_audio_preference("Generate a video explaining silent letters with narration") is True
+
+
+def test_video_audio_preference_honors_explicit_silent_output_request():
+    assert _explicit_audio_preference("Generate a video and make it silent") is False
+
+
+def test_edu_video_relay_preserves_explicit_tool_audio_decision():
+    captured = {}
+
+    def fake_post(_url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "edu",
+            "backend_url": "http://edu-backend",
+            "user_message": "Generate a video",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {
+                    "prompt": "A cinematic sunrise",
+                    "provider": "peanut-video",
+                    "model": "seedance",
+                    "generate_audio": False,
+                }
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["generate_audio"] is False
 
 
 def test_video_relay_extracts_duration_from_user_message():

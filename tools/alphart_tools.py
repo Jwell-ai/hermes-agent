@@ -671,8 +671,11 @@ def _explicit_audio_preference(text: Any) -> Optional[bool]:
     """Read an explicit audio on/off instruction without changing Edu defaults."""
     value = str(text or "")
     no_audio = re.search(
-        r"(?:without|no|mute|silent|disable(?:d)?|不要|无|無|没有|沒有|不含|不带|不帶)\s*(?:any\s+)?"
-        r"(?:audio|sound|music|sound\s+track|soundtrack|bgm|background\s+music|声音|聲音|音频|音訊|配乐|背景音乐)",
+        r"(?:(?:make|keep)\s+(?:it|the\s+video)\s+(?:mute(?:d)?|silent)\b|"
+        r"(?:mute(?:d)?|silent)\s+(?:video|output)\b|"
+        r"(?:without|no|do\s+not\s+(?:include|enable)|don't\s+(?:include|enable)|disable(?:d)?|"
+        r"不要|无|無|没有|沒有|不含|不带|不帶)\s*(?:any\s+)?"
+        r"(?:audio|sound|声音|聲音|音频|音訊))",
         value,
         flags=re.IGNORECASE,
     )
@@ -680,7 +683,8 @@ def _explicit_audio_preference(text: Any) -> Optional[bool]:
         return False
     with_audio = re.search(
         r"(?:with|include|including|enable(?:d)?|要|有)\s*(?:(?:an?|the)\s+)?"
-        r"(?:audio|sound|music|sound\s+track|soundtrack|bgm|background\s+music|声音|聲音|音频|音訊|配乐|背景音乐)",
+        r"(?:audio|sound|voiceover|narration|music|sound\s+track|soundtrack|bgm|background\s+music|"
+        r"声音|聲音|音频|音訊|旁白|配音|配乐|背景音乐)",
         value,
         flags=re.IGNORECASE,
     )
@@ -2793,16 +2797,15 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     )
     if has_canvas_soundtrack:
         args["generate_audio"] = False
-    elif str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
-        # The user's explicit audio instruction wins over the UI/default. When
-        # the prompt is silent, keep the selected Canvas option as the fallback.
+    elif "generate_audio" not in args:
+        # The user's explicit audio instruction wins over the tool and product
+        # defaults when Hermes omitted the argument. Canvas keeps its selected
+        # option; Edu defaults to native audio.
         preference = _explicit_audio_preference(_ctx().get("user_message"))
         if preference is not None:
             args["generate_audio"] = preference
-        elif "generate_audio" not in args:
-            args["generate_audio"] = bool(_ctx().get("generate_audio"))
-    elif "generate_audio" not in args:
-        args["generate_audio"] = bool(_ctx().get("generate_audio"))
+        else:
+            args["generate_audio"] = bool(_ctx().get("generate_audio")) if is_canvas else True
     tool = _pick_tool("video", args)
     _set_tool_defaults(args, tool)
     args.setdefault("wait", False)
@@ -4299,6 +4302,11 @@ GENERATE_VIDEO_SCHEMA["description"] = (
     "Use this for text-to-video and image-to-video tasks. Video result polling stays in the Go backend."
 )
 GENERATE_VIDEO_SCHEMA["parameters"]["properties"]["tool_id"]["description"] = "Selected video tool id, when known."
+GENERATE_VIDEO_SCHEMA["parameters"]["properties"]["generate_audio"] = {
+    "type": "boolean",
+    "default": True,
+    "description": "Whether the generated video should include audio. Defaults to true in Alphart Edu.",
+}
 GENERATE_AUDIO_SCHEMA["description"] = (
     "Generate spoken audio through the selected Alphart Edu TTS/audio model. "
     "Use this when the user requests audio as the output, including a spoken explanation, "
