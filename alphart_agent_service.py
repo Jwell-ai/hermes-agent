@@ -197,6 +197,22 @@ _CANVAS_REFERENCE_ANALYSIS_RE = re.compile(
     r"|分析|总结|總結|概括|描述|看看|里面有什么|裡面有什麼|是什么|是什麼|讲了什么|講了什麼|转录|轉錄|听写|聽寫|参考|參考|头脑风暴|想法|建议",
     re.IGNORECASE,
 )
+_CANVAS_ADVISORY_CLAUSE_RE = re.compile(
+    r"^(?:(?:please|kindly|can you|could you|would you|i want|i need|i'd like)\s+)*"
+    r"(?:(?:give me|show me|provide|share|list)\s+|(?:explain|describe|compare|tell me(?: about)?)\s+(?:the\s+)?)?"
+    r"(?:(?:some|a few|more)\s+)?(?:ideas?|suggest(?:ions?)?|options?|ways?|recommend(?:ations?)?|tips?|advice|brainstorm(?:ing)?)\b",
+    re.IGNORECASE,
+)
+_CANVAS_GENERATION_ADVISORY_RE = re.compile(
+    r"^(?:(?:please|kindly|can you|could you|would you|i want|i need|i'd like)\s+)*(?:to\s+)?"
+    r"(?:create|generate|make|draw|render|produce|design|paint|sketch|illustrate|regenerate|redo|remake|replace|inpaint|edit|transform|turn|convert|animate|upscale|enhance|improve|refine)\s+"
+    r"(?:(?:some|a few|more|new)\s+)?(?:ideas?|suggest(?:ions?)?|options?|ways?|recommend(?:ations?)?|tips?|advice|brainstorm(?:ing)?)\b"
+    r"|^(?:请帮我|请直接|请)?(?:创建|生成|制作|设计|绘画|素描|插画|重新生成|重做|重制|替换|局部重绘|绘制|渲染|产出|编辑|转换|转成|变成|动画化|放大|增强|优化|修改)"
+    r"(?:一些|几个|更多|新的)?(?:想法|建议|选项|方案|思路|点子|创意)"
+    r"|^(?:(?:please|kindly|can you|could you|would you)\s+)*(?:give me|show me|provide|share|list)\s+"
+    r"(?:(?:some|a few|more)\s+)?(?:ideas?|suggest(?:ions?)?|options?|ways?|recommend(?:ations?)?|tips?|advice|brainstorm(?:ing)?)\b",
+    re.IGNORECASE,
+)
 _CANVAS_UNSUPPORTED_GRAPH_MUTATION_RE = re.compile(
     r"\b(?:disconnect|unlink|delete|remove)\b|断开|解绑|删除|移除",
     re.IGNORECASE,
@@ -2108,6 +2124,29 @@ def _canvas_media_tool_call_id(messages: List[Any]) -> str:
     return ""
 
 
+def _canvas_response_item_id(req: AlphartEduChatRequest, context: Dict[str, Any], tool_call_id: str) -> str:
+    """Resolve the node changed by this turn for the Canvas response envelope."""
+    canvas_item_id = _string(req.canvas_item_id).strip()
+    if not canvas_item_id:
+        targets_by_call = context.get("_canvas_generation_targets_by_call") or {}
+        canvas_item_id = _string(targets_by_call.get(tool_call_id)).strip()
+    if not canvas_item_id:
+        canvas_item_id = _string(context.get("canvas_edit_target_id")).strip()
+    preferred_type = _string(req.force_media_intent or req.canvas_item_type or req.requested_node_type).strip().lower()
+    created_nodes = context.get("_canvas_created_nodes") or []
+    for node in reversed(created_nodes):
+        if not isinstance(node, dict):
+            continue
+        item_type = _string(node.get("item_type")).strip().lower()
+        if canvas_item_id or (preferred_type and item_type != preferred_type):
+            continue
+        candidate_id = _string(node.get("id")).strip()
+        if candidate_id:
+            canvas_item_id = candidate_id
+            break
+    return canvas_item_id
+
+
 def _canvas_graph_tool_error(messages: List[Any]) -> str:
     attempts = _canvas_graph_tool_attempts(messages)
     repaired_attempts = _canvas_graph_tool_repaired_attempts(attempts)
@@ -3050,6 +3089,17 @@ def _fallback_storybook_pages(user_message: str) -> List[Dict[str, Any]]:
 	]
 
 
+def _forced_canvas_edit_target(intent: str, user_message: str) -> str:
+    """Use the selected media node only for an explicit imperative edit."""
+    if _string(_ctx().get("app_scope")).strip().lower() != "canvas":
+        return ""
+    selected_id = _string(_ctx().get("selected_canvas_item_id")).strip()
+    selected_type = _string(_ctx().get("selected_canvas_item_type")).strip().lower()
+    if not selected_id or selected_type != intent:
+        return ""
+    return selected_id if _canvas_media_edit_request_is_imperative(user_message) else ""
+
+
 def _forced_media_tool_messages(
     user_message: str,
     response_messages: List[Any],
@@ -3106,6 +3156,10 @@ def _forced_media_tool_messages(
                 args["input_images"] = input_images
             if aspect_ratio:
                 args["aspect_ratio"] = aspect_ratio
+            target_id = _forced_canvas_edit_target(intent, user_message) if quantity == 1 else ""
+            if target_id:
+                args["canvas_item_id"] = target_id
+                args["canvas_operation"] = "edit_existing"
             result = _handle_alphart_generate_image(args)
             if _tool_result_success(result):
                 success_count += 1
@@ -3156,9 +3210,16 @@ def _forced_media_tool_messages(
             "tool_call_id": call_id,
             "language_type": language_type,
         }
-        duration_seconds = _video_duration_seconds_from_text(user_message)
-        if duration_seconds:
-            args["duration_seconds"] = duration_seconds
+        # Canvas prompt values are authoritative over the UI fallback. Edu's
+        # legacy audio flow intentionally keeps its existing request behavior.
+        if _string(_ctx().get("app_scope")).lower() == "canvas":
+            duration_seconds = _video_duration_seconds_from_text(user_message)
+            if duration_seconds:
+                args["duration_seconds"] = duration_seconds
+        target_id = _forced_canvas_edit_target(intent, user_message)
+        if target_id:
+            args["canvas_item_id"] = target_id
+            args["canvas_operation"] = "edit_existing"
         print(
             f"[alphart-agent] forcing audio generation session_intent={intent} tool_count={len(_selected_media_tools(intent))}",
             flush=True,
@@ -3205,6 +3266,10 @@ def _forced_media_tool_messages(
     aspect_ratio = _aspect_ratio_from_text(user_message)
     if aspect_ratio:
         args["aspect_ratio"] = aspect_ratio
+    target_id = _forced_canvas_edit_target(intent, user_message)
+    if target_id:
+        args["canvas_item_id"] = target_id
+        args["canvas_operation"] = "edit_existing"
     print(
         f"[alphart-agent] forcing video generation session_intent={intent} tool_count={len(_selected_media_tools(intent))}",
         flush=True,
@@ -3536,18 +3601,25 @@ NODE OWNERSHIP RULES:
   to English merely because the tool schema or provider metadata is English.
 - When canvas_item_id is present, operate ONLY on that existing node. Never create,
   replace, or connect another node unless the user explicitly asks to do so.
+- For Canvas media tools, set canvas_operation to edit_existing when the user's
+  request transforms the selected/existing media node, and create_new when it asks
+  for a new output or downstream result. This is a model-level intent decision;
+  do not infer it from a fixed keyword list.
 - When canvas_item_id is absent and the user asks to create content, use
-  the Canvas Graph Skill: for a media request with supplied image/video references,
-  create only the requested output node, connect it to those references, and generate
-  only into the output node. Do not create an intermediate Prompt node unless the user
-  explicitly asks for one. Without supplied media references, create a Prompt text node
-  with the enriched prompt, create the requested output node, connect the graph, and
-  generate only into the output node. Do not stop after creating nodes.
+  the Canvas Graph Skill to decide the smallest useful graph. For a media request with
+  supplied image/video references, create only the requested output node, connect it to
+  those references, and generate only into the output node. Do not create an intermediate
+  Prompt node unless the user explicitly asks for one or the selected workflow requires
+  a persisted brief. Without supplied media references, put the enriched prompt on the
+  output node unless the user or workflow explicitly requires a separate Prompt node.
+  Do not stop after creating nodes.
 - When canvas_item_id is absent but a selected text node is supplied in graph context
   and the user asks for media, use it as an input and create a downstream media graph.
 - Treat reference_item_ids and the supplied connected node context as the complete
-  set of references. A Prompt node is an intentional persisted design artifact for a
-  new media graph; do not create extra temporary caption or soundtrack nodes.
+  set of references. Do not turn selected context into a persisted edge unless it is
+  a named input or the user asks for that relationship. Create a Prompt node only when
+  the user or selected workflow requires a persisted brief; do not create temporary
+  caption or soundtrack nodes.
 - When the current user message contains Canvas video references, use them for video
   analysis requests instead of claiming that video analysis is unavailable. Keep the
   opaque reference token inside the tool call only.
@@ -4084,6 +4156,12 @@ def _canvas_explicit_mutation_request(req: AlphartEduChatRequest) -> bool:
         or _canvas_unsupported_graph_mutation_request(text)
     ):
         return False
+    if _canvas_generation_advisory_request(text):
+        return False
+    if _string(req.force_media_intent).strip().lower() in {"image", "video", "audio"}:
+        return True
+    if _canvas_generation_request_is_writable(text):
+        return True
     if _canvas_reference_or_analysis_request(text) and not _canvas_text_has_explicit_mutation(text):
         return False
     if _canvas_text_refinement_request(text):
@@ -4109,6 +4187,33 @@ def _canvas_reference_or_analysis_request(text: str) -> bool:
     return not normalized or bool(_CANVAS_REFERENCE_ANALYSIS_RE.search(normalized) and not _CANVAS_IMPERATIVE_MEDIA_EDIT_RE.search(normalized))
 
 
+def _canvas_generation_advisory_request(text: str) -> bool:
+    """Keep pure generation advice read-only without masking a later action."""
+    normalized = _string(text).strip()
+    advisory_match = _CANVAS_GENERATION_ADVISORY_RE.match(normalized)
+    if not advisory_match:
+        return False
+    remainder = normalized[advisory_match.end():].strip()
+    if not remainder:
+        return True
+    return not _canvas_explicit_generation_clause(remainder)
+
+
+def _canvas_generation_request_is_writable(text: str) -> bool:
+    """Recognize a concrete generation request despite stale reference metadata."""
+    normalized = _string(text).strip()
+    if not normalized or _canvas_non_execution_question(normalized) or _canvas_negated_generation_request(normalized):
+        return False
+    if _canvas_generation_advisory_request(normalized):
+        return False
+    # Advice about a reference is still read-only unless the generation action
+    # appears in an imperative clause. A bare action word in a brainstorm such
+    # as "ideas to generate" must not enable mutation tools.
+    if _canvas_reference_or_analysis_request(normalized):
+        return _canvas_explicit_generation_clause(normalized) or _canvas_media_edit_request_is_imperative(normalized)
+    return bool(_CANVAS_GENERATION_ACTION_RE.search(normalized))
+
+
 def _canvas_read_only_turn(req: AlphartEduChatRequest) -> bool:
     if _request_app_scope(req) != "canvas":
         return False
@@ -4119,6 +4224,11 @@ def _canvas_read_only_turn(req: AlphartEduChatRequest) -> bool:
         return True
     if _canvas_negated_graph_mutation_request(text) or _canvas_unsupported_graph_mutation_request(text):
         return True
+    # A concrete generation verb wins over stale reference/analysis metadata.
+    # Keep the question and negation guards above first so explanatory or
+    # explicitly refused generation requests remain read-only.
+    if _canvas_generation_request_is_writable(text):
+        return False
     explicit_mutation = _canvas_explicit_mutation_request(req)
     return bool(
         (
@@ -4136,11 +4246,23 @@ def _canvas_explicit_generation_clause(text: str) -> bool:
     text = _string(text).strip().lower()
     separators = (
         " and then ", " and ", " then ", " also ",
+        " to ",
         "?", "？", "!", "！", ".", "。", ";", "；", ",", "，", ":", "：",
         "并且", "然后", "同时", "再", "并",
     )
     actions = ("create ", "generate ", "make ", "draw ", "render ", "produce ", "design ", "paint ", "sketch ", "illustrate ", "regenerate ", "redo ", "remake ", "replace ", "inpaint ", "edit ", "transform ", "turn ", "convert ", "animate ", "upscale ", "enhance ", "improve ", "refine ", "创建", "生成", "制作", "设计", "绘画", "素描", "插画", "重新生成", "重做", "重制", "替换", "局部重绘", "绘制", "渲染", "产出", "编辑", "转换", "转成", "变成", "动画化", "放大", "增强", "优化", "修改")
-    compound_edit_separators = {" and then ", " then ", " also ", "?", "？", "!", "！", ".", "。", ";", "；", "并且", "然后", "同时", "再", "并"}
+    compound_edit_separators = {" and then ", " then ", " also ", " to ", "?", "？", "!", "！", ".", "。", ";", "；", ",", "，", ":", "：", "并且", "然后", "同时", "再", "并"}
+    leading = text
+    while True:
+        previous = leading
+        for lead in ("please ", "kindly ", "could you ", "can you ", "would you ", "then ", "also ", "and ", "but ", "请帮我", "请直接", "请"):
+            if leading.startswith(lead):
+                leading = leading[len(lead):].strip()
+                break
+        if leading == previous:
+            break
+    if any(leading.startswith(action) for action in actions):
+        return True
     for separator in separators:
         search_start = 0
         while search_start < len(text):
@@ -4161,10 +4283,23 @@ def _canvas_explicit_generation_clause(text: str) -> bool:
                 if separator.strip() == "and" and not _CANVAS_EXPLICIT_OUTPUT_RE.match(suffix[len(action):]):
                     search_start = index + len(separator)
                     continue
-                is_question_like_punctuation = separator.strip() in {",", "，", ":", "："} and bool(
-                    re.match(r"^(?:how|why|when|where|what|which|who)\b|^(?:怎么|为什么|如何|什么|是否|哪)", text[:index].strip(), flags=re.IGNORECASE)
+                is_question_like_clause = (
+                    separator == " to "
+                    and bool(
+                        re.match(
+                            r"^(?:how|why|when|where|what|which|who|should|can|could|would|may|do|does|is|are|explain|tell me|whether)\b|^(?:怎么|为什么|如何|什么|是否|能不能|可不可以|哪|我该|应该|解释|说明|告诉我)",
+                            text[:index].strip(),
+                            flags=re.IGNORECASE,
+                        )
+                    )
                 )
-                if _CANVAS_MEDIA_EDIT_VERB_RE.fullmatch(action.strip()) and separator not in compound_edit_separators and not is_question_like_punctuation:
+                is_advisory_clause = separator.strip() in {"to", ",", "，", ":", "："} and bool(
+                    _CANVAS_ADVISORY_CLAUSE_RE.match(text[:index].strip())
+                )
+                if is_question_like_clause or is_advisory_clause:
+                    search_start = index + len(separator)
+                    continue
+                if _CANVAS_MEDIA_EDIT_VERB_RE.fullmatch(action.strip()) and separator not in compound_edit_separators:
                     search_start = index + len(separator)
                     continue
                 return True
@@ -5304,6 +5439,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
     canvas_audio_analysis_turn = (
         _request_app_scope(req) == "canvas"
         and not explicit_canvas_mutation
+        and not _canvas_generation_request_is_writable(_canvas_request_text(req))
         and not _canvas_negated_graph_mutation_request(_canvas_request_text(req))
         and not _canvas_unsupported_graph_mutation_request(_canvas_request_text(req))
         and (
@@ -5379,6 +5515,23 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         # Keep created-node IDs available across the per-attempt context copies
         # so the callback can identify a media result from a new-node workflow.
         "_canvas_created_nodes": [],
+        # Keep generation target ledgers available across the per-attempt
+        # context copies so the response can resolve the node used by a tool call.
+        "_canvas_generation_target_ids": [],
+        "_canvas_generation_targets_by_call": {},
+        # Keep natural-language routing in the Canvas agent, but make an
+        # explicit imperative edit target available to media tools when the
+        # model omits the optional canvas_item_id argument.
+        "canvas_edit_target_id": (
+            req.selected_canvas_item_id
+            if (
+                _request_app_scope(req) == "canvas"
+                and _string(req.selected_canvas_item_id).strip()
+                and _string(req.selected_canvas_item_type).strip().lower() in {"image", "video", "audio"}
+                and _canvas_media_edit_request_is_imperative(user_message)
+            )
+            else ""
+        ),
     }
     if _request_app_scope(req) == "canvas":
         context["multimodal_runtime"] = {
@@ -5945,19 +6098,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "error": empty_result_error or ((canvas_tool_error or SYSTEM_BUSY_MESSAGE) if current_tool_failed else _string(result.get("error"))),
     }
     if _request_app_scope(req) == "canvas":
-        canvas_item_id = _string(req.canvas_item_id).strip()
-        preferred_type = _string(req.force_media_intent or req.canvas_item_type or req.requested_node_type).strip().lower()
-        created_nodes = context.get("_canvas_created_nodes") or []
-        for node in reversed(created_nodes):
-            if not isinstance(node, dict):
-                continue
-            item_type = _string(node.get("item_type")).strip().lower()
-            if canvas_item_id or (preferred_type and item_type != preferred_type):
-                continue
-            candidate_id = _string(node.get("id")).strip()
-            if candidate_id:
-                canvas_item_id = candidate_id
-                break
+        canvas_item_id = _canvas_response_item_id(req, context, canvas_tool_call_id)
         if canvas_item_id:
             response["canvas_item_id"] = canvas_item_id
     if persisted_user_message is not None:

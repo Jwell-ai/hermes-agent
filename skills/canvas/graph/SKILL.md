@@ -18,7 +18,7 @@ This skill is loaded only for `app_scope=canvas`. It is the authoritative workfl
 First understand the request in its original language. Do not classify intent from a fixed keyword list and do not ask the frontend to classify it.
 
 - If `canvas_item_id` is present, operate only on that existing node. A request to generate or refine affects that node. Do not create a replacement node or silently redirect the result.
-- If the user explicitly asks for a new node, a downstream result, or a new design and no selected target is supplied, create the requested graph through the Canvas tools.
+- If the user explicitly asks for a new node, a downstream result, or a new design and no selected target is supplied, create only the nodes required by the chosen workflow through the Canvas tools.
 - If a selected node is a text/note node and the user asks for media creation, treat the selected text and any named references as inputs for a new downstream graph rather than overwriting the text node.
 - If the request is an edit, rename, move, resize, delete, or connection operation, perform only that operation.
 - A request to refine, rewrite, enrich, expand, polish, or improve a prompt/text/description without an explicit media-generation verb is text-only. Update the selected text node when one is supplied. If there is no selected text node and `canvas_item_id` is absent, create exactly one text node with the enriched result, concise title, and `text` content; do not answer with prose only and do not create an image, video, or audio node.
@@ -49,12 +49,12 @@ For a new graph, create only the nodes needed for the selected workflow and conn
 
 ## New Media Design Flow
 
-For a new image, video, or audio design, execute these steps in order. Use one tool call at a time and wait for each result.
+For a new image, video, or audio design, first decide whether the request needs a persisted Prompt/brief node. Use one tool call at a time and wait for each result.
 
 1. Comprehend the user's intent and write a production-ready prompt in the user's language or the language requested by the user.
-2. Create one text node with a concise summary title in that same language containing the enriched prompt with `canvas_create_node`.
-3. Create one output node of the requested type with a concise summary title in that same language using `canvas_create_node`. Keep its prompt/content empty or set it to the enriched prompt as appropriate.
-4. Pass every explicitly named input node id in `source_item_ids` on the output node. Keep the enriched Prompt node free of duplicate input edges unless the user explicitly asks to preserve that relationship on the Prompt itself; the Canvas backend persists source-to-target lines automatically and links the Prompt to the output. Also call `canvas_connect_nodes` only for a semantic edge not covered by those source ids. Do not create duplicate lines.
+2. Create a Prompt/brief text node only when the user explicitly asks for a prompt, plan, brief, or other persisted intermediate artifact, or when the selected specialist workflow requires one. Do not create one merely because a provider needs prompt text.
+3. Create one output node of the requested type with a concise summary title in that same language using `canvas_create_node`. Put the enriched generation prompt on that output node when no separate Prompt node is needed.
+4. Pass every explicitly named input node id in `source_item_ids` on the output node. The Canvas backend persists source-to-target lines automatically. Also call `canvas_connect_nodes` only for a semantic edge not covered by those source ids. Do not create duplicate lines.
 5. Generate only into the output node using the matching Canvas generation tool and its returned `canvas_item_id`.
 6. Treat an accepted asynchronous task as started, not completed. Let the Go backend poll and persist the result.
 

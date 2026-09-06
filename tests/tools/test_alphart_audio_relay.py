@@ -11,6 +11,7 @@ import requests
 from tools.alphart_tools import (
     _clean_audio_topic,
     _generate_chunked_audio,
+    _ensure_canvas_audio_generation_graph,
     _handle_alphart_generate_audio,
     _import_jwell_media,
     _relay_headers,
@@ -18,6 +19,352 @@ from tools.alphart_tools import (
     _video_duration_seconds_from_text,
     alphart_context,
 )
+
+
+def test_canvas_audio_recovery_connects_references_to_existing_output():
+    connections = []
+
+    def fake_connect(args):
+        connections.append(args)
+        return '{"status":"success"}'
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "canvas_id": "canvas-1",
+            "reference_item_ids": ["audio-reference"],
+            "_canvas_created_nodes": [{"id": "audio-node", "item_type": "audio"}],
+        }
+    ), patch("tools.alphart_tools._handle_canvas_connect_nodes", side_effect=fake_connect):
+        output_node_id, error = _ensure_canvas_audio_generation_graph("Generate the narration")
+
+    assert output_node_id == "audio-node"
+    assert error == ""
+    assert connections == [{
+        "canvas_id": "canvas-1",
+        "source_item_id": "audio-reference",
+        "target_item_id": "audio-node",
+    }]
+
+
+def test_canvas_audio_relay_targets_newly_created_audio_node():
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["json"] = kwargs["json"]
+        return type("Response", (), {
+            "status_code": 200,
+            "text": '{"data":[{"url":"https://canvas.test/audio.wav"}]}',
+            "json": lambda self: {"data": [{"url": "https://canvas.test/audio.wav"}]},
+        })()
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "selected_canvas_item_id": "old-audio-node",
+            "selected_canvas_item_type": "audio",
+            "_canvas_created_nodes": [{"id": "new-audio-node", "item_type": "audio"}],
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post), patch(
+        "tools.alphart_tools._jwell_relay_enabled", return_value=False
+    ):
+        result = json.loads(
+            _handle_alphart_generate_audio(
+                {"input": "A short narration.", "provider": "openai", "model": "gpt-4o-mini-tts"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["canvas_item_id"] == "new-audio-node"
+
+
+def test_canvas_audio_relay_uses_explicit_audio_node_for_edit():
+    captured = {}
+
+    def fake_post(_url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return type("Response", (), {
+            "status_code": 200,
+            "text": '{"data":[{"url":"https://canvas.test/audio.wav"}]}',
+            "json": lambda self: {"data": [{"url": "https://canvas.test/audio.wav"}]},
+        })()
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "selected_canvas_item_id": "audio-node",
+            "selected_canvas_item_type": "audio",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post), patch(
+        "tools.alphart_tools._jwell_relay_enabled", return_value=False
+    ):
+        result = json.loads(
+            _handle_alphart_generate_audio(
+                {
+                    "input": "A short narration.",
+                    "provider": "openai",
+                    "model": "gpt-4o-mini-tts",
+                    "canvas_item_id": "audio-node",
+                }
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["canvas_item_id"] == "audio-node"
+    assert captured["json"]["voice"] == "alloy"
+
+
+def test_canvas_audio_relay_uses_model_edit_operation_when_id_is_omitted():
+    captured = {}
+
+    def fake_post(_url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return type("Response", (), {
+            "status_code": 200,
+            "text": '{"data":[{"url":"https://canvas.test/audio.wav"}]}',
+            "json": lambda self: {"data": [{"url": "https://canvas.test/audio.wav"}]},
+        })()
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "selected_canvas_item_id": "audio-node",
+            "selected_canvas_item_type": "audio",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post), patch(
+        "tools.alphart_tools._jwell_relay_enabled", return_value=False
+    ):
+        result = json.loads(
+            _handle_alphart_generate_audio(
+                {
+                    "input": "A short narration.",
+                    "provider": "openai",
+                    "model": "gpt-4o-mini-tts",
+                    "canvas_operation": "edit_existing",
+                }
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["canvas_item_id"] == "audio-node"
+
+
+def test_canvas_audio_relay_creates_fresh_node_for_unqualified_generation():
+    captured = {}
+    created_bodies = []
+
+    def fake_post(url, **kwargs):
+        body = kwargs["json"]
+        if url.endswith("/internal/api/v1/canvas/nodes"):
+            created_bodies.append(body)
+            return type("Response", (), {
+                "status_code": 201,
+                "text": '{"item":{"id":"new-audio-node"}}',
+                "json": lambda self: {"item": {"id": "new-audio-node"}},
+            })()
+        captured["json"] = body
+        return type("Response", (), {
+            "status_code": 200,
+            "text": '{"data":[{"url":"https://canvas.test/audio.wav"}]}',
+            "json": lambda self: {"data": [{"url": "https://canvas.test/audio.wav"}]},
+        })()
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "selected_canvas_item_id": "old-audio-node",
+            "selected_canvas_item_type": "audio",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post), patch(
+        "tools.alphart_tools._jwell_relay_enabled", return_value=False
+    ):
+        result = json.loads(
+            _handle_alphart_generate_audio(
+                {"input": "A short narration.", "provider": "openai", "model": "gpt-4o-mini-tts"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert created_bodies[0]["item_type"] == "audio"
+    assert captured["json"]["canvas_item_id"] == "new-audio-node"
+
+
+def test_canvas_audio_create_new_ignores_existing_target():
+    captured = {}
+    created_bodies = []
+
+    def fake_post(url, **kwargs):
+        body = kwargs["json"]
+        if url.endswith("/internal/api/v1/canvas/nodes"):
+            created_bodies.append(body)
+            return type("Response", (), {
+                "status_code": 201,
+                "text": '{"item":{"id":"new-audio-node"}}',
+                "json": lambda self: {"item": {"id": "new-audio-node"}},
+            })()
+        captured["json"] = body
+        return type("Response", (), {
+            "status_code": 200,
+            "text": '{"data":[{"url":"https://canvas.test/audio.wav"}]}',
+            "json": lambda self: {"data": [{"url": "https://canvas.test/audio.wav"}]},
+        })()
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "canvas_item_id": "old-audio-node",
+            "canvas_item_type": "audio",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post), patch(
+        "tools.alphart_tools._jwell_relay_enabled", return_value=False
+    ):
+        result = json.loads(
+            _handle_alphart_generate_audio(
+                {
+                    "input": "A short narration.",
+                    "provider": "openai",
+                    "model": "gpt-4o-mini-tts",
+                    "canvas_operation": "create_new",
+                    "canvas_item_id": "audio-reference",
+                }
+            )
+        )
+
+    assert result["status"] == "success"
+    assert [body["item_type"] for body in created_bodies] == ["audio"]
+    assert captured["json"]["canvas_item_id"] == "new-audio-node"
+
+
+def test_canvas_audio_edit_rejects_untrusted_model_target():
+    captured = {}
+
+    def fake_post(_url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return type("Response", (), {
+            "status_code": 200,
+            "text": '{"data":[{"url":"https://canvas.test/audio.wav"}]}',
+            "json": lambda self: {"data": [{"url": "https://canvas.test/audio.wav"}]},
+        })()
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "selected_canvas_item_id": "selected-audio-node",
+            "selected_canvas_item_type": "audio",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post), patch(
+        "tools.alphart_tools._jwell_relay_enabled", return_value=False
+    ):
+        result = json.loads(
+            _handle_alphart_generate_audio(
+                {
+                    "input": "Rewrite the narration.",
+                    "provider": "openai",
+                    "model": "gpt-4o-mini-tts",
+                    "canvas_operation": "edit_existing",
+                    "canvas_item_id": "untrusted-reference-node",
+                }
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["canvas_item_id"] == "selected-audio-node"
+
+
+def test_canvas_audio_relay_enters_chunking_with_resolved_target():
+    captured = {}
+    connections = []
+
+    def fake_chunked(args, text, chunks, tool_call_id, requested_duration=0):
+        captured["args"] = dict(args)
+        captured["text"] = text
+        captured["chunks"] = chunks
+        captured["tool_call_id"] = tool_call_id
+        captured["requested_duration"] = requested_duration
+        return '{"status":"success"}'
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "canvas_item_id": "new-audio-node",
+            "reference_item_ids": ["audio-reference"],
+        }
+    ), patch("tools.alphart_tools._split_audio_script", return_value=["first", "second"]), patch(
+        "tools.alphart_tools._generate_chunked_audio", side_effect=fake_chunked
+    ), patch(
+        "tools.alphart_tools._handle_canvas_connect_nodes",
+        side_effect=lambda args: connections.append(args) or '{"status":"success"}',
+    ):
+        result = _handle_alphart_generate_audio(
+            {"input": "A long narration.", "provider": "openai", "model": "gpt-4o-mini-tts"},
+            tool_call_id="audio-call",
+        )
+
+    assert json.loads(result)["status"] == "success"
+    assert captured["args"]["canvas_item_id"] == "new-audio-node"
+    assert captured["chunks"] == ["first", "second"]
+    assert captured["tool_call_id"] == "audio-call"
+    assert captured["requested_duration"] == 5
+    assert connections == [{
+        "canvas_id": "canvas-1",
+        "source_item_id": "audio-reference",
+        "target_item_id": "new-audio-node",
+    }]
+
+
+def test_canvas_audio_chunk_request_marks_relay_without_persisting_node():
+    captured = {}
+
+    def fake_post(_url, **kwargs):
+        captured["headers"] = kwargs["headers"]
+        captured["json"] = kwargs["json"]
+        return type("Response", (), {
+            "status_code": 200,
+            "text": '{"data":[{"url":"https://canvas.test/audio.wav"}]}',
+            "json": lambda self: {"data": [{"url": "https://canvas.test/audio.wav"}]},
+        })()
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "canvas_item_id": "audio-node",
+            "approved_audio_script": "The complete approved narration that must be split into chunks.",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post), patch(
+        "tools.alphart_tools._jwell_relay_enabled", return_value=False
+    ):
+        result = json.loads(
+            _handle_alphart_generate_audio(
+                {
+                    "_audio_chunk": True,
+                    "input": "A chunk of narration.",
+                    "provider": "openai",
+                    "model": "gpt-4o-mini-tts",
+                },
+                tool_call_id="audio-call:chunk:1",
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["headers"]["X-Canvas-Audio-Chunk"] == "true"
+    assert captured["json"]["input"] == "A chunk of narration."
 
 
 def _wav_bytes(frames: int = 100) -> bytes:
@@ -28,6 +375,31 @@ def _wav_bytes(frames: int = 100) -> bytes:
         audio.setframerate(24000)
         audio.writeframes(b"\x00\x00" * frames)
     return output.getvalue()
+
+
+def _canvas_audio_update_success(args):
+    if args.get("last_run_status") != "completed":
+        return '{"status":"success"}'
+    content = dict(args.get("content_patch") or {})
+    object_key = str(
+        content.get("audio_object_key")
+        or content.get("s3_object_name")
+        or content.get("object_key")
+        or "org/canvas/combined-audio.wav"
+    )
+    content.update({
+        "audio_object_key": object_key,
+        "s3_object_name": object_key,
+        "object_key": object_key,
+        "audio_url": "https://canvas.test/combined-audio.wav",
+    })
+    return json.dumps({
+        "status": "success",
+        "result": {
+            "success": True,
+            "item": {"content": content, "last_output": dict(content)},
+        },
+    })
 
 
 def test_relay_headers_include_media_idempotency_key():
@@ -160,6 +532,239 @@ def test_chunked_audio_retries_each_chunk_and_concatenates_wav():
     combined = base64.b64decode(payload["url"].split(",", 1)[1])
     with wave.open(io.BytesIO(combined), "rb") as audio:
         assert audio.getnframes() == 200 + int(24000 * 0.35)
+
+
+def test_canvas_chunked_audio_persists_combined_result_after_last_chunk():
+    wav = base64.b64encode(_wav_bytes()).decode("ascii")
+    update_calls = []
+
+    def fake_generate(_args):
+        return json.dumps({
+            "status": "success",
+            "result": {
+                "type": "generate_audio_result",
+                "url": f"data:audio/wav;base64,{wav}",
+                "mime_type": "audio/wav",
+            },
+        })
+
+    def fake_update(args):
+        update_calls.append(dict(args))
+        return _canvas_audio_update_success(args)
+
+    with alphart_context({
+        "app_scope": "canvas",
+        "canvas_id": "canvas-1",
+        "canvas_item_id": "audio-node",
+    }), patch("tools.alphart_tools._handle_alphart_generate_audio", side_effect=fake_generate), \
+        patch("tools.alphart_tools._handle_canvas_update_node", side_effect=fake_update):
+        result = json.loads(_generate_chunked_audio(
+            {
+                "input": "the complete script",
+                "provider": "openai",
+                "model": "gpt-4o-mini-tts",
+                "canvas_item_id": "audio-node",
+            },
+            "the complete script",
+            ["first", "second"],
+            tool_call_id="audio-call",
+        ))
+
+    assert result["status"] == "success"
+    assert len(update_calls) == 2
+    assert update_calls[0]["last_run_status"] == "running"
+    assert update_calls[1]["canvas_item_id"] == "audio-node"
+    assert update_calls[1]["last_run_status"] == "completed"
+    assert update_calls[1]["mirror_media"] is True
+    assert update_calls[1]["last_output"]["url"].startswith("data:audio/wav")
+    assert update_calls[1]["generation_type"] == "audio"
+    assert update_calls[1]["generation_status"] == "completed"
+    assert update_calls[1]["generation_request"]["tool_call_id"] == "audio-call"
+    assert result["result"]["s3_object_name"] == "org/canvas/combined-audio.wav"
+    assert result["result"]["url"] == "https://canvas.test/combined-audio.wav"
+    assert not result["result"]["audio_url"].startswith("data:")
+
+
+def test_canvas_chunked_audio_caps_total_duration():
+    wav = base64.b64encode(_wav_bytes(24000 * 4)).decode("ascii")
+    update_calls = []
+
+    def fake_generate(_args):
+        return json.dumps({
+            "status": "success",
+            "result": {
+                "type": "generate_audio_result",
+                "url": f"data:audio/wav;base64,{wav}",
+                "mime_type": "audio/wav",
+            },
+        })
+
+    def fake_update(args):
+        update_calls.append(dict(args))
+        return _canvas_audio_update_success(args)
+
+    with alphart_context({
+        "app_scope": "canvas",
+        "canvas_id": "canvas-1",
+        "canvas_item_id": "audio-node",
+    }), patch("tools.alphart_tools._handle_alphart_generate_audio", side_effect=fake_generate), \
+        patch("tools.alphart_tools._handle_canvas_update_node", side_effect=fake_update):
+        result = json.loads(_generate_chunked_audio(
+            {
+                "input": "the complete script",
+                "provider": "openai",
+                "model": "gpt-4o-mini-tts",
+                "canvas_item_id": "audio-node",
+            },
+            "the complete script",
+            ["first", "second"],
+            tool_call_id="audio-call",
+            requested_duration=5,
+        ))
+
+    assert result["status"] == "success"
+    combined = base64.b64decode(update_calls[-1]["last_output"]["url"].split(",", 1)[1])
+    with wave.open(io.BytesIO(combined), "rb") as audio:
+        assert audio.getnframes() == 24000 * 5
+    assert update_calls[-1]["content_patch"]["duration_seconds"] == 5
+
+
+def test_canvas_chunked_audio_persists_imported_asset_by_object_key_only():
+    wav = base64.b64encode(_wav_bytes()).decode("ascii")
+    update_calls = []
+
+    def fake_generate(_args):
+        return json.dumps({
+            "status": "success",
+            "result": {
+                "type": "generate_audio_result",
+                "url": f"data:audio/wav;base64,{wav}",
+                "mime_type": "audio/wav",
+                "data": wav,
+            },
+        })
+
+    def fake_update(args):
+        update_calls.append(dict(args))
+        return _canvas_audio_update_success(args)
+
+    def fake_import(asset, _media_type, **_kwargs):
+        return {
+            **asset,
+            "url": "https://canvas.test/imported-audio.wav",
+            "s3_object_name": "org/canvas/imported-audio.wav",
+        }
+
+    with alphart_context({
+        "app_scope": "canvas",
+        "canvas_id": "canvas-1",
+        "canvas_item_id": "audio-node",
+    }), patch("tools.alphart_tools._handle_alphart_generate_audio", side_effect=fake_generate), \
+        patch("tools.alphart_tools._handle_canvas_update_node", side_effect=fake_update), patch(
+            "tools.alphart_tools._jwell_relay_enabled", return_value=True
+        ), patch("tools.alphart_tools._import_jwell_media", side_effect=fake_import):
+        result = json.loads(_generate_chunked_audio(
+            {
+                "input": "the complete script",
+                "provider": "openai",
+                "model": "gpt-4o-mini-tts",
+                "canvas_item_id": "audio-node",
+            },
+            "the complete script",
+            ["first", "second"],
+            tool_call_id="audio-call",
+        ))
+
+    assert result["status"] == "success"
+    assert len(update_calls) == 2
+    assert update_calls[0]["last_run_status"] == "running"
+    assert update_calls[1]["mirror_media"] is False
+    assert "audio_url" not in update_calls[1]["content_patch"]
+    assert "url" not in update_calls[1]["last_output"]
+    assert update_calls[1]["content_patch"]["s3_object_name"] == "org/canvas/imported-audio.wav"
+
+
+def test_canvas_chunked_audio_retries_completed_persistence_without_marking_failed():
+    wav = base64.b64encode(_wav_bytes()).decode("ascii")
+    update_calls = []
+
+    def fake_generate(_args):
+        return json.dumps({
+            "status": "success",
+            "result": {
+                "type": "generate_audio_result",
+                "url": f"data:audio/wav;base64,{wav}",
+                "mime_type": "audio/wav",
+            },
+        })
+
+    def fake_update(args):
+        update_calls.append(dict(args))
+        if args["last_run_status"] == "completed" and len(update_calls) == 2:
+            return '{"success":false,"error":"connection reset"}'
+        return _canvas_audio_update_success(args)
+
+    with alphart_context({
+        "app_scope": "canvas",
+        "canvas_id": "canvas-1",
+        "canvas_item_id": "audio-node",
+    }), patch("tools.alphart_tools._handle_alphart_generate_audio", side_effect=fake_generate), \
+        patch("tools.alphart_tools._handle_canvas_update_node", side_effect=fake_update), patch(
+            "tools.alphart_tools.time.sleep"
+        ):
+        result = json.loads(_generate_chunked_audio(
+            {
+                "input": "the complete script",
+                "provider": "openai",
+                "model": "gpt-4o-mini-tts",
+                "canvas_item_id": "audio-node",
+            },
+            "the complete script",
+            ["first", "second"],
+            tool_call_id="audio-call",
+        ))
+
+    assert result["status"] == "success"
+    assert len(update_calls) == 3
+    assert update_calls[0]["generation_status"] == "running"
+    assert all(call["generation_status"] == "completed" for call in update_calls[1:])
+
+
+def test_canvas_chunked_audio_marks_parent_generation_failed():
+    update_calls = []
+
+    def fake_update(args):
+        update_calls.append(dict(args))
+        return '{"status":"success"}'
+
+    with alphart_context({
+        "app_scope": "canvas",
+        "canvas_id": "canvas-1",
+        "canvas_item_id": "audio-node",
+    }), patch(
+        "tools.alphart_tools._handle_alphart_generate_audio",
+        return_value='{"success":false,"error":"provider unavailable"}',
+    ), patch("tools.alphart_tools._handle_canvas_update_node", side_effect=fake_update), patch(
+        "tools.alphart_tools.time.sleep"
+    ):
+        result = json.loads(_generate_chunked_audio(
+            {
+                "input": "the complete script",
+                "provider": "openai",
+                "model": "gpt-4o-mini-tts",
+                "canvas_item_id": "audio-node",
+            },
+            "the complete script",
+            ["first", "second"],
+            tool_call_id="audio-call",
+        ))
+
+    assert result["status"] == "failed"
+    assert len(update_calls) == 2
+    assert update_calls[0]["last_run_status"] == "running"
+    assert update_calls[1]["last_run_status"] == "failed"
+    assert update_calls[1]["generation_status"] == "failed"
+    assert update_calls[1]["generation_request"]["tool_call_id"] == "audio-call"
 
 
 def test_chunked_audio_reports_partial_failure():

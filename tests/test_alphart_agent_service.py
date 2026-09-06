@@ -8,6 +8,7 @@ from agent.chat_completion_helpers import (
     _internal_relay_idempotency_key,
     _relay_request_overrides,
 )
+from tools.alphart_tools import _mark_canvas_generation_target_used, alphart_context
 
 from alphart_agent_service import (
     AlphartEduChatRequest,
@@ -24,6 +25,7 @@ from alphart_agent_service import (
     _canvas_graph_mutation_action,
     _configure_agent_scope,
     _canvas_explicit_mutation_request,
+    _canvas_generation_request_is_writable,
     _canvas_graph_tool_error,
     _canvas_graph_tool_failed,
     _canvas_media_tool_call_id,
@@ -36,6 +38,7 @@ from alphart_agent_service import (
     _canvas_negated_graph_mutation_request,
     _canvas_persisted_user_message,
     _canvas_request_text,
+    _canvas_response_item_id,
     _canvas_read_only_turn,
     _canvas_non_execution_question,
     _canvas_turn_context_content,
@@ -522,6 +525,38 @@ def test_canvas_result_callback_preserves_generated_item_id(monkeypatch):
         _post_chat_result_callback(request, {"canvas_item_id": "generated-image-1"})
 
     assert post.call_args.kwargs["json"]["canvas_item_id"] == "generated-image-1"
+
+
+def test_canvas_response_item_id_uses_existing_generation_target():
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        canvas_item_type="image",
+        selected_canvas_item_id="selected-image",
+    )
+    context = {
+        "canvas_edit_target_id": "selected-image",
+        "_canvas_generation_targets_by_call": {"call-image": "selected-image"},
+    }
+
+    assert _canvas_response_item_id(request, context, "call-image") == "selected-image"
+
+
+def test_canvas_generation_target_ledger_survives_tool_context_copy():
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        canvas_item_type="image",
+        selected_canvas_item_id="selected-image",
+    )
+    context = {
+        "app_scope": "canvas",
+        "_canvas_generation_target_ids": [],
+        "_canvas_generation_targets_by_call": {},
+    }
+
+    with alphart_context(context):
+        _mark_canvas_generation_target_used("generated-image", "call-image")
+
+    assert _canvas_response_item_id(request, context, "call-image") == "generated-image"
 
 
 def test_internal_relay_text_key_is_stable_for_retries_and_changes_per_turn():
@@ -1196,6 +1231,28 @@ def test_canvas_reference_generation_with_constraints_is_writable():
 
     assert _canvas_explicit_mutation_request(request) is True
     assert _canvas_read_only_turn(request) is False
+    assert _canvas_generation_request_is_writable(prompt) is True
+
+    # The same natural-language request must remain executable without UI
+    # classification metadata; the Canvas agent owns the graph decision.
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    assert _canvas_explicit_mutation_request(request) is True
+    assert _canvas_read_only_turn(request) is False
+
+
+def test_canvas_reference_generation_after_infinitive_is_writable():
+    prompt = "Use @image as a reference to generate a video"
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    assert _canvas_generation_request_is_writable(prompt) is True
+    assert _canvas_read_only_turn(request) is False
+    assert _canvas_non_execution_question("How to generate an image?") is True
 
 
 def test_canvas_advisory_generation_options_remain_read_only():
@@ -1205,6 +1262,7 @@ def test_canvas_advisory_generation_options_remain_read_only():
         target_operation="use_as_reference",
         messages=[{"role": "user", "content": "Explain the options: improve the lighting or refine the colors"}],
     )
+    assert _canvas_explicit_generation_clause("Explain the options: improve the lighting or refine the colors") is False
     assert _canvas_read_only_turn(request) is True
 
     request.messages = [{"role": "user", "content": "建议如何编辑这张图片？"}]
@@ -1217,6 +1275,39 @@ def test_canvas_advisory_generation_options_remain_read_only():
         messages=[{"role": "user", "content": "Can you generate a spring or winter version while keeping the person unchanged?"}],
     )
     assert _canvas_read_only_turn(request) is False
+
+
+def test_canvas_advisory_improvement_request_remains_read_only():
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        requested_action="answer",
+        target_operation="use_as_reference",
+        messages=[{"role": "user", "content": "Give me ideas to improve this image"}],
+    )
+
+    assert _canvas_generation_request_is_writable("Give me ideas to improve this image") is False
+    assert _canvas_read_only_turn(request) is True
+
+    request.messages = [{"role": "user", "content": "Give me ideas to generate a better image"}]
+    assert _canvas_generation_request_is_writable("Give me ideas to generate a better image") is False
+    assert _canvas_read_only_turn(request) is True
+
+    request.messages = [{"role": "user", "content": "Generate ideas to improve this image"}]
+    assert _canvas_generation_request_is_writable("Generate ideas to improve this image") is False
+    assert _canvas_read_only_turn(request) is True
+
+    request.messages = [{"role": "user", "content": "Give me ideas for this image, then generate an image of the first idea"}]
+    assert _canvas_generation_request_is_writable(request.messages[0]["content"]) is True
+    assert _canvas_read_only_turn(request) is False
+
+    request.messages = [{"role": "user", "content": "Give me ideas to improve this image, then generate an image of the first idea"}]
+    assert _canvas_generation_request_is_writable(request.messages[0]["content"]) is True
+    assert _canvas_read_only_turn(request) is False
+
+    request.messages = [{"role": "user", "content": "Generate ideas to improve this image"}]
+    request.force_media_intent = "image"
+    assert _canvas_explicit_mutation_request(request) is False
+    assert _canvas_read_only_turn(request) is True
 
     request.messages = [{"role": "user", "content": "生成春季或冬季版本，同时保持人物不变？"}]
     assert _canvas_read_only_turn(request) is False

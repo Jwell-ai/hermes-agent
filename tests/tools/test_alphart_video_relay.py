@@ -5,7 +5,7 @@ import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tools.alphart_tools import _backend_tool_timeout, _ensure_canvas_video_generation_graph, _handle_alphart_generate_image, _handle_alphart_generate_video, _relay_url, alphart_context
+from tools.alphart_tools import _backend_tool_timeout, _ensure_canvas_image_generation_graph, _ensure_canvas_video_generation_graph, _handle_alphart_generate_image, _handle_alphart_generate_video, _relay_url, alphart_context
 
 
 def test_canvas_media_relay_uses_canvas_backend_proxy(monkeypatch):
@@ -367,6 +367,308 @@ def test_canvas_image_relay_targets_newly_created_image_node():
     assert captured["json"]["tool_call_id"] == "image-call-1"
 
 
+def test_canvas_image_create_new_ignores_existing_target():
+    captured = {}
+    created_bodies = []
+
+    def fake_post(url, **kwargs):
+        body = kwargs["json"]
+        if url.endswith("/internal/api/v1/canvas/nodes"):
+            created_bodies.append(body)
+            return SimpleNamespace(
+                status_code=201,
+                text='{"item":{"id":"new-image-node"}}',
+                json=lambda: {"item": {"id": "new-image-node"}},
+            )
+        captured["json"] = body
+        return SimpleNamespace(
+            status_code=200,
+            text='{"data":[{"url":"https://canvas.test/image.png","s3_object_name":"org/canvas/image.png"}]}',
+            json=lambda: {"data": [{"url": "https://canvas.test/image.png", "s3_object_name": "org/canvas/image.png"}]},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "canvas_item_id": "old-image-node",
+            "canvas_item_type": "image",
+            "reference_item_ids": ["image-reference"],
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_image(
+                {
+                    "prompt": "Generate a winter version",
+                    "provider": "peanut-image",
+                    "model": "gpt-image-2",
+                    "canvas_operation": "create_new",
+                    "canvas_item_id": "image-reference",
+                }
+            )
+        )
+
+    assert result["status"] == "success"
+    assert [body["item_type"] for body in created_bodies] == ["image"]
+    assert captured["json"]["canvas_item_id"] == "new-image-node"
+
+
+def test_canvas_image_edit_ignores_untrusted_model_target():
+    captured = {}
+
+    def fake_post(_url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=200,
+            text='{"data":[{"url":"https://canvas.test/image.png","s3_object_name":"org/canvas/image.png"}]}',
+            json=lambda: {"data": [{"url": "https://canvas.test/image.png", "s3_object_name": "org/canvas/image.png"}]},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_item_id": "selected-image-node",
+            "canvas_item_type": "image",
+            "selected_canvas_item_id": "selected-image-node",
+            "selected_canvas_item_type": "image",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_image(
+                {
+                    "prompt": "Update the selected image",
+                    "provider": "peanut-image",
+                    "model": "gpt-image-2",
+                    "canvas_operation": "edit_existing",
+                    "canvas_item_id": "untrusted-image-node",
+                }
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["canvas_item_id"] == "selected-image-node"
+
+
+def test_canvas_image_create_new_uses_each_created_output_node_once():
+    captured = []
+
+    def fake_post(_url, **kwargs):
+        captured.append(kwargs["json"])
+        return SimpleNamespace(
+            status_code=200,
+            text='{"data":[{"url":"https://canvas.test/image.png","s3_object_name":"org/canvas/image.png"}]}',
+            json=lambda: {"data": [{"url": "https://canvas.test/image.png", "s3_object_name": "org/canvas/image.png"}]},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "_canvas_created_nodes": [
+                {"id": "image-node-1", "item_type": "image"},
+                {"id": "image-node-2", "item_type": "image"},
+            ],
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post), patch(
+        "tools.alphart_tools._jwell_relay_enabled", return_value=False
+    ):
+        first = _handle_alphart_generate_image(
+            {
+                "prompt": "Generate spring.",
+                "provider": "peanut-image",
+                "model": "gpt-image-2",
+                "canvas_operation": "create_new",
+                "canvas_item_id": "image-node-1",
+            },
+            tool_call_id="image-call-1",
+        )
+        second = _handle_alphart_generate_image(
+            {
+                "prompt": "Generate autumn.",
+                "provider": "peanut-image",
+                "model": "gpt-image-2",
+                "canvas_operation": "create_new",
+                "canvas_item_id": "image-node-2",
+            },
+            tool_call_id="image-call-2",
+        )
+
+    assert json.loads(first)["status"] == "success"
+    assert json.loads(second)["status"] == "success"
+    assert [payload["canvas_item_id"] for payload in captured] == [
+        "image-node-1",
+        "image-node-2",
+    ]
+
+
+def test_canvas_video_create_new_ignores_existing_target():
+    captured = {}
+    created_bodies = []
+
+    def fake_post(url, **kwargs):
+        body = kwargs["json"]
+        if url.endswith("/internal/api/v1/canvas/nodes"):
+            created_bodies.append(body)
+            return SimpleNamespace(
+                status_code=201,
+                text='{"item":{"id":"new-video-node"}}',
+                json=lambda: {"item": {"id": "new-video-node"}},
+            )
+        captured["json"] = body
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "canvas_item_id": "old-video-node",
+            "canvas_item_type": "video",
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {
+                    "prompt": "Animate a winter scene",
+                    "provider": "peanut-video",
+                    "model": "seedance",
+                    "canvas_operation": "create_new",
+                    "canvas_item_id": "video-reference",
+                }
+            )
+        )
+
+    assert result["status"] == "success"
+    assert [body["item_type"] for body in created_bodies] == ["video"]
+    assert captured["json"]["canvas_item_id"] == "new-video-node"
+
+
+def test_canvas_video_create_new_uses_each_created_output_node_once():
+    captured = []
+
+    def fake_post(_url, **kwargs):
+        captured.append(kwargs["json"])
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "_canvas_created_nodes": [
+                {"id": "video-node-1", "item_type": "video"},
+                {"id": "video-node-2", "item_type": "video"},
+            ],
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post), patch(
+        "tools.alphart_tools._jwell_relay_enabled", return_value=False
+    ):
+        first = _handle_alphart_generate_video(
+            {
+                "prompt": "Generate spring.",
+                "provider": "peanut-video",
+                "model": "seedance",
+                "canvas_operation": "create_new",
+                "canvas_item_id": "video-node-1",
+            },
+            tool_call_id="video-call-1",
+        )
+        second = _handle_alphart_generate_video(
+            {
+                "prompt": "Generate autumn.",
+                "provider": "peanut-video",
+                "model": "seedance",
+                "canvas_operation": "create_new",
+                "canvas_item_id": "video-node-2",
+            },
+            tool_call_id="video-call-2",
+        )
+
+    assert json.loads(first)["status"] == "success"
+    assert json.loads(second)["status"] == "success"
+    assert [payload["canvas_item_id"] for payload in captured] == [
+        "video-node-1",
+        "video-node-2",
+    ]
+
+
+def test_canvas_image_recovery_does_not_invent_prompt_for_references():
+    captured = {}
+    created_bodies = []
+
+    def fake_post(url, **kwargs):
+        body = kwargs["json"]
+        if url.endswith("/internal/api/v1/canvas/nodes"):
+            created_bodies.append(body)
+            return SimpleNamespace(
+                status_code=201,
+                text='{"item":{"id":"image-node"}}',
+                json=lambda: {"item": {"id": "image-node"}},
+            )
+        captured["json"] = body
+        return SimpleNamespace(
+            status_code=200,
+            text='{"data":[{"url":"https://canvas.test/image.png","s3_object_name":"org/canvas/image.png"}]}',
+            json=lambda: {"data": [{"url": "https://canvas.test/image.png", "s3_object_name": "org/canvas/image.png"}]},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "reference_item_ids": ["image-reference"],
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
+        result = json.loads(
+            _handle_alphart_generate_image(
+                {"prompt": "Generate the autumn version", "provider": "peanut-image", "model": "gpt-image-2"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert [body["item_type"] for body in created_bodies] == ["image"]
+    assert created_bodies[0]["source_item_ids"] == ["image-reference"]
+    assert captured["json"]["canvas_item_id"] == "image-node"
+
+
+def test_canvas_image_recovery_connects_references_to_existing_output():
+    connections = []
+
+    def fake_connect(args):
+        connections.append(args)
+        return '{"status":"success"}'
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "canvas_id": "canvas-1",
+            "reference_item_ids": ["image-reference"],
+            "_canvas_created_nodes": [{"id": "image-node", "item_type": "image"}],
+        }
+    ), patch("tools.alphart_tools._handle_canvas_connect_nodes", side_effect=fake_connect):
+        output_node_id, error = _ensure_canvas_image_generation_graph("Generate the autumn version")
+
+    assert output_node_id == "image-node"
+    assert error == ""
+    assert connections == [{
+        "canvas_id": "canvas-1",
+        "source_item_id": "image-reference",
+        "target_item_id": "image-node",
+    }]
+
+
 def test_canvas_image_relay_without_asset_is_failure():
     response = SimpleNamespace(status_code=200, text='{"data":[]}', json=lambda: {"data": []})
     with alphart_context(
@@ -556,30 +858,30 @@ def test_canvas_video_relay_targets_new_graph_video_node():
     ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
         result = json.loads(
             _handle_alphart_generate_video(
-                {"prompt": "Animate the scene", "provider": "peanut-video", "model": "seedance"}
+                {
+                    "prompt": "Animate the scene",
+                    "provider": "peanut-video",
+                    "model": "seedance",
+                }
             )
         )
 
     assert result["status"] == "success"
-    assert created == ["text", "video"]
+    assert created == ["video"]
     assert captured["json"]["canvas_item_id"] == "video-node"
     assert captured["json"]["create_if_missing"] is True
 
 
-def test_canvas_video_relay_ignores_stale_model_target_and_creates_graph():
+def test_canvas_video_relay_recovers_from_stale_model_target():
     captured = {}
-    created = []
 
     def fake_post(url, **kwargs):
         body = kwargs["json"]
         if url.endswith("/internal/api/v1/canvas/nodes"):
-            item_type = body["item_type"]
-            item_id = f"{item_type}-node"
-            created.append(item_type)
             return SimpleNamespace(
                 status_code=201,
-                text=json.dumps({"item": {"id": item_id}}),
-                json=lambda: {"item": {"id": item_id}},
+                text='{"item":{"id":"video-node"}}',
+                json=lambda: {"item": {"id": "video-node"}},
             )
         captured["json"] = body
         return SimpleNamespace(
@@ -607,7 +909,6 @@ def test_canvas_video_relay_ignores_stale_model_target_and_creates_graph():
         )
 
     assert result["status"] == "success"
-    assert created == ["text", "video"]
     assert captured["json"]["canvas_item_id"] == "video-node"
     assert captured["json"]["create_if_missing"] is True
 
@@ -656,7 +957,7 @@ def test_canvas_video_relay_does_not_use_selected_text_node_as_video_target():
         )
 
     assert result["status"] == "success"
-    assert created == ["text", "video"]
+    assert created == ["video"]
     assert captured["json"]["canvas_item_id"] == "video-node"
 
 
@@ -692,8 +993,9 @@ def test_canvas_video_graph_keeps_references_on_output_only():
         )
 
     assert result["status"] == "success"
-    assert "source_item_ids" not in created_bodies[0]
-    assert created_bodies[1]["source_item_ids"] == ["text-ref", "image-ref", "text-node"]
+    assert len(created_bodies) == 1
+    assert created_bodies[0]["item_type"] == "video"
+    assert created_bodies[0]["source_item_ids"] == ["text-ref", "image-ref"]
     assert captured["json"]["canvas_item_id"] == "video-node"
 
 
@@ -782,9 +1084,7 @@ def test_canvas_video_relay_creates_fresh_graph_for_each_automatic_request():
     assert first["status"] == "success"
     assert second["status"] == "success"
     assert created == [
-        ("text", "text-node-1"),
         ("video", "video-node-1"),
-        ("text", "text-node-2"),
         ("video", "video-node-2"),
     ]
     assert [item["canvas_item_id"] for item in captured] == ["video-node-1", "video-node-2"]
@@ -808,6 +1108,7 @@ def test_canvas_video_relay_uses_selected_video_node():
             "canvas_id": "canvas-1",
             "selected_canvas_item_id": "video-node",
             "selected_canvas_item_type": "video",
+            "canvas_item_id": "video-node",
         }
     ), patch("tools.alphart_tools.requests.post", side_effect=fake_post):
         result = json.loads(
@@ -818,6 +1119,39 @@ def test_canvas_video_relay_uses_selected_video_node():
 
     assert result["status"] == "success"
     assert captured["json"]["canvas_item_id"] == "video-node"
+
+
+def test_canvas_video_relay_prefers_newly_created_video_node():
+    captured = {}
+
+    def fake_post(_url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return SimpleNamespace(
+            status_code=202,
+            text='{"id":"task-1","status":"queued"}',
+            json=lambda: {"id": "task-1", "status": "queued"},
+        )
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "selected_canvas_item_id": "old-video-node",
+            "selected_canvas_item_type": "video",
+            "_canvas_created_nodes": [{"id": "new-video-node", "item_type": "video"}],
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post), patch(
+        "tools.alphart_tools._jwell_relay_enabled", return_value=False
+    ):
+        result = json.loads(
+            _handle_alphart_generate_video(
+                {"prompt": "Create a new variant", "provider": "peanut-video", "model": "seedance"}
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["canvas_item_id"] == "new-video-node"
 
 
 def test_canvas_video_prompt_audio_preference_overrides_ui_fallback():

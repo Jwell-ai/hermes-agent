@@ -67,6 +67,72 @@ def _latest_canvas_created_node_id(item_type: str) -> str:
     return ""
 
 
+def _canvas_generation_target_was_used(item_id: str) -> bool:
+    """Return whether a Canvas node has already received a generation."""
+    target_id = str(item_id or "").strip()
+    if not target_id:
+        return False
+    return target_id in {
+        str(value or "").strip()
+        for value in (_ctx().get("_canvas_generation_target_ids") or [])
+        if str(value or "").strip()
+    }
+
+
+def _canvas_created_node_is_valid_new_target(
+    item_type: str,
+    item_id: str,
+    tool_call_id: str = "",
+) -> bool:
+    """Validate a model-selected new target against this turn's node ledger."""
+    target_id = str(item_id or "").strip()
+    wanted = str(item_type or "").strip().lower()
+    if not target_id or not wanted:
+        return False
+    for node in _ctx().get("_canvas_created_nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("id") or "").strip() != target_id:
+            continue
+        if str(node.get("item_type") or "").strip().lower() != wanted:
+            return False
+        if not _canvas_generation_target_was_used(target_id):
+            return True
+        call_id = str(tool_call_id or "").strip()
+        mapped_target = (_ctx().get("_canvas_generation_targets_by_call") or {}).get(call_id)
+        return bool(call_id and str(mapped_target or "").strip() == target_id)
+    return False
+
+
+def _latest_unused_canvas_created_node_id(item_type: str) -> str:
+    """Return the newest unconsumed node of the requested Canvas type."""
+    wanted = str(item_type or "").strip().lower()
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas" or not wanted:
+        return ""
+    for node in reversed(_ctx().get("_canvas_created_nodes") or []):
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("item_type") or "").strip().lower() != wanted:
+            continue
+        node_id = str(node.get("id") or "").strip()
+        if node_id and not _canvas_generation_target_was_used(node_id):
+            return node_id
+    return ""
+
+
+def _mark_canvas_generation_target_used(item_id: str, tool_call_id: str = "") -> None:
+    """Record the node consumed by a successful generation submission."""
+    target_id = str(item_id or "").strip()
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas" or not target_id:
+        return
+    used_targets = _ctx().setdefault("_canvas_generation_target_ids", [])
+    if target_id not in used_targets:
+        used_targets.append(target_id)
+    call_id = str(tool_call_id or "").strip()
+    if call_id:
+        _ctx().setdefault("_canvas_generation_targets_by_call", {})[call_id] = target_id
+
+
 def _canvas_context_video_item_id() -> str:
     """Return a trusted existing Canvas video target, if the request has one."""
     if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
@@ -87,6 +153,148 @@ def _canvas_context_video_item_id() -> str:
     if selected_id == item_id and selected_type and selected_type != "video":
         return ""
     return item_id
+
+
+def _canvas_context_audio_item_id() -> str:
+    """Return an explicit or newly created Canvas audio target."""
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
+        return ""
+    item_id = str(_ctx().get("canvas_item_id") or "").strip()
+    item_type = str(_ctx().get("canvas_item_type") or "").strip().lower()
+    if item_id and (not item_type or item_type == "audio"):
+        return item_id
+    created_item_id = "" if _ctx().get("_canvas_generation_submitted") else _latest_unused_canvas_created_node_id("audio")
+    return created_item_id
+
+
+def _canvas_trusted_image_target(item_id: str) -> str:
+    """Return an image target selected or created in the current Canvas turn."""
+    target_id = str(item_id or "").strip()
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas" or not target_id:
+        return ""
+    context_id = str(_ctx().get("canvas_item_id") or "").strip()
+    context_type = str(_ctx().get("canvas_item_type") or "").strip().lower()
+    if target_id == context_id and (not context_type or context_type == "image"):
+        selected_id = str(_ctx().get("selected_canvas_item_id") or "").strip()
+        selected_type = str(_ctx().get("selected_canvas_item_type") or "").strip().lower()
+        if not (selected_id == target_id and selected_type and selected_type != "image"):
+            return target_id
+    selected_id = str(_ctx().get("selected_canvas_item_id") or "").strip()
+    selected_type = str(_ctx().get("selected_canvas_item_type") or "").strip().lower()
+    if target_id == selected_id and selected_type == "image":
+        return target_id
+    edit_target_id = str(_ctx().get("canvas_edit_target_id") or "").strip()
+    if target_id == edit_target_id and selected_id == target_id and selected_type == "image":
+        return target_id
+    for node in _ctx().get("_canvas_created_nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("id") or "").strip() == target_id and str(node.get("item_type") or "").strip().lower() == "image":
+            return target_id
+    return ""
+
+
+def _canvas_trusted_audio_target(item_id: str) -> str:
+    """Return an audio target selected or created in the current Canvas turn."""
+    target_id = str(item_id or "").strip()
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas" or not target_id:
+        return ""
+    context_id = str(_ctx().get("canvas_item_id") or "").strip()
+    context_type = str(_ctx().get("canvas_item_type") or "").strip().lower()
+    if target_id == context_id and (not context_type or context_type == "audio"):
+        return target_id
+    selected_id = str(_ctx().get("selected_canvas_item_id") or "").strip()
+    selected_type = str(_ctx().get("selected_canvas_item_type") or "").strip().lower()
+    if target_id == selected_id and selected_type == "audio":
+        return target_id
+    edit_target_id = str(_ctx().get("canvas_edit_target_id") or "").strip()
+    if target_id == edit_target_id and selected_id == target_id and selected_type == "audio":
+        return target_id
+    for node in _ctx().get("_canvas_created_nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("id") or "").strip() == target_id and str(node.get("item_type") or "").strip().lower() == "audio":
+            return target_id
+    return ""
+
+
+def _canvas_selected_edit_item_id(item_type: str, operation: str = "") -> str:
+    """Return the selected node only for an explicit media edit turn."""
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
+        return ""
+    if str(_ctx().get("selected_canvas_item_type") or "").strip().lower() != str(item_type or "").strip().lower():
+        return ""
+    operation = str(operation or "").strip().lower()
+    if operation == "create_new":
+        return ""
+    if operation == "edit_existing":
+        return str(_ctx().get("selected_canvas_item_id") or "").strip()
+    return str(_ctx().get("canvas_edit_target_id") or "").strip()
+
+
+def _canvas_generation_source_ids() -> List[str]:
+    source_ids = _ctx().get("reference_item_ids") or []
+    if isinstance(source_ids, str):
+        source_ids = [source_ids]
+    return list(dict.fromkeys(str(value).strip() for value in source_ids if str(value).strip()))
+
+
+def _connect_canvas_generation_sources(output_node_id: str, source_ids: Iterable[Any]) -> str:
+    """Attach references to an output node the model created earlier in this turn."""
+    output_node_id = str(output_node_id or "").strip()
+    if not output_node_id:
+        return ""
+    for source_id in dict.fromkeys(str(value).strip() for value in source_ids if str(value).strip()):
+        if source_id == output_node_id:
+            continue
+        result = _handle_canvas_connect_nodes(
+            {
+                "canvas_id": _ctx().get("canvas_id"),
+                "source_item_id": source_id,
+                "target_item_id": output_node_id,
+            }
+        )
+        if not _canvas_tool_succeeded(result):
+            return "Canvas source connection failed"
+    return ""
+
+
+def _ensure_canvas_audio_generation_graph(prompt: str, force_new: bool = False) -> Tuple[str, str]:
+    """Recover a missing Canvas audio output target before relay submission."""
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
+        return "", ""
+    context_item_id = str(_ctx().get("canvas_item_id") or "").strip()
+    context_item_type = str(_ctx().get("canvas_item_type") or "").strip().lower()
+    if context_item_id and (not context_item_type or context_item_type == "audio") and not force_new:
+        return "", ""
+    if _ctx().get("_canvas_generation_submitted") and not force_new:
+        return "", ""
+    output_node_id = (
+        _latest_unused_canvas_created_node_id("audio")
+        if force_new
+        else ("" if _ctx().get("_canvas_generation_submitted") else _latest_canvas_created_node_id("audio"))
+    )
+    if output_node_id:
+        connection_error = _connect_canvas_generation_sources(output_node_id, _canvas_generation_source_ids())
+        if connection_error:
+            return "", connection_error
+        return output_node_id, ""
+    source_ids = _canvas_generation_source_ids()
+    output_args: Dict[str, Any] = {
+        "canvas_id": _ctx().get("canvas_id"),
+        "item_type": "audio",
+        "title": "Audio",
+        "prompt": prompt,
+    }
+    if source_ids:
+        output_args["source_item_ids"] = source_ids
+    result = _handle_canvas_create_node(output_args)
+    if not _canvas_tool_succeeded(result):
+        return "", "Canvas audio node creation failed"
+    output_node_id = _latest_canvas_created_node_id("audio")
+    if not output_node_id:
+        return "", "Canvas audio node was not created"
+    return output_node_id, ""
 
 
 def _tool_error(message: str, code: str = "") -> str:
@@ -836,6 +1044,27 @@ def _concat_audio_wav_chunks(chunks: List[bytes]) -> Tuple[bytes, float]:
     return output.getvalue(), duration
 
 
+def _trim_wav_duration(data: bytes, max_duration: float) -> Tuple[bytes, float]:
+    """Trim a concatenated PCM WAV without re-encoding it."""
+    if max_duration <= 0:
+        with wave.open(io.BytesIO(data), "rb") as source:
+            return data, source.getnframes() / max(source.getframerate(), 1)
+
+    with wave.open(io.BytesIO(data), "rb") as source:
+        frame_rate = source.getframerate()
+        frame_limit = min(source.getnframes(), max(1, int(max_duration * frame_rate)))
+        if frame_limit >= source.getnframes():
+            return data, source.getnframes() / max(frame_rate, 1)
+        output = io.BytesIO()
+        with wave.open(output, "wb") as target:
+            target.setnchannels(source.getnchannels())
+            target.setsampwidth(source.getsampwidth())
+            target.setframerate(frame_rate)
+            target.setcomptype("NONE", "not compressed")
+            target.writeframes(source.readframes(frame_limit))
+        return output.getvalue(), frame_limit / max(frame_rate, 1)
+
+
 def _audio_result_payload(result: str) -> Dict[str, Any]:
     try:
         decoded = json.loads(result)
@@ -875,11 +1104,166 @@ def _stable_audio_object_name(base_call_id: str) -> str:
     return f"audio-{digest}.wav"
 
 
+def _persist_canvas_chunked_audio(
+    canvas_item_id: str,
+    text: str,
+    asset: Dict[str, Any],
+    duration: float,
+    provider: str,
+    model: str,
+    usage: Dict[str, Any],
+    tool_call_id: str = "",
+    status: str = "completed",
+    error: str = "",
+) -> str:
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas" or not canvas_item_id:
+        return ""
+    status = str(status or "completed").strip().lower()
+    if status not in {"running", "completed", "failed"}:
+        return f"Invalid Canvas audio generation status: {status}"
+    request_payload: Dict[str, Any] = {
+        "canvas_id": _ctx().get("canvas_id"),
+        "canvas_item_id": canvas_item_id,
+        "provider": provider,
+        "model": model,
+        "input": text,
+        "response_format": "wav",
+        "tool_call_id": str(tool_call_id or "").strip(),
+        "idempotency_key": str(tool_call_id or "").strip(),
+    }
+    output: Dict[str, Any] = {
+        "type": "generate_audio_result",
+        "status": status,
+        "message": error,
+    }
+    update: Dict[str, Any] = {
+        "canvas_item_id": canvas_item_id,
+        "last_run_status": status,
+        "last_run_error": error,
+        "generation_type": "audio",
+        "generation_request": request_payload,
+        "generation_status": status,
+        "generation_result": output,
+        "generation_error": error,
+    }
+    if status == "completed":
+        audio_url = str(asset.get("url") or asset.get("audio_url") or "").strip()
+        if not audio_url:
+            return "Canvas combined audio result has no URL"
+        stored_object_key = str(asset.get("s3_object_name") or asset.get("object_key") or "").strip()
+        content: Dict[str, Any] = {
+            "caption_script": text,
+            "audio_object_key": stored_object_key,
+            "object_key": stored_object_key,
+            "s3_object_name": stored_object_key,
+            "mime_type": asset.get("mime_type") or "audio/wav",
+            "provider": provider,
+            "model": model,
+        }
+        output.update({
+            "type": "audio",
+            "s3_object_name": stored_object_key,
+            "object_key": stored_object_key,
+            "mime_type": asset.get("mime_type") or "audio/wav",
+            "provider": provider,
+            "model": model,
+        })
+        # Imported Jwell assets already have a durable object key. Keep the
+        # signed URL only for the in-memory relay result; Canvas persistence
+        # can resolve a fresh URL from the key on read.
+        if not stored_object_key:
+            content["audio_url"] = audio_url
+            output["url"] = audio_url
+            output["audio_url"] = audio_url
+        if duration > 0:
+            content["duration_seconds"] = duration
+            output["duration_seconds"] = duration
+        if usage:
+            content["usage"] = usage
+            output["usage"] = usage
+        update.update({
+            "content_patch": content,
+            "last_output": output,
+            "mirror_media": True,
+            "generation_result": output,
+        })
+        update["mirror_media"] = not stored_object_key
+    result = _handle_canvas_update_node(update)
+    if not _canvas_tool_succeeded(result):
+        return "Canvas combined audio node update failed" if status == "completed" else "Canvas audio generation state update failed"
+    if status == "completed" and not stored_object_key:
+        try:
+            response = json.loads(result)
+        except (TypeError, ValueError):
+            response = {}
+        payload = response.get("result") if isinstance(response, dict) else {}
+        item = payload.get("item") if isinstance(payload, dict) else {}
+        content = item.get("content") if isinstance(item, dict) else {}
+        last_output = item.get("last_output") if isinstance(item, dict) else {}
+        content = content if isinstance(content, dict) else {}
+        last_output = last_output if isinstance(last_output, dict) else {}
+        stored_object_key = str(
+            content.get("audio_object_key")
+            or content.get("s3_object_name")
+            or content.get("object_key")
+            or last_output.get("audio_object_key")
+            or last_output.get("s3_object_name")
+            or last_output.get("object_key")
+            or ""
+        ).strip()
+        if not stored_object_key:
+            return "Canvas combined audio node update returned no stored asset"
+        stored_url = str(
+            content.get("audio_url")
+            or content.get("url")
+            or last_output.get("audio_url")
+            or last_output.get("url")
+            or ""
+        ).strip()
+        for field in ("url", "audio_url", "data", "base64", "b64_json"):
+            asset.pop(field, None)
+        asset.update({
+            "s3_object_name": stored_object_key,
+            "object_key": stored_object_key,
+            "audio_object_key": stored_object_key,
+        })
+        if stored_url:
+            asset["url"] = stored_url
+            asset["audio_url"] = stored_url
+    return ""
+
+
+def _mark_canvas_chunked_audio_failed(
+    args: Dict[str, Any],
+    text: str,
+    provider: str,
+    model: str,
+    usage: Dict[str, Any],
+    tool_call_id: str,
+    error: str,
+) -> None:
+    persist_error = _persist_canvas_chunked_audio(
+        str(args.get("canvas_item_id") or _ctx().get("canvas_item_id") or "").strip(),
+        text,
+        {},
+        0,
+        provider,
+        model,
+        usage,
+        tool_call_id=tool_call_id,
+        status="failed",
+        error=error,
+    )
+    if persist_error:
+        print(f"[alphart-agent] unable to persist failed Canvas audio generation: {persist_error}", flush=True)
+
+
 def _generate_chunked_audio(
     args: Dict[str, Any],
     text: str,
     chunks: List[str],
     tool_call_id: str = "",
+    requested_duration: int = 0,
 ) -> str:
     base_call_id = str(tool_call_id or args.get("tool_call_id") or uuid.uuid4()).strip()
     generated_assets: List[Dict[str, Any]] = []
@@ -888,6 +1272,29 @@ def _generate_chunked_audio(
     provider = str(args.get("provider") or "").strip()
     model = str(args.get("model") or "").strip()
     retries = max(1, int(os.getenv("ALPHART_AUDIO_RELAY_RETRY_ATTEMPTS", "3") or "3"))
+    canvas_item_id = str(
+        args.get("canvas_item_id") or _ctx().get("canvas_item_id") or ""
+    ).strip()
+    previous_target = str(
+        (_ctx().get("_canvas_generation_targets_by_call") or {}).get(base_call_id) or ""
+    ).strip()
+    if previous_target != canvas_item_id:
+        running_persist_error = _persist_canvas_chunked_audio(
+            canvas_item_id,
+            text,
+            {},
+            0,
+            provider,
+            model,
+            total_usage,
+            tool_call_id=base_call_id,
+            status="running",
+        )
+        if running_persist_error:
+            print(
+                f"[alphart-agent] unable to persist running Canvas audio generation: {running_persist_error}",
+                flush=True,
+            )
     for index, chunk in enumerate(chunks, start=1):
         chunk_args = dict(args)
         chunk_args["input"] = chunk
@@ -908,6 +1315,10 @@ def _generate_chunked_audio(
             if attempt < retries:
                 time.sleep(min(2 * attempt, 5))
         if not _audio_result_success(result):
+            _mark_canvas_chunked_audio_failed(
+                args, text, provider, model, total_usage, base_call_id,
+                "Audio chunk generation failed",
+            )
             return json.dumps({
                 "status": "failed",
                 "result": {
@@ -929,6 +1340,9 @@ def _generate_chunked_audio(
         try:
             audio_chunks.append(_audio_asset_bytes(asset))
         except (requests.RequestException, RuntimeError) as exc:
+            _mark_canvas_chunked_audio_failed(
+                args, text, provider, model, total_usage, base_call_id, str(exc),
+            )
             return json.dumps({
                 "status": "failed",
                 "result": {
@@ -948,8 +1362,12 @@ def _generate_chunked_audio(
         generated_assets.append(asset)
     try:
         combined, duration = _concat_audio_wav_chunks(audio_chunks)
+        if requested_duration > 0:
+            combined, duration = _trim_wav_duration(combined, requested_duration)
     except (RuntimeError, wave.Error) as exc:
-        return _tool_error(f"Unable to concatenate audio chunks: {exc}")
+        error = f"Unable to concatenate audio chunks: {exc}"
+        _mark_canvas_chunked_audio_failed(args, text, provider, model, total_usage, base_call_id, error)
+        return _tool_error(error)
     combined_asset: Dict[str, Any] = {
         "url": "data:audio/wav;base64," + base64.b64encode(combined).decode("ascii"),
         "audio_url": "data:audio/wav;base64," + base64.b64encode(combined).decode("ascii"),
@@ -971,12 +1389,14 @@ def _generate_chunked_audio(
                 if attempt < import_attempts:
                     time.sleep(min(2 * attempt, 5))
         if last_import_error is not None:
+            error = f"Unable to store generated audio: {last_import_error}"
+            _mark_canvas_chunked_audio_failed(args, text, provider, model, total_usage, base_call_id, error)
             return json.dumps({
                 "status": "failed",
                 "result": {
                     "type": "generate_audio_result",
                     "status": "partial",
-                    "message": f"Unable to store generated audio: {last_import_error}",
+                    "message": error,
                     "provider": provider,
                     "model": model,
                     "input": text,
@@ -987,6 +1407,26 @@ def _generate_chunked_audio(
                     "usage": total_usage,
                 },
             }, ensure_ascii=False)
+    persist_error = ""
+    for attempt in range(1, 4):
+        persist_error = _persist_canvas_chunked_audio(
+            canvas_item_id,
+            text,
+            combined_asset,
+            duration,
+            provider,
+            model,
+            total_usage,
+            tool_call_id=base_call_id,
+        )
+        if not persist_error or attempt == 3:
+            break
+        time.sleep(min(2 * attempt, 5))
+    if persist_error:
+        return _tool_error(persist_error)
+    if canvas_item_id:
+        _mark_canvas_generation_target_used(canvas_item_id, base_call_id)
+        _ctx()["_canvas_generation_submitted"] = True
     result = {
         "type": "generate_audio_result",
         "status": "completed",
@@ -1052,7 +1492,6 @@ def _handle_canvas_create_node(args: Dict[str, Any], **_: Any) -> str:
     if mutation_error:
         return mutation_error
     args = dict(args or {})
-    suppress_context_connections = bool(args.pop("_suppress_canvas_reference_connections", False))
     if not args.get("canvas_id"):
         args["canvas_id"] = _ctx().get("canvas_id")
     if not args.get("item_type") and args.get("type"):
@@ -1065,21 +1504,6 @@ def _handle_canvas_create_node(args: Dict[str, Any], **_: Any) -> str:
             if isinstance(raw_sources, str):
                 raw_sources = [raw_sources]
             source_ids.extend(str(value).strip() for value in raw_sources if str(value).strip())
-        if not suppress_context_connections:
-            context_sources = _ctx().get("reference_item_ids") or []
-            if isinstance(context_sources, str):
-                context_sources = [context_sources]
-            source_ids.extend(str(value).strip() for value in context_sources if str(value).strip())
-        # A new media node follows the newly created Prompt node. Persist both
-        # the user's referenced inputs and that prompt-to-output edge in the
-        # backend, even if the model forgets a separate connect tool call.
-        if item_type in {"image", "video", "audio"}:
-            for created in reversed(_ctx().get("_canvas_created_nodes") or []):
-                if created.get("item_type") in {"text", "note"}:
-                    prompt_id = str(created.get("id") or "").strip()
-                    if prompt_id and prompt_id not in source_ids:
-                        source_ids.append(prompt_id)
-                    break
         if source_ids:
             args["source_item_ids"] = list(dict.fromkeys(source_ids))
     if not args.get("content"):
@@ -1116,75 +1540,57 @@ def _handle_canvas_create_node(args: Dict[str, Any], **_: Any) -> str:
     return json.dumps({"status": "success", "result": decoded}, ensure_ascii=False)
 
 
-def _ensure_canvas_image_generation_graph(prompt: str) -> Tuple[str, str]:
-    """Materialize the new-image graph before the relay is called.
-
-    Canvas requests without an explicit media target must leave behind both the
-    enriched prompt and the image output node. This is also the recovery path
-    when the model returns a prose conclusion instead of executing the graph
-    tools. The guard keeps Edu's legacy image flow unchanged.
-    """
+def _ensure_canvas_image_generation_graph(prompt: str, force_new: bool = False) -> Tuple[str, str]:
+    """Recover only a missing Canvas image output target before relay submission."""
     if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
         return "", ""
-    if str(_ctx().get("canvas_item_id") or "").strip():
+    if str(_ctx().get("canvas_item_id") or "").strip() and not force_new:
         return "", ""
 
     _ctx().setdefault("_canvas_created_nodes", [])
     prompt_node_id = _latest_canvas_created_node_id("text") or _latest_canvas_created_node_id("note")
-    output_node_id = _latest_canvas_created_node_id("image")
-    prompt_created = False
+    output_node_id = (
+        _latest_unused_canvas_created_node_id("image")
+        if force_new
+        else ("" if _ctx().get("_canvas_generation_submitted") else _latest_canvas_created_node_id("image"))
+    )
+    source_ids = _canvas_generation_source_ids()
 
-    if not prompt_node_id:
-        source_ids = _ctx().get("reference_item_ids") or []
-        if isinstance(source_ids, str):
-            source_ids = [source_ids]
-        result = _handle_canvas_create_node({
-            "canvas_id": _ctx().get("canvas_id"),
-            "item_type": "text",
-            "title": "Prompt",
-            "text": prompt,
-            "source_item_ids": list(dict.fromkeys(str(value).strip() for value in source_ids if str(value).strip())),
-        })
-        if not _canvas_tool_succeeded(result):
-            return "", "Canvas prompt node creation failed"
-        prompt_node_id = _latest_canvas_created_node_id("text") or _latest_canvas_created_node_id("note")
-        prompt_created = bool(prompt_node_id)
+    if prompt_node_id:
+        source_ids.append(prompt_node_id)
+        source_ids = list(dict.fromkeys(source_ids))
 
     if not output_node_id:
-        result = _handle_canvas_create_node({
+        output_args: Dict[str, Any] = {
             "canvas_id": _ctx().get("canvas_id"),
             "item_type": "image",
             "title": "Image",
             "prompt": prompt,
-        })
+        }
+        # Preserve a Prompt node only when the model chose to create one. Keep
+        # it alongside any explicitly named references so the recovered graph
+        # does not orphan a model-created brief.
+        if source_ids:
+            output_args["source_item_ids"] = source_ids
+        result = _handle_canvas_create_node(output_args)
         if not _canvas_tool_succeeded(result):
             return "", "Canvas image node creation failed"
         output_node_id = _latest_canvas_created_node_id("image")
-    elif prompt_created:
-        result = _handle_canvas_connect_nodes({
-            "canvas_id": _ctx().get("canvas_id"),
-            "source_item_id": prompt_node_id,
-            "target_item_id": output_node_id,
-        })
-        if not _canvas_tool_succeeded(result):
-            return "", "Canvas prompt-to-image connection failed"
+    else:
+        connection_error = _connect_canvas_generation_sources(output_node_id, source_ids)
+        if connection_error:
+            return "", connection_error
 
-    if not prompt_node_id or not output_node_id:
-        return "", "Canvas image graph was not created"
+    if not output_node_id:
+        return "", "Canvas image node was not created"
     return output_node_id, ""
 
 
-def _ensure_canvas_video_generation_graph(prompt: str) -> Tuple[str, str]:
-    """Materialize a new Canvas prompt/video graph before video relay.
-
-    The video relay updates an existing video node, so a homepage request (or a
-    model tool call that omitted the newly-created id) must create the target
-    node before submitting the provider task. This is Canvas-only; Edu keeps its
-    existing relay contract.
-    """
+def _ensure_canvas_video_generation_graph(prompt: str, force_new: bool = False) -> Tuple[str, str]:
+    """Recover only a missing Canvas video output target before relay submission."""
     if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
         return "", ""
-    if _canvas_context_video_item_id():
+    if _canvas_context_video_item_id() and not force_new:
         return "", ""
     if not str(_ctx().get("canvas_id") or "").strip():
         return "", "Canvas canvas_id is required before creating a video node"
@@ -1199,38 +1605,28 @@ def _ensure_canvas_video_generation_graph(prompt: str) -> Tuple[str, str]:
     if isinstance(source_ids, str):
         source_ids = [source_ids]
     source_ids = [str(value).strip() for value in source_ids if str(value).strip()]
-    selected_id = str(_ctx().get("selected_canvas_item_id") or "").strip()
-    selected_type = str(_ctx().get("selected_canvas_item_type") or "").strip().lower()
-    if selected_id and selected_type in {"text", "note", "image", "audio"}:
-        source_ids.append(selected_id)
     source_ids = list(dict.fromkeys(source_ids))
 
-    if not _ctx().get("_canvas_generation_submitted"):
+    if force_new:
+        output_node_id = _latest_unused_canvas_created_node_id("video")
+    elif not _ctx().get("_canvas_generation_submitted"):
         prompt_node_id = _latest_canvas_created_node_id("text") or _latest_canvas_created_node_id("note")
         output_node_id = _latest_canvas_created_node_id("video")
 
-    prompt_created = False
-    if not prompt_node_id:
-        result = _handle_canvas_create_node({
-            "canvas_id": _ctx().get("canvas_id"),
-            "item_type": "text",
-            "title": "Prompt",
-            "text": prompt,
-            "_suppress_canvas_reference_connections": True,
-        })
-        if not _canvas_tool_succeeded(result):
-            return "", "Canvas prompt node creation failed"
-        prompt_node_id = _latest_canvas_created_node_id("text") or _latest_canvas_created_node_id("note")
-        prompt_created = bool(prompt_node_id)
-
     if not output_node_id:
-        result = _handle_canvas_create_node({
+        output_args: Dict[str, Any] = {
             "canvas_id": _ctx().get("canvas_id"),
             "item_type": "video",
             "title": "Video",
             "prompt": prompt,
-            "source_item_ids": source_ids,
-        })
+        }
+        # A Prompt node is part of the recovered graph only when the model
+        # already chose it; keep it alongside explicitly named inputs.
+        if prompt_node_id:
+            source_ids.append(prompt_node_id)
+        if source_ids:
+            output_args["source_item_ids"] = source_ids
+        result = _handle_canvas_create_node(output_args)
         if not _canvas_tool_succeeded(result):
             return "", "Canvas video node creation failed"
         output_node_id = _latest_canvas_created_node_id("video")
@@ -1244,17 +1640,30 @@ def _ensure_canvas_video_generation_graph(prompt: str) -> Tuple[str, str]:
                 })
                 if not _canvas_tool_succeeded(conn_result):
                     return "", "Canvas source connection failed"
-        if prompt_created:
-            result = _handle_canvas_connect_nodes({
-                "canvas_id": _ctx().get("canvas_id"),
-                "source_item_id": prompt_node_id,
-                "target_item_id": output_node_id,
-            })
-            if not _canvas_tool_succeeded(result):
-                return "", "Canvas prompt-to-video connection failed"
     if not output_node_id:
-        return "", "Canvas video graph was not created"
+        return "", "Canvas video node was not created"
     return output_node_id, ""
+
+
+def _canvas_trusted_video_target(model_item_id: str) -> str:
+    """Accept only video targets present in the current Canvas turn context."""
+    model_item_id = str(model_item_id or "").strip()
+    if not model_item_id:
+        return ""
+    trusted_ids = set()
+    context_item_id = _canvas_context_video_item_id()
+    if context_item_id:
+        trusted_ids.add(context_item_id)
+    selected_id = str(_ctx().get("selected_canvas_item_id") or "").strip()
+    selected_type = str(_ctx().get("selected_canvas_item_type") or "").strip().lower()
+    if selected_id and selected_type == "video":
+        trusted_ids.add(selected_id)
+    for created in _ctx().get("_canvas_created_nodes") or []:
+        if isinstance(created, dict) and str(created.get("item_type") or "").strip().lower() == "video":
+            created_id = str(created.get("id") or "").strip()
+            if created_id:
+                trusted_ids.add(created_id)
+    return model_item_id if model_item_id in trusted_ids else ""
 
 
 def _canvas_tool_succeeded(result: str) -> bool:
@@ -2069,6 +2478,26 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
     candidate_item_id = str(
         args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or ""
     ).strip()
+    canvas_operation = str(args.get("canvas_operation") or "").strip().lower()
+    generation_tool_call_id = str(
+        kwargs.get("tool_call_id") or args.get("tool_call_id") or ""
+    ).strip()
+    if is_canvas and canvas_operation == "create_new":
+        # A model may repeat a reference node id in the optional target field.
+        # Only an unconsumed node created during this turn is valid for a new
+        # generation; a repeated tool call may reuse its own target.
+        if not _canvas_created_node_is_valid_new_target(
+            "image", candidate_item_id, generation_tool_call_id
+        ):
+            for key in ("canvas_item_id", "item_id", "node_id"):
+                args.pop(key, None)
+            candidate_item_id = ""
+    elif is_canvas and candidate_item_id and not _canvas_trusted_image_target(candidate_item_id):
+        # Never let a model-supplied id overwrite an unrelated existing node;
+        # the selected/context image is restored below when applicable.
+        for key in ("canvas_item_id", "item_id", "node_id"):
+            args.pop(key, None)
+        candidate_item_id = ""
     if (
         is_canvas
         and not explicit_canvas_item_id
@@ -2076,15 +2505,23 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
         and candidate_item_id == selected_canvas_item_id
         and selected_canvas_item_type in {"text", "note"}
     ):
-        # A selected text node is graph context, never the image execution target.
+        # A selected text node is graph context, never the image execution target;
+        # create_new targets are filtered above.
         for key in ("canvas_item_id", "item_id", "node_id"):
             args.pop(key, None)
-    if is_canvas and not str(args.get("canvas_item_id") or "").strip() and not str(_ctx().get("canvas_item_id") or "").strip():
-        image_item_id, graph_error = _ensure_canvas_image_generation_graph(str(args.get("prompt") or "").strip())
-        if graph_error:
-            return _tool_error(graph_error)
-        if image_item_id:
-            args["canvas_item_id"] = image_item_id
+    if is_canvas and not str(args.get("canvas_item_id") or "").strip() and (canvas_operation == "create_new" or not str(_ctx().get("canvas_item_id") or "").strip()):
+        selected_edit_item_id = _canvas_selected_edit_item_id("image", args.get("canvas_operation"))
+        if selected_edit_item_id:
+            args["canvas_item_id"] = selected_edit_item_id
+        else:
+            image_item_id, graph_error = _ensure_canvas_image_generation_graph(
+                str(args.get("prompt") or "").strip(),
+                force_new=canvas_operation == "create_new",
+            )
+            if graph_error:
+                return _tool_error(graph_error)
+            if image_item_id:
+                args["canvas_item_id"] = image_item_id
     use_seedream_sdk = _jwell_relay_enabled() and _is_seedream_image_model(
         args.get("provider"), args.get("model")
     )
@@ -2112,7 +2549,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
             or _ctx().get("canvas_item_id")
             or _latest_canvas_created_node_id("image")
         ),
-        "tool_call_id": kwargs.get("tool_call_id") or args.get("tool_call_id"),
+        "tool_call_id": generation_tool_call_id,
     }
     if args.get("quantity"):
         payload["n"] = args.get("quantity")
@@ -2182,8 +2619,6 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
             detail = " ".join((detail or f"relay returned HTTP {response_status}").split())[:500]
             return _tool_error(f"Canvas image relay failed (HTTP {response_status}): {detail}")
         return _system_busy_tool_error()
-    if is_canvas and not str(_ctx().get("canvas_item_id") or "").strip():
-        _ctx()["_canvas_generation_submitted"] = True
     data = decoded.get("data") if isinstance(decoded, dict) else None
     if isinstance(data, list) and data and isinstance(data[0], dict):
         asset = data[0]
@@ -2216,6 +2651,11 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
     }
     if is_canvas and not str(result.get("s3_object_name") or "").strip():
         return _tool_error("Canvas image relay returned no stored image asset")
+    if is_canvas:
+        _mark_canvas_generation_target_used(
+            str(payload.get("canvas_item_id") or "").strip(), generation_tool_call_id
+        )
+        _ctx()["_canvas_generation_submitted"] = True
     return json.dumps({"status": "success", "result": result}, ensure_ascii=False)
 
 
@@ -2311,19 +2751,27 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     _set_tool_defaults(args, tool)
     args.setdefault("wait", False)
     if is_canvas:
-        # A model-supplied node id is not authoritative. In a homepage/new
-        # graph turn it may be stale or hallucinated, and trusting it skips
-        # the graph creation fallback before the relay validates the node.
-        # Only the selected execution target or a node created in this turn
-        # can be used for Canvas generation. Edu keeps its existing argument
-        # precedence and relay contract.
-        context_item_id = _canvas_context_video_item_id()
-        selected_item_id = str(_ctx().get("selected_canvas_item_id") or "").strip()
-        selected_item_type = str(_ctx().get("selected_canvas_item_type") or "").strip().lower()
-        created_item_id = "" if _ctx().get("_canvas_generation_submitted") else _latest_canvas_created_node_id("video")
-        canvas_item_id = context_item_id or (
-            selected_item_id if selected_item_type == "video" else ""
-        ) or created_item_id
+        # Explicit model targets are required for edits. For new generation,
+        # prefer a node created in this turn and recover a fresh node below;
+        # selected-node context is not an implicit mutation target.
+        canvas_operation = str(args.get("canvas_operation") or "").strip().lower()
+        generation_tool_call_id = str(
+            kwargs.get("tool_call_id") or args.get("tool_call_id") or ""
+        ).strip()
+        context_item_id = _canvas_context_video_item_id() if canvas_operation != "create_new" else ""
+        selected_edit_item_id = _canvas_selected_edit_item_id("video", canvas_operation)
+        model_item_id = _canvas_trusted_video_target(str(
+            args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or ""
+        ))
+        if canvas_operation == "create_new":
+            model_item_id = model_item_id if _canvas_created_node_is_valid_new_target(
+                "video", model_item_id, generation_tool_call_id
+            ) else ""
+            created_item_id = _latest_unused_canvas_created_node_id("video")
+            selected_edit_item_id = ""
+        else:
+            created_item_id = "" if _ctx().get("_canvas_generation_submitted") else _latest_canvas_created_node_id("video")
+        canvas_item_id = model_item_id or context_item_id or selected_edit_item_id or created_item_id
     else:
         canvas_item_id = str(
             args.get("canvas_item_id")
@@ -2334,7 +2782,10 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         ).strip()
     auto_created_video_node = False
     if is_canvas and not canvas_item_id:
-        canvas_item_id, graph_error = _ensure_canvas_video_generation_graph(str(args.get("prompt") or "").strip())
+        canvas_item_id, graph_error = _ensure_canvas_video_generation_graph(
+            str(args.get("prompt") or "").strip(),
+            force_new=str(args.get("canvas_operation") or "").strip().lower() == "create_new",
+        )
         if graph_error:
             return _tool_error(graph_error)
         args["canvas_item_id"] = canvas_item_id
@@ -2354,8 +2805,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         "canvas_id": _ctx().get("canvas_id"),
         "canvas_item_id": canvas_item_id,
         "generate_audio": bool(args.get("generate_audio")),
-        "tool_call_id": kwargs.get("tool_call_id") or args.get("tool_call_id"),
-        "watermark": bool(_ctx().get("ai_generation_watermark")),
+        "tool_call_id": generation_tool_call_id if is_canvas else (kwargs.get("tool_call_id") or args.get("tool_call_id")),
     }
     if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
         payload.update({
@@ -2464,6 +2914,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         # A successful relay submission completes this automatic graph's
         # lifecycle. The next automatic request must create a fresh pair
         # instead of updating the previous video node.
+        _mark_canvas_generation_target_used(canvas_item_id, generation_tool_call_id)
         _ctx()["_canvas_generation_submitted"] = True
     selected_provider = decoded.get("provider") if isinstance(decoded, dict) else args.get("provider")
     selected_model = decoded.get("model") if isinstance(decoded, dict) else args.get("model")
@@ -2536,6 +2987,8 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
     selected_model = str(args.get("model") or "").strip()
     if not selected_provider or not selected_model:
         return _tool_error("No configured audio generation model is available.", "AUDIO_MODEL_NOT_CONFIGURED")
+    if selected_provider.lower() == "openai" and not str(args.get("voice") or "").strip():
+        args["voice"] = "alloy"
     args["language_type"] = _normalize_audio_language_type(args.get("language_type")) or _normalize_audio_language_type(_ctx().get("audio_language_type"))
     relay_url = _relay_url("audio/speech")
     if not relay_url:
@@ -2543,16 +2996,47 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
     text = str(args.get("input") or args.get("text") or args.get("script") or args.get("prompt") or "").strip()
     approved_script = str(_ctx().get("approved_audio_script") or "").strip()
     request_text = str(_ctx().get("user_message") or _ctx().get("canvas_prompt_context") or "").strip()
-    if app_scope == "canvas" and approved_script:
+    if app_scope == "canvas" and approved_script and not audio_chunk_request:
         text = approved_script
     if _audio_script_contains_system_prompt(text):
         text = _audio_script_from_request(request_text or text, str(args.get("language_type") or ""))
     if not text:
         return _tool_error("audio input text is required")
-    if app_scope != "canvas" and (len(text) < 80 or re.search(r"^\s*(/audio|generate|create|make|produce|生成)", text, flags=re.I)):
+    is_canvas = app_scope == "canvas"
+    if not is_canvas and (len(text) < 80 or re.search(r"^\s*(/audio|generate|create|make|produce|生成)", text, flags=re.I)):
         text = _audio_script_from_request(text, str(args.get("language_type") or ""))
-    text = _bound_audio_script(text, requested_duration, str(args.get("language_type") or "").strip().lower())
-    if _jwell_relay_enabled() and not audio_chunk_request:
+    if not is_canvas:
+        text = _bound_audio_script(text, requested_duration, str(args.get("language_type") or "").strip().lower())
+    canvas_item_id = str(
+        args.get("canvas_item_id") or args.get("item_id") or args.get("node_id") or ""
+    ).strip()
+    canvas_operation = str(args.get("canvas_operation") or "").strip().lower()
+    generation_tool_call_id = str(
+        kwargs.get("tool_call_id") or args.get("tool_call_id") or ""
+    ).strip()
+    if is_canvas and canvas_operation == "create_new":
+        if not _canvas_created_node_is_valid_new_target(
+            "audio", canvas_item_id, generation_tool_call_id
+        ):
+            for key in ("canvas_item_id", "item_id", "node_id"):
+                args.pop(key, None)
+            canvas_item_id = ""
+    elif is_canvas and canvas_item_id and not _canvas_trusted_audio_target(canvas_item_id):
+        for key in ("canvas_item_id", "item_id", "node_id"):
+            args.pop(key, None)
+        canvas_item_id = ""
+    if is_canvas and not canvas_item_id and canvas_operation != "create_new":
+        canvas_item_id = _canvas_selected_edit_item_id("audio", args.get("canvas_operation")) or _canvas_context_audio_item_id()
+    if is_canvas and not canvas_item_id:
+        canvas_item_id, graph_error = _ensure_canvas_audio_generation_graph(
+            text,
+            force_new=canvas_operation == "create_new",
+        )
+        if graph_error:
+            return _tool_error(graph_error)
+    if is_canvas and canvas_item_id:
+        args["canvas_item_id"] = canvas_item_id
+    if (is_canvas or _jwell_relay_enabled()) and not audio_chunk_request:
         chunks = _split_audio_script(text, str(args.get("language_type") or ""))
         if len(chunks) > 1:
             response_format = str(args.get("response_format") or "wav").strip().lower()
@@ -2561,12 +3045,24 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
                     "Long audio chunking requires response_format=wav",
                     "AUDIO_FORMAT_UNSUPPORTED",
                 )
+            if is_canvas:
+                connection_error = _connect_canvas_generation_sources(
+                    canvas_item_id, _canvas_generation_source_ids()
+                )
+                if connection_error:
+                    return _tool_error(connection_error)
             print(
                 f"[alphart-agent] audio chunking provider={_log_model_value(selected_provider)} "
                 f"model={_log_model_value(selected_model)} chunks={len(chunks)}",
                 flush=True,
             )
-            return _generate_chunked_audio(args, text, chunks, kwargs.get("tool_call_id") or "")
+            return _generate_chunked_audio(
+                args,
+                text,
+                chunks,
+                generation_tool_call_id,
+                requested_duration=requested_duration,
+            )
     voice = str(args.get("voice") or "").strip() or _default_audio_voice(selected_provider, selected_model)
     payload = {
         "provider": selected_provider,
@@ -2578,7 +3074,7 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
         "duration_seconds": requested_duration or None,
         "session_id": _ctx().get("session_id"),
         "canvas_id": _ctx().get("canvas_id"),
-        "canvas_item_id": _ctx().get("canvas_item_id"),
+        "canvas_item_id": canvas_item_id if is_canvas else _ctx().get("canvas_item_id"),
         "user_id": _ctx().get("user_id"),
         "user_uuid": _ctx().get("user_uuid"),
         "org_no": _ctx().get("org_no"),
@@ -2608,10 +3104,13 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
                 f"attempt={attempt}/{attempts}",
                 flush=True,
             )
+            headers = _relay_headers(payload.get("idempotency_key"))
+            if audio_chunk_request:
+                headers["X-Canvas-Audio-Chunk"] = "true"
             resp = requests.post(
                 relay_url,
                 json=payload,
-                headers=_relay_headers(payload.get("idempotency_key")),
+                headers=headers,
                 timeout=timeout,
             )
         except requests.RequestException as exc:
@@ -2676,6 +3175,9 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
     audio_url = asset.get("url") or asset.get("audio_url")
     if not audio_url:
         return _system_busy_tool_error()
+    if is_canvas and not audio_chunk_request:
+        _mark_canvas_generation_target_used(canvas_item_id, generation_tool_call_id)
+        _ctx()["_canvas_generation_submitted"] = True
     selected_provider = asset.get("provider") or args.get("provider")
     selected_model = asset.get("model") or args.get("model")
     print(
@@ -3503,9 +4005,9 @@ WRITE_PLAN_SCHEMA = {
 CANVAS_CREATE_NODE_SCHEMA = {
     "name": "canvas_create_node",
     "description": (
-        "Create a Canvas node in the current document. Use this before generation when the user asks the agent "
-        "to create or manage canvas items, especially to create an image/video prompt node that later generation "
-        "tools can update by passing canvas_item_id."
+        "Create a Canvas node in the current document when the requested workflow needs a new node. "
+        "Choose the smallest useful graph: do not create a separate Prompt node merely because a media provider "
+        "needs prompt text, and never create one for a reference-based output unless the user asks for it."
     ),
     "parameters": {
         "type": "object",
@@ -3587,6 +4089,7 @@ CANVAS_GENERATE_IMAGE_SCHEMA = {
         "type": "object",
         "properties": {
             "prompt": {"type": "string", "description": "Detailed professional image prompt."},
+            "canvas_operation": {"type": "string", "enum": ["create_new", "edit_existing"], "description": "Canvas intent decision: use edit_existing to update the selected/existing image node, or create_new for a new output node."},
             "canvas_item_id": {"type": "string", "description": "Existing Canvas image node id to update instead of creating a duplicate node."},
             "tool_id": {"type": "string", "description": "Selected Canvas tool id, when known."},
             "provider": {"type": "string", "description": "Selected image provider, when known."},
@@ -3624,9 +4127,11 @@ CANVAS_GENERATE_VIDEO_SCHEMA = {
         "type": "object",
         "properties": {
             "prompt": {"type": "string", "description": "Detailed cinematic video prompt."},
+            "canvas_operation": {"type": "string", "enum": ["create_new", "edit_existing"], "description": "Canvas intent decision: use edit_existing to update the selected/existing video node, or create_new for a new output node."},
             "tool_id": {"type": "string", "description": "Selected Canvas tool id, when known."},
             "provider": {"type": "string", "description": "Selected video provider, when known."},
             "model": {"type": "string", "description": "Selected video model, when known."},
+            "canvas_item_id": {"type": "string", "description": "Existing Canvas video node id to update for an explicit edit."},
             "image_url": {"type": "string", "description": "Reference image URL or file_id."},
             "input_images": {
                 "type": "array",
@@ -3662,24 +4167,6 @@ CANVAS_GENERATE_VIDEO_SCHEMA = {
     },
 }
 
-# Voiceover and soundtrack wiring belongs to Canvas. Edu receives the same
-# video capability without Canvas-only caption metadata or audio-node inputs.
-GENERATE_VIDEO_SCHEMA = {
-    "name": "generate_video",
-    "description": (
-        "Submit a video generation task through the selected Alphart video model. "
-        "Use this for text-to-video and image-to-video tasks. Video result polling stays in the Go backend."
-    ),
-    "parameters": {
-        **CANVAS_GENERATE_VIDEO_SCHEMA["parameters"],
-        "properties": {
-            key: value
-            for key, value in CANVAS_GENERATE_VIDEO_SCHEMA["parameters"]["properties"].items()
-            if key not in {"caption_script", "input_audio"}
-        },
-    },
-}
-
 CANVAS_GENERATE_AUDIO_SCHEMA = {
     "name": "canvas_generate_audio",
     "description": (
@@ -3693,9 +4180,11 @@ CANVAS_GENERATE_AUDIO_SCHEMA = {
         "properties": {
             "input": {"type": "string", "description": "Ready-to-speak script text for the audio."},
             "prompt": {"type": "string", "description": "Alias for input when needed."},
+            "canvas_operation": {"type": "string", "enum": ["create_new", "edit_existing"], "description": "Canvas intent decision: use edit_existing to update the selected/existing audio node, or create_new for a new output node."},
             "tool_id": {"type": "string", "description": "Selected audio/TTS tool id, when known."},
             "provider": {"type": "string", "description": "Selected audio/TTS provider, when known."},
             "model": {"type": "string", "description": "Selected audio/TTS model, when known."},
+            "canvas_item_id": {"type": "string", "description": "Existing Canvas audio node id to update for an explicit edit."},
             "voice": {"type": "string", "description": "Optional voice id/name."},
             "language_type": {
                 "type": "string",
@@ -3708,6 +4197,36 @@ CANVAS_GENERATE_AUDIO_SCHEMA = {
         "required": ["input"],
     },
 }
+
+
+def _generic_generation_schema(
+    canvas_schema: Dict[str, Any],
+    name: str,
+    excluded_fields: Iterable[str] = (),
+) -> Dict[str, Any]:
+    excluded = {"canvas_operation", "canvas_item_id", *excluded_fields}
+    return {
+        **canvas_schema,
+        "name": name,
+        "parameters": {
+            **canvas_schema["parameters"],
+            "properties": {
+                key: value
+                for key, value in canvas_schema["parameters"]["properties"].items()
+                if key not in excluded
+            },
+        },
+    }
+
+
+# Canvas intent and node identity must never be exposed to Edu's generic tools.
+GENERATE_IMAGE_SCHEMA = _generic_generation_schema(CANVAS_GENERATE_IMAGE_SCHEMA, "generate_image")
+GENERATE_VIDEO_SCHEMA = _generic_generation_schema(
+    CANVAS_GENERATE_VIDEO_SCHEMA,
+    "generate_video",
+    {"caption_script", "input_audio"},
+)
+GENERATE_AUDIO_SCHEMA = _generic_generation_schema(CANVAS_GENERATE_AUDIO_SCHEMA, "generate_audio")
 
 CANVAS_CREATE_STORYBOOK_SCHEMA = {
     "name": "canvas_create_storybook",
@@ -3946,7 +4465,7 @@ registry.register(
 registry.register(
     name="generate_image",
     toolset="alphart-edu",
-    schema={**CANVAS_GENERATE_IMAGE_SCHEMA, "name": "generate_image"},
+    schema=GENERATE_IMAGE_SCHEMA,
     handler=_handle_alphart_generate_image,
     is_async=False,
 )
@@ -3974,7 +4493,7 @@ registry.register(
 registry.register(
     name="generate_audio",
     toolset="alphart-edu",
-    schema={**CANVAS_GENERATE_AUDIO_SCHEMA, "name": "generate_audio"},
+    schema=GENERATE_AUDIO_SCHEMA,
     handler=_handle_alphart_generate_audio,
     is_async=False,
 )
