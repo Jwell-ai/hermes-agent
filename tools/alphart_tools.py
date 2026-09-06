@@ -168,6 +168,16 @@ def _canvas_context_audio_item_id() -> str:
     return created_item_id
 
 
+def _canvas_mentioned_node_ids() -> set[str]:
+    """Return node IDs explicitly mentioned in the current Canvas request."""
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
+        return set()
+    values = _ctx().get("mentioned_node_ids") or []
+    if isinstance(values, str):
+        values = [values]
+    return {str(value).strip() for value in values if str(value).strip()}
+
+
 def _canvas_trusted_image_target(item_id: str) -> str:
     """Return an image target selected or created in the current Canvas turn."""
     target_id = str(item_id or "").strip()
@@ -183,6 +193,8 @@ def _canvas_trusted_image_target(item_id: str) -> str:
     selected_id = str(_ctx().get("selected_canvas_item_id") or "").strip()
     selected_type = str(_ctx().get("selected_canvas_item_type") or "").strip().lower()
     if target_id == selected_id and selected_type == "image":
+        return target_id
+    if target_id in _canvas_mentioned_node_ids():
         return target_id
     edit_target_id = str(_ctx().get("canvas_edit_target_id") or "").strip()
     if target_id == edit_target_id and selected_id == target_id and selected_type == "image":
@@ -207,6 +219,8 @@ def _canvas_trusted_audio_target(item_id: str) -> str:
     selected_id = str(_ctx().get("selected_canvas_item_id") or "").strip()
     selected_type = str(_ctx().get("selected_canvas_item_type") or "").strip().lower()
     if target_id == selected_id and selected_type == "audio":
+        return target_id
+    if target_id in _canvas_mentioned_node_ids():
         return target_id
     edit_target_id = str(_ctx().get("canvas_edit_target_id") or "").strip()
     if target_id == edit_target_id and selected_id == target_id and selected_type == "audio":
@@ -1690,9 +1704,9 @@ def _ensure_canvas_video_generation_graph(prompt: str, force_new: bool = False) 
 def _canvas_trusted_video_target(model_item_id: str) -> str:
     """Accept only video targets present in the current Canvas turn context."""
     model_item_id = str(model_item_id or "").strip()
-    if not model_item_id:
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas" or not model_item_id:
         return ""
-    trusted_ids = set()
+    trusted_ids = _canvas_mentioned_node_ids()
     context_item_id = _canvas_context_video_item_id()
     if context_item_id:
         trusted_ids.add(context_item_id)
