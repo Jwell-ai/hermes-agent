@@ -352,9 +352,9 @@ def _video_duration_seconds_from_text(text: Any) -> int:
     """Extract an explicit video duration from the user's request."""
     value = str(text or "")
     for pattern, multiplier in (
-        (r"\b(\d{1,3})\s*(?:minutes?|mins?|m)\b", 60),
+        (r"\b(\d{1,3})[ -]*(?:minutes?|mins?|m)\b", 60),
         (r"(\d{1,3})\s*分钟?", 60),
-        (r"\b(\d{1,3})\s*(?:seconds?|secs?|s)\b", 1),
+        (r"\b(\d{1,3})[ -]*(?:seconds?|secs?|s)\b", 1),
         (r"(\d{1,3})\s*秒", 1),
     ):
         match = re.search(pattern, value, re.IGNORECASE)
@@ -401,11 +401,34 @@ def _audio_language_type_from_text(text: Any) -> str:
     return "english"
 
 
+_SPOKEN_EXPLANATION_INTENT = re.compile(
+    r"^\s*(?:please\s+|(?:can|could|would)\s+you\s+)?(?:"
+    r"use\s+(?:an?\s+)?(?:\d{1,3}[ -]*(?:minutes?|mins?|m|seconds?|secs?|s)[ -]*)?"
+    r"(?:audio|speech|voiceover|narration)\s+(?:to\s+)?(?:explain|describe|teach|summarize|summarise)\b"
+    r"|(?:explain|describe|teach|summarize|summarise)\b[^.!?\n]{0,240}\b(?:using|with|as)\s+"
+    r"(?:an?\s+)?(?:\d{1,3}[ -]*(?:minutes?|mins?|m|seconds?|secs?|s)[ -]*)?"
+    r"(?:audio|speech|voiceover|narration)\b\s*(?:,\s*)?(?:please\s*)?[.!?]*$"
+    r"|(?:explain|describe|teach|summarize|summarise)\b[^.!?\n]{0,240}\bin\s+"
+    r"(?:(?:an?\s+)(?:\d{1,3}[ -]*(?:minutes?|mins?|m|seconds?|secs?|s)[ -]*)?"
+    r"|\d{1,3}[ -]*(?:minutes?|mins?|m|seconds?|secs?|s)[ -]*)"
+    r"(?:audio|speech|voiceover|narration)\b\s*(?:,\s*)?(?:please\s*)?[.!?]*$"
+    r"|(?:explain|describe|teach|summarize|summarise)\s+(?:this|that|it|these|those|the\s+above)\b"
+    r"[^.!?\n]{0,240}\bin\s+(?:audio|speech|voiceover|narration)\b\s*(?:,\s*)?(?:please\s*)?[.!?]*$)"
+    r"|^\s*(?:请|請)?(?:用|以)(?:一段)?(?:\d{1,3}\s*(?:分钟|分鐘|秒))?"
+    r"(?:音频|音頻|语音|語音|旁白)(?:来|來)?(?:解释|解釋|讲解|講解|介绍|介紹)",
+    re.I,
+)
+
+
+def _spoken_explanation_intent(text: str) -> bool:
+    return bool(_SPOKEN_EXPLANATION_INTENT.search(_strip_audio_preferences(text)))
+
+
 def _clean_audio_topic(text: Any) -> str:
     value = _strip_audio_preferences(str(text or ""))
     value = re.sub(
-        r"^\s*(/audio|(?:generate|create|make|produce)\s+(?:an?\s+)?"
-        r"(?:\d{1,3}\s*(?:minutes?|mins?|m|seconds?|secs?|s)|\d{1,3}\s*分钟?|\d{1,3}\s*秒)?\s*"
+        r"^\s*(/audio|(?:generate|create|make|produce|use)\s+(?:an?\s+)?"
+        r"(?:\d{1,3}[ -]*(?:minutes?|mins?|m|seconds?|secs?|s)|\d{1,3}\s*分钟?|\d{1,3}\s*秒)?[ -]*"
         r"(?:audio|speech|voiceover|narration)|generate\s+speech|create\s+speech|"
         r"生成(?:一段?)?(?:\d{1,3}\s*(?:分钟?|秒))?\s*(?:音频|音訊|语音|語音|旁白)"
         r"|生成一段?音频|生成一段?音訊|生成音频|生成音訊|生成语音|生成語音|生成旁白)\s*[:：,，-]*\s*",
@@ -414,7 +437,7 @@ def _clean_audio_topic(text: Any) -> str:
         flags=re.I,
     ).strip()
     value = re.sub(r"^(?:介绍|介紹|讲解|講解|朗读|朗讀)\s*", "", value)
-    value = re.sub(r"^(?:that\s+)?(?:explains?|describes?|teaches?|talks?\s+about|about|on)\s+", "", value, flags=re.I)
+    value = re.sub(r"^(?:(?:that|to)\s+)?(?:explains?|describes?|teaches?|talks?\s+about|about|on)\s+", "", value, flags=re.I)
     value = re.sub(r"\b(use|in|with)\s+(mandarin|cantonese|english)\b", "", value, flags=re.I).strip()
     value = re.sub(r"(用|以)?(中文|普通话|普通話|粤语|粵語|广东话|廣東話|英文|英语|英語)(介绍|介紹|朗读|朗讀|讲解|講解)?", "", value).strip()
     return value or _strip_audio_preferences(str(text or "")).strip()
@@ -1093,6 +1116,23 @@ def _audio_result_success(result: str) -> bool:
     return bool(_audio_result_payload(result))
 
 
+def _audio_failure_message(value: Any) -> str:
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            return value.strip()[:1000]
+        if isinstance(decoded, dict):
+            return _audio_failure_message(decoded)
+        return value.strip()[:1000]
+    if isinstance(value, dict):
+        for key in ("result", "message", "error", "detail", "raw"):
+            message = _audio_failure_message(value.get(key))
+            if message:
+                return message
+    return ""
+
+
 def _audio_usage_sum(total: Dict[str, Any], usage: Any) -> None:
     if not isinstance(usage, dict):
         return
@@ -1311,7 +1351,7 @@ def _generate_chunked_audio(
                 break
             print(
                 f"[alphart-agent] audio chunk failed chunk={index}/{len(chunks)} "
-                f"attempt={attempt}/{retries}",
+                f"attempt={attempt}/{retries} error={_audio_failure_message(result)!r}",
                 flush=True,
             )
             if attempt < retries:
@@ -1326,7 +1366,7 @@ def _generate_chunked_audio(
                 "result": {
                     "type": "generate_audio_result",
                     "status": "partial",
-                    "message": "generate fail",
+                    "message": _audio_failure_message(result) or "Audio relay returned an unsuccessful result",
                     "provider": provider,
                     "model": model,
                     "input": text,
@@ -3151,13 +3191,17 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
             result = dict(decoded["result"])
             result.setdefault("type", "generate_audio_result")
             result.setdefault("status", "partial" if result.get("usage") else "failed")
-            result.setdefault("message", decoded.get("message") or "generate fail")
+            result.setdefault("message", _audio_failure_message(decoded) or f"Audio relay returned HTTP {resp.status_code}")
             result.setdefault("provider", selected_provider)
             result.setdefault("model", selected_model)
             result.setdefault("input", text)
             result.setdefault("script", text)
             return json.dumps({"status": "failed", "result": result}, ensure_ascii=False)
-        return _system_busy_tool_error()
+        return _tool_error(
+            f"Audio relay returned HTTP {resp.status_code}: "
+            f"{_audio_failure_message(decoded) or 'empty error response'}",
+            "AUDIO_RELAY_FAILED",
+        )
     data = decoded.get("data") if isinstance(decoded, dict) else None
     if isinstance(data, list) and data and isinstance(data[0], dict):
         asset = data[0]
@@ -3176,7 +3220,7 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
             return _tool_error(f"Unable to store generated audio: {exc}")
     audio_url = asset.get("url") or asset.get("audio_url")
     if not audio_url:
-        return _system_busy_tool_error()
+        return _tool_error("Audio relay returned no playable audio URL", "AUDIO_RESULT_MISSING")
     if is_canvas and not audio_chunk_request:
         _mark_canvas_generation_target_used(canvas_item_id, generation_tool_call_id)
         _ctx()["_canvas_generation_submitted"] = True
@@ -4194,7 +4238,7 @@ CANVAS_GENERATE_AUDIO_SCHEMA = {
                 "description": "Requested spoken language/accent: mandarin for 中文, cantonese for 粤语/广东话, english for English.",
             },
             "response_format": {"type": "string", "description": "Optional output format, e.g. wav or mp3."},
-            "duration_seconds": {"type": "integer", "description": "Requested Canvas audio duration in seconds (5-15)."},
+            "duration_seconds": {"type": "integer", "description": "Requested audio duration in seconds, e.g. 180 for 3 minutes. Canvas node audio is limited to 5-15 seconds; Edu chat audio supports longer narration."},
         },
         "required": ["input"],
     },

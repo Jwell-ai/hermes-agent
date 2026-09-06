@@ -38,6 +38,7 @@ from tools.alphart_tools import (
     _handle_alphart_transcribe_audio,
     _handle_alphart_update_storybook_page,
     _selected_tools,
+    _spoken_explanation_intent,
     _video_duration_seconds_from_text,
     alphart_context,
 )
@@ -1399,6 +1400,8 @@ def _media_intent(
     value = (text or "").lower()
     if not value.strip():
         return ""
+    if _spoken_explanation_intent(value):
+        return "audio"
     if _media_analysis_intent(value):
         return ""
     text_refinement_words = (
@@ -1603,8 +1606,8 @@ def _strip_audio_preferences(text: str) -> str:
 def _clean_audio_topic(text: str) -> str:
     value = _strip_audio_preferences(text)
     value = re.sub(
-        r"^\s*(/audio|(?:generate|create|make|produce)\s+(?:an?\s+)?"
-        r"(?:\d{1,3}\s*(?:minutes?|mins?|m|seconds?|secs?|s)|\d{1,3}\s*分钟?|\d{1,3}\s*秒)?\s*"
+        r"^\s*(/audio|(?:generate|create|make|produce|use)\s+(?:an?\s+)?"
+        r"(?:\d{1,3}[ -]*(?:minutes?|mins?|m|seconds?|secs?|s)|\d{1,3}\s*分钟?|\d{1,3}\s*秒)?[ -]*"
         r"(?:audio|speech|voiceover|narration)|generate\s+speech|create\s+speech|"
         r"生成(?:一段?)?(?:\d{1,3}\s*(?:分钟?|秒))?\s*(?:音频|音訊|语音|語音|旁白)"
         r"|生成一段?音频|生成一段?音訊|生成音频|生成音訊|生成语音|生成語音|生成旁白)\s*[:：,，-]*\s*",
@@ -1613,7 +1616,7 @@ def _clean_audio_topic(text: str) -> str:
         flags=re.I,
     ).strip()
     value = re.sub(r"^(?:介绍|介紹|讲解|講解|朗读|朗讀)\s*", "", value)
-    value = re.sub(r"^(?:that\s+)?(?:explains?|describes?|teaches?|talks?\s+about|about|on)\s+", "", value, flags=re.I)
+    value = re.sub(r"^(?:(?:that|to)\s+)?(?:explains?|describes?|teaches?|talks?\s+about|about|on)\s+", "", value, flags=re.I)
     value = re.sub(r"\b(use|in|with)\s+(mandarin|cantonese|english)\b", "", value, flags=re.I).strip()
     value = re.sub(r"(用|以)?(中文|普通话|普通話|粤语|粵語|广东话|廣東話|英文|英语|英語)(介绍|介紹|朗读|朗讀|讲解|講解)?", "", value).strip()
     return value or _strip_audio_preferences(text).strip()
@@ -1725,6 +1728,8 @@ def _agent_max_tokens(config: Dict[str, Any], *, is_game: bool = False) -> Optio
 
 
 def _media_analysis_intent(value: str) -> bool:
+    if _spoken_explanation_intent(value):
+        return False
     if not re.search(r"<input_(?:images|videos)\b", value) and not any(
         word in value
         for word in (
@@ -3390,6 +3395,8 @@ IMAGE CREATION RULES:
 	- If the legacy prompt mentions generate_image, call generate_image or canvas_generate_image. If it mentions generate_video, call generate_video or canvas_generate_video.
 
 		AUDIO CREATION RULES:
+		- Requests such as "use 3mins audio explain this poem" or "explain this in audio" request spoken output. Explain the referenced content in a narration script and call the audio tool in this turn.
+		- Pass the requested duration in seconds (3 minutes = 180) and write enough relevant narration for that duration, approximately 130 English words per minute. Use the poem or other referenced content from the conversation; ask for it when missing instead of inventing it.
 		- Use canvas_generate_audio or generate_audio for spoken-audio tasks, including "generate an audio", "create a voiceover", "read aloud", "生成一段音频", "生成一段音訊", "生成语音", "生成語音", "用粤语/粵語/广东话/廣東話介绍", and equivalent requests.
 		- Audio generation must produce two user-visible outputs: first a normal assistant text message containing the educational narration/script, then the generated audio result. Do not replace the script with a plan.
 		- The audio tool input must be the same ready-to-speak script text from the assistant message, not the raw command.

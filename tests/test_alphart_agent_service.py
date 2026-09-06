@@ -1935,3 +1935,44 @@ def test_edu_audio_recovery_preserves_requested_minutes_and_approved_narration()
     assert messages[0]["content"] == script
     assert generate_audio.call_args.args[0]["input"] == script
     assert generate_audio.call_args.args[0]["duration_seconds"] == 120
+
+
+def test_spoken_explanations_route_to_audio_without_generate_verb():
+    for request in (
+        "use 3mins audio explain this poem",
+        "Explain this poem in a 3-minute audio",
+        "Please use audio to explain this image",
+        "用3分钟音频讲解这首诗",
+    ):
+        assert _media_intent(request) == "audio", request
+    for request in (
+        "Explain this 3mins audio",
+        "Use this audio to explain this poem",
+        "Don't use audio to explain this poem",
+        "Explain this image",
+        "Explain noise reduction in audio",
+        "Explain the role of pauses in speech",
+        "Explain the background noise in an audio recording",
+        "Explain this distortion in audio recordings",
+        "Explain how to remove noise using audio filters",
+    ):
+        assert _media_intent(request) == "", request
+
+
+def test_spoken_explanation_recovery_calls_audio_with_requested_duration():
+    script = "The poem contrasts a quiet landscape with the speaker's longing."
+    for request in (
+        "use 3mins audio explain this poem",
+        "Please use a 3-minute audio to explain this image",
+    ):
+        with patch(
+            "alphart_agent_service._handle_alphart_generate_audio",
+            return_value='{"status":"success","result":{"type":"generate_audio_result"}}',
+        ) as generate_audio:
+            messages = _forced_media_tool_messages(
+                request, [], [], approved_audio_script=script,
+            )
+        generate_audio.assert_called_once()
+        assert generate_audio.call_args.args[0]["duration_seconds"] == 180
+        assert generate_audio.call_args.args[0]["input"] == script
+        assert messages[0]["content"] == script

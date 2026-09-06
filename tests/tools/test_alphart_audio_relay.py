@@ -438,6 +438,9 @@ def test_audio_request_parses_minutes_and_removes_prompt_scaffolding():
     assert _clean_audio_topic(request) == "this event"
     assert _video_duration_seconds_from_text("生成3分钟音频介绍这个事件") == 180
     assert _clean_audio_topic("生成3分钟音频介绍这个事件") == "这个事件"
+    assert _video_duration_seconds_from_text("use a 3-minute audio to explain this poem") == 180
+    assert _clean_audio_topic("use 3mins audio explain this poem") == "this poem"
+    assert _clean_audio_topic("use a 3-minute audio to explain this poem") == "this poem"
 
     with (
         alphart_context({
@@ -821,6 +824,30 @@ def test_chunked_audio_reports_partial_failure():
     assert result["result"]["status"] == "partial"
     assert result["result"]["failed_chunk_index"] == 1
     assert result["result"]["generated_chunk_count"] == 0
+    assert result["result"]["message"] == "provider unavailable"
+
+
+def test_chunked_audio_preserves_jwell_provider_error():
+    response = MagicMock(status_code=400, text='{"error":"MODEL_NOT_FOUND","message":"no active audio relay model is configured"}')
+    response.json.return_value = json.loads(response.text)
+    with (
+        alphart_context({"app_scope": "edu"}),
+        patch("tools.alphart_tools._relay_url", return_value="http://relay/audio/speech"),
+        patch("tools.alphart_tools._relay_headers", return_value={}),
+        patch("tools.alphart_tools.requests.post", return_value=response),
+        patch("tools.alphart_tools.time.sleep"),
+    ):
+        result = json.loads(_generate_chunked_audio(
+            {"provider": "google", "model": "gemini-3.1-flash-tts-preview"},
+            "The complete script.",
+            ["The first part.", "The second part."],
+            tool_call_id="audio-error",
+        ))
+
+    assert result["status"] == "failed"
+    assert "HTTP 400" in result["result"]["message"]
+    assert "no active audio relay model is configured" in result["result"]["message"]
+    assert result["result"]["failed_chunk_index"] == 1
 
 
 def test_chunked_audio_counts_generated_chunk_when_download_fails():
