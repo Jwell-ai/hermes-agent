@@ -82,6 +82,7 @@ class AlphartEduChatRequest(BaseModel):
     storage_prefix: str = ""
     org_no: str = ""
     auth_token: str = ""
+    input: Any = None
     messages: List[Any] = Field(default_factory=list)
     conversation_history: List[Any] = Field(default_factory=list)
     text_model: Dict[str, Any] = Field(default_factory=dict)
@@ -3772,12 +3773,12 @@ def _canvas_workflow_guidance(req: AlphartEduChatRequest) -> str:
 
 def _request_messages(req: AlphartEduChatRequest) -> List[Any]:
     if _request_app_scope(req) == "canvas":
-        return [*_canvas_history_messages(req.conversation_history), *_canvas_current_messages(req.messages)]
+        return [*_canvas_history_messages(req.conversation_history), *_canvas_current_request_messages(req)]
     return list(req.messages or [])
 
 
 def _canvas_history_messages(messages: List[Any]) -> List[Dict[str, Any]]:
-    """Accept only bounded conversational text from the client history field."""
+    """Accept only bounded conversational text from canonical backend history."""
     safe: List[Dict[str, Any]] = []
     for message in messages or []:
         if not isinstance(message, dict):
@@ -3804,11 +3805,17 @@ def _canvas_current_messages(messages: List[Any]) -> List[Dict[str, Any]]:
     return safe
 
 
+def _canvas_current_request_messages(req: AlphartEduChatRequest) -> List[Dict[str, Any]]:
+    if req.input is not None:
+        return [{"role": "user", "content": req.input}]
+    return _canvas_current_messages(req.messages)
+
+
 def _canvas_request_text(req: AlphartEduChatRequest) -> str:
     # History is supplied for conversational context, but intent must come from
     # the current user turn so an older "generate video" request cannot steer a
     # later text or image operation.
-    for message in reversed(req.messages or []):
+    for message in reversed(_canvas_current_request_messages(req)):
         if isinstance(message, dict) and _string(message.get("role")).lower() == "user":
             return _message_text(message).strip()
     return ""
@@ -4706,6 +4713,11 @@ def _post_chat_result_callback(req: AlphartEduChatRequest, response: Dict[str, A
             flush=True,
         )
         return
+    request_messages = (
+        _canvas_current_request_messages(req)
+        if _request_app_scope(req) == "canvas"
+        else list(req.messages or [])
+    )
     payload = dict(response)
     payload.update(
         {
@@ -4713,7 +4725,7 @@ def _post_chat_result_callback(req: AlphartEduChatRequest, response: Dict[str, A
             "canvas_id": req.canvas_id,
             "canvas_item_id": response.get("canvas_item_id") or req.canvas_item_id,
             "user_id": req.user_id,
-            "request_messages": req.messages,
+            "request_messages": request_messages,
         }
     )
     try:
@@ -5381,7 +5393,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
 
     primary_text_model = candidates[0]
     current_messages = _fix_chat_history(_filter_image_content(
-        _canvas_current_messages(req.messages) if _request_app_scope(req) == "canvas" else [
+        _canvas_current_request_messages(req) if _request_app_scope(req) == "canvas" else [
             msg for msg in (req.messages or []) if isinstance(msg, dict)
         ],
         primary_text_model,

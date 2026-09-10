@@ -552,6 +552,28 @@ def test_jwell_callbacks_include_app_secret(monkeypatch):
         assert "X-App-Secret" not in call.kwargs["headers"]
 
 
+def test_edu_result_callback_preserves_request_message_metadata(monkeypatch):
+    monkeypatch.setenv("ALPHART_EDU_BACKEND_URL", "http://edu-backend")
+    message = {
+        "role": "user",
+        "content": "Explain this poem",
+        "client_id": "turn-123",
+        "_idempotency_key": "stable-turn-123",
+        "created_at": "2026-09-09T10:00:00Z",
+    }
+    request = AlphartEduChatRequest(
+        app_scope="edu",
+        session_id="session-1",
+        messages=[message],
+    )
+    response = SimpleNamespace(status_code=200, text="{}")
+
+    with patch("alphart_agent_service.requests.post", return_value=response) as post:
+        _post_chat_result_callback(request, {"final_response": "done"})
+
+    assert post.call_args.kwargs["json"]["request_messages"] == [message]
+
+
 def test_canvas_result_callback_preserves_generated_item_id(monkeypatch):
     monkeypatch.setenv("ALPHART_EDU_BACKEND_URL", "http://canvas-backend")
     request = AlphartEduChatRequest(
@@ -1128,6 +1150,27 @@ def test_canvas_structured_intent_uses_latest_turn_over_history():
 
     assert _canvas_request_text(request) == "create an image of a sunset"
     assert _canvas_workflow_item_type(request) == "image"
+
+
+def test_canvas_raw_input_owns_current_turn_and_preserves_media():
+    raw_input = [
+        {"type": "text", "text": "edit this image"},
+        {"type": "image_url", "image_url": {"url": "https://example.test/reference.jpg"}},
+    ]
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        input=raw_input,
+        messages=[{"role": "user", "content": "stale client message"}],
+        conversation_history=[{"role": "assistant", "content": "Earlier answer"}],
+    )
+
+    assert _canvas_request_text(request) == (
+        "edit this image\n[image: https://example.test/reference.jpg]"
+    )
+    assert _request_messages(request) == [
+        {"role": "assistant", "content": "Earlier answer"},
+        {"role": "user", "content": raw_input},
+    ]
 
 
 def test_canvas_request_text_does_not_replay_history_without_current_turn():
