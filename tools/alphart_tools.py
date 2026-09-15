@@ -377,6 +377,31 @@ def _canvas_image_reference_key(value: Any) -> str:
     return raw
 
 
+def _merge_canvas_image_references(canvas_images: Any, requested_images: Any) -> list[Any]:
+    """Keep backend references while allowing Hermes to assign semantic roles."""
+    merged = [dict(entry) if isinstance(entry, dict) else entry for entry in (canvas_images or [])]
+    positions = {
+        _canvas_image_reference_key(entry): index
+        for index, entry in enumerate(merged)
+        if _canvas_image_reference_key(entry)
+    }
+    for entry in requested_images or []:
+        identity = _canvas_image_reference_key(entry)
+        if not identity:
+            continue
+        if identity not in positions:
+            positions[identity] = len(merged)
+            merged.append(dict(entry) if isinstance(entry, dict) else entry)
+            continue
+        existing = merged[positions[identity]]
+        if not isinstance(existing, dict) or not isinstance(entry, dict):
+            continue
+        for field in ("role", "reference_note"):
+            if str(entry.get(field) or "").strip():
+                existing[field] = entry[field]
+    return merged
+
+
 def _canvas_explicit_video_request() -> bool:
     """Keep speculative keyframe generation out of an explicit video turn."""
     if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
@@ -2806,14 +2831,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
             entry for entry in (args.get("input_images") or [])
             if _canvas_image_reference_key(entry)
         ]
-        merged_images = list(canvas_images)
-        known_images = {_canvas_image_reference_key(entry) for entry in canvas_images}
-        for entry in requested_images:
-            identity = _canvas_image_reference_key(entry)
-            if identity and identity not in known_images:
-                merged_images.append(entry)
-                known_images.add(identity)
-        args["input_images"] = merged_images
+        args["input_images"] = _merge_canvas_image_references(canvas_images, requested_images)
     elif not args.get("input_images") and _ctx().get("input_images"):
         args["input_images"] = _ctx().get("input_images")
 
@@ -4121,7 +4139,7 @@ CANVAS_CREATE_NODE_SCHEMA = {
         "type": "object",
         "properties": {
             "canvas_id": {"type": "string", "description": "Canvas document id. Defaults to current canvas."},
-            "item_type": {"type": "string", "enum": ["text", "note", "image", "video", "audio", "file", "group"]},
+            "item_type": {"type": "string", "enum": ["text", "note", "image", "video", "audio", "file", "previs", "group"]},
             "title": {"type": "string", "description": "Concise 2-6 word summary of this node's role or content; preserve an explicit user title."},
             "text": {"type": "string", "description": "Text content for text/note nodes."},
             "prompt": {"type": "string", "description": "Prompt content for media generation nodes."},
@@ -4160,7 +4178,7 @@ CANVAS_UPDATE_NODE_SCHEMA = {
             "content_patch": {
                 "type": "object",
                 "description": (
-                    "Merge-only Canvas content fields. For a video shot previs, set previs_scene with version=1, "
+                    "Merge-only Canvas content fields. For a previs node or legacy video-attached shot previs, set previs_scene with version=1, "
                     "duration_seconds=5-15, a supported aspect_ratio, camera position/target/focal_length, "
                     "box/sphere/cylinder objects with id/name/position/rotation/scale/color, and ordered camera "
                     "keyframes with id/time_seconds/camera. Preserve all unchanged fields from the complete "
@@ -4260,8 +4278,9 @@ CANVAS_GENERATE_VIDEO_SCHEMA = {
                         "file_id": {"type": "string"},
                         "filename": {"type": "string"},
                         "mime_type": {"type": "string"},
-                        "role": {"type": "string", "description": "Reference role from the user's @file instruction, e.g. protagonist or background."},
+                        "role": {"type": "string", "description": "Hermes-selected video role such as first_frame, last_frame, or reference_image. Choose from the shot intent and previs timing, not list order."},
                         "reference_note": {"type": "string", "description": "Short reference note from the user's @file instruction."},
+                        "previs_time_seconds": {"type": "number", "description": "Backend-provided capture time within a referenced previs shot."},
                     },
                 },
                 "description": "Reference images extracted from <input_images> XML. Prefer s3_object_name objects; file_id strings are fallback only.",

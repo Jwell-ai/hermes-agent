@@ -10,10 +10,12 @@ from agent.chat_completion_helpers import (
     _relay_request_overrides,
 )
 from tools.alphart_tools import (
+    CANVAS_CREATE_NODE_SCHEMA,
     CANVAS_GENERATE_AUDIO_SCHEMA,
     CANVAS_GENERATE_IMAGE_SCHEMA,
     CANVAS_GENERATE_VIDEO_SCHEMA,
     CANVAS_UPDATE_NODE_SCHEMA,
+    _merge_canvas_image_references,
     _mark_canvas_generation_target_used,
     alphart_context,
 )
@@ -85,6 +87,7 @@ from toolsets import resolve_toolset
 def test_canvas_update_node_exposes_merge_only_previs_scene_contract():
     properties = CANVAS_UPDATE_NODE_SCHEMA["parameters"]["properties"]
 
+    assert "previs" in CANVAS_CREATE_NODE_SCHEMA["parameters"]["properties"]["item_type"]["enum"]
     assert "content_patch" in properties
     assert "previs_scene" in properties["content_patch"]["description"]
 
@@ -93,8 +96,45 @@ def test_canvas_prompt_keeps_previs_intent_in_hermes():
     prompt = _canvas_agent_prompt(AlphartEduChatRequest(app_scope="canvas"))
 
     assert "Hermes owns shot intent" in prompt
+    assert "item_type=previs" in prompt
+    assert "explicitly referenced existing previs node" in prompt
     assert "content_patch.previs_scene" in prompt
     assert "do not generate a video unless the user" in prompt
+    assert "never infer its role from list order" in prompt
+
+
+def test_canvas_video_reference_merge_honors_hermes_frame_role():
+    video_image_properties = CANVAS_GENERATE_VIDEO_SCHEMA["parameters"]["properties"]["input_images"]["items"]["properties"]
+    assert "previs_time_seconds" in video_image_properties
+
+    canvas_images = [{
+        "s3_object_name": "org/canvas/captured.png",
+        "previs_time_seconds": 7.5,
+    }]
+    requested_images = [{
+        "s3_object_name": "org/canvas/captured.png",
+        "role": "last_frame",
+    }]
+
+    assert _merge_canvas_image_references(canvas_images, requested_images) == [{
+        "s3_object_name": "org/canvas/captured.png",
+        "previs_time_seconds": 7.5,
+        "role": "last_frame",
+    }]
+
+
+def test_canvas_previs_requests_open_mutation_tools_without_backend_intent_metadata():
+    for instruction in (
+        "create a previs for a dolly shot",
+        "move the camera in @Shot Previs closer to the subject",
+        "use @Shot Previs to generate a 5s video",
+    ):
+        request = AlphartEduChatRequest(
+            app_scope="canvas",
+            messages=[{"role": "user", "content": instruction}],
+        )
+
+        assert _canvas_explicit_mutation_request(request), instruction
 
 
 def test_canvas_flat_multimodal_config_is_used():
