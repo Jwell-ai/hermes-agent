@@ -4156,7 +4156,17 @@ CANVAS_UPDATE_NODE_SCHEMA = {
             "title": {"type": "string"},
             "text": {"type": "string"},
             "prompt": {"type": "string"},
-            "content": {"type": "object"},
+            "content": {"type": "object", "description": "Full replacement Canvas node content JSON."},
+            "content_patch": {
+                "type": "object",
+                "description": (
+                    "Merge-only Canvas content fields. For a video shot previs, set previs_scene with version=1, "
+                    "duration_seconds=5-15, a supported aspect_ratio, camera position/target/focal_length, "
+                    "box/sphere/cylinder objects with id/name/position/rotation/scale/color, and ordered camera "
+                    "keyframes with id/time_seconds/camera. Preserve all unchanged fields from the complete "
+                    "backend-provided previs_scene JSON when editing."
+                ),
+            },
             "generation_config": {"type": "object"},
             "position_x": {"type": "number"},
             "position_y": {"type": "number"},

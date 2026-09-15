@@ -3671,6 +3671,21 @@ MEDIA RULES:
 - If a tool fails, report the specific failure without overwriting existing node
   content and do not automatically retry the same request.
 
+SHOT PREVIS RULES:
+- Hermes owns shot intent. When the user asks to block, stage, previsualize, or
+  position a camera or simple scene for a selected video node, choose the semantic
+  blocking and call canvas_update_node with content_patch.previs_scene. Do not ask
+  the Go backend to infer the scene, and do not generate a video unless the user
+  also asks to generate it.
+- A previs_scene uses version=1, duration_seconds from 5 to 15, aspect_ratio, a
+  camera with position [x,y,z], target [x,y,z], and focal_length from 18 to 120,
+  plus zero or more box/sphere/cylinder objects. Each object includes id, type,
+  name, position, rotation, scale, and color. Each camera keyframe includes id,
+  time_seconds, and camera; keyframes must be ordered within the shot duration.
+- Treat backend-provided Canvas previs direction as authoritative shot direction
+  when composing a later video prompt. Captured previs images are ordinary explicit
+  keyframe references; use them only when connected or named by the user.
+
 CONVERSATION RULES:
 - Answer normal questions directly without tools.
 - Do not use Edu-only workflows such as storybooks, games, course artefacts, or

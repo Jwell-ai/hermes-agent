@@ -13,10 +13,10 @@ from tools.alphart_tools import (
     CANVAS_GENERATE_AUDIO_SCHEMA,
     CANVAS_GENERATE_IMAGE_SCHEMA,
     CANVAS_GENERATE_VIDEO_SCHEMA,
+    CANVAS_UPDATE_NODE_SCHEMA,
     _mark_canvas_generation_target_used,
     alphart_context,
 )
-
 from alphart_agent_service import (
     AlphartEduChatRequest,
     AlphartEduTitleRequest,
@@ -80,6 +80,21 @@ from alphart_agent_service import (
     title,
 )
 from toolsets import resolve_toolset
+
+
+def test_canvas_update_node_exposes_merge_only_previs_scene_contract():
+    properties = CANVAS_UPDATE_NODE_SCHEMA["parameters"]["properties"]
+
+    assert "content_patch" in properties
+    assert "previs_scene" in properties["content_patch"]["description"]
+
+
+def test_canvas_prompt_keeps_previs_intent_in_hermes():
+    prompt = _canvas_agent_prompt(AlphartEduChatRequest(app_scope="canvas"))
+
+    assert "Hermes owns shot intent" in prompt
+    assert "content_patch.previs_scene" in prompt
+    assert "do not generate a video unless the user" in prompt
 
 
 def test_canvas_flat_multimodal_config_is_used():
