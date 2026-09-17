@@ -719,7 +719,10 @@ def _apply_audio_voice_options(args: Dict[str, Any], tool: Dict[str, Any]) -> st
     requested_voice = str(args.get("voice") or "").strip()
     selected: Dict[str, Any] = {}
     if _ctx().get("model_catalog_authoritative") and requested_voice and not options:
-        return "The selected audio model does not advertise any configured voices."
+        # No advertised list means Jwell owns the provider default. Do not let
+        # an LLM-invented voice prevent an otherwise valid TTS request.
+        args.pop("voice", None)
+        requested_voice = ""
     if options:
         if requested_voice:
             requested_label = requested_voice.casefold()

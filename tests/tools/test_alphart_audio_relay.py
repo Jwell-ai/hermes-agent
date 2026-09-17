@@ -94,6 +94,38 @@ def test_authoritative_audio_catalog_rejects_unconfigured_voice():
     assert "configured-voice" in result["error"]
 
 
+def test_authoritative_audio_catalog_omits_voice_when_none_are_advertised():
+    response = MagicMock(status_code=200, text="")
+    response.json.return_value = {"data": {"url": "https://storage.example/audio.wav"}}
+    with (
+        alphart_context({
+            "app_scope": "edu",
+            "user_message": "generate an audio",
+            "model_catalog_authoritative": True,
+            "tool_list": [{
+                "id": "tts-tool",
+                "type": "audio",
+                "provider": "openai",
+                "model": "gpt-4o-mini-tts",
+            }],
+        }),
+        patch("tools.alphart_tools._relay_url", return_value="http://relay/audio/speech"),
+        patch("tools.alphart_tools._jwell_relay_enabled", return_value=False),
+        patch("tools.alphart_tools._backend_tool_timeout", return_value=10),
+        patch("tools.alphart_tools._relay_headers", return_value={}),
+        patch("tools.alphart_tools.requests.post", return_value=response) as post,
+    ):
+        result = json.loads(_handle_alphart_generate_audio({
+            "tool_id": "tts-tool",
+            "input": "Read this sentence.",
+            "voice": "invented-voice",
+        }))
+
+    assert result["status"] == "success"
+    assert post.call_args.kwargs["json"]["voice"] is None
+    assert post.call_args.kwargs["json"]["speed"] == 1.0
+
+
 def test_authoritative_audio_catalog_rejects_unknown_tool_instead_of_synthesizing_it():
     with alphart_context({
         "app_scope": "edu",

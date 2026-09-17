@@ -692,6 +692,25 @@ def _jwell_catalog_model_key(model: Dict[str, Any]) -> str:
     return f"{provider}:{key}"
 
 
+def _jwell_catalog_voice_options(model: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw: Any = model.get("voices")
+    if raw is None:
+        raw = model.get("extra_data")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+    if isinstance(raw, dict):
+        raw = raw.get("voices")
+    if not isinstance(raw, list):
+        return []
+    return [
+        option for option in raw
+        if isinstance(option, dict) and _string(option.get("voice_id"))
+    ]
+
+
 def _jwell_catalog_text_models(models: List[Any]) -> List[Dict[str, Any]]:
     candidates: List[Dict[str, Any]] = []
     seen = set()
@@ -748,8 +767,8 @@ def _jwell_catalog_media_tools(models: List[Any]) -> List[Dict[str, Any]]:
         relay_tool_id = raw.get("tool_id")
         if relay_tool_id not in (None, "", 0):
             tool["relay_tool_id"] = relay_tool_id
-        voices = raw.get("extra_data")
-        if isinstance(voices, list) and voices:
+        voices = _jwell_catalog_voice_options(raw)
+        if voices:
             tool["voices"] = voices
         tools.append(tool)
     return tools

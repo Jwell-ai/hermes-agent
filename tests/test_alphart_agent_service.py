@@ -69,6 +69,7 @@ from alphart_agent_service import (
     _is_account_terminal_relay_failure,
     _is_retryable_relay_failure,
     _jwell_relay_base_urls,
+    _jwell_catalog_voice_options,
     _use_internal_relay,
     _generation_tool_attempted,
     _generation_tool_effectively_failed,
@@ -220,6 +221,19 @@ def test_agent_loads_authoritative_jwell_catalog_and_voice_options(monkeypatch):
     assert call.kwargs["headers"]["X-App-Secret"] == "secret"
     assert call.kwargs["headers"]["X-Internal-User-ID"] == "42"
     assert call.kwargs["headers"]["X-Internal-User-UUID"] == "user-uuid"
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        {"extra_data": [{"voice_id": "voice-1"}]},
+        {"extra_data": {"operations": ["tts"], "voices": [{"voice_id": "voice-1"}]}},
+        {"extra_data": '{"operations":["tts"],"voices":[{"voice_id":"voice-1"}]}'},
+        {"voices": [{"voice_id": "voice-1"}]},
+    ],
+)
+def test_jwell_catalog_voice_options_accepts_supported_catalog_shapes(model):
+    assert _jwell_catalog_voice_options(model) == [{"voice_id": "voice-1"}]
 
 
 def test_agent_preserves_valid_canvas_text_model_and_reasoning_preference():
