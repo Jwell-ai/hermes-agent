@@ -4180,7 +4180,9 @@ CANVAS_UPDATE_NODE_SCHEMA = {
                 "description": (
                     "Merge-only Canvas content fields. For a previs node or legacy video-attached shot previs, set previs_scene with version=1, "
                     "duration_seconds=5-15, a supported aspect_ratio, camera position/target/focal_length, "
-                    "box/sphere/cylinder objects with id/name/position/rotation/scale/color, and ordered camera "
+                    "an optional shot_description, environment background/ground colors and ambient/key light settings, "
+                    "up to eight saved_cameras with id/name/camera/keyframes plus active_camera_id, "
+                    "box/sphere/cylinder/cone/character whitebox objects with id/name/position/rotation/scale/color (and character pose/height), and ordered camera "
                     "keyframes with id/time_seconds/camera. Preserve all unchanged fields from the complete "
                     "backend-provided previs_scene JSON when editing."
                 ),
