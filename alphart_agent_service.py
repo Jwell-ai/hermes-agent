@@ -30,6 +30,7 @@ from tools.alphart_tools import (
     GENERATE_AUDIO_SCHEMA,
     GENERATE_IMAGE_SCHEMA,
     GENERATE_VIDEO_SCHEMA,
+    _audio_voice_options,
     _ctx,
     _handle_alphart_create_storybook,
     _handle_alphart_generate_audio,
@@ -959,8 +960,30 @@ def _selected_tool_lines(tools: List[Any]) -> List[str]:
         model = _string(tool.get("model") or tool.get("name") or tool.get("key"))
         if not tool_id and not (media_type and provider and model):
             continue
+        voice_details: List[str] = []
+        for option in _audio_voice_options(tool):
+            voice_id = _string(option.get("voice_id"))
+            tag = _string(option.get("tag"))
+            speed = option.get("speed")
+            min_speed = option.get("min_speed")
+            max_speed = option.get("max_speed")
+            attributes = []
+            if tag:
+                attributes.append(tag)
+            if speed is not None:
+                attributes.append(f"default_speed={speed}")
+            if min_speed is not None or max_speed is not None:
+                attributes.append(
+                    f"speed_range={min_speed if min_speed is not None else '*'}.."
+                    f"{max_speed if max_speed is not None else '*'}"
+                )
+            voice_details.append(
+                f"{voice_id} ({', '.join(attributes)})" if attributes else voice_id
+            )
+        voice_suffix = f", voices=[{'; '.join(voice_details)}]" if voice_details else ""
         lines.append(
-            f"- {media_type or 'tool'}: tool_id={tool_id or '(derive)'}, provider={provider}, model={model}"
+            f"- {media_type or 'tool'}: tool_id={tool_id or '(derive)'}, "
+            f"provider={provider}, model={model}{voice_suffix}"
         )
     return lines
 
@@ -3361,7 +3384,8 @@ PLANNER RULES:
 - When the user asks only to explain, describe, analyze, summarize, caption, identify, or understand an attached image/video, answer in text. When they request a media output for that explanation, prepare the explanation from the reference and call the corresponding generation tool.
 	- For obvious image/video/audio generation or editing tasks, a generation tool call is mandatory.
 	- For simple media requests, call canvas_generate_image/canvas_generate_video/canvas_generate_audio directly. Do not stop after a plan.
-	- Use the selected tool metadata for provider/model. Do not invent provider/model names and do not rely on backend-selected defaults. If no selected image/video/audio tool is listed for the requested capability, return a concise configuration error.
+- Use the selected tool metadata for provider/model. Do not invent provider/model names and do not rely on backend-selected defaults. If no selected image/video/audio tool is listed for the requested capability, return a concise configuration error.
+- For audio generation, choose voice only from the selected model's listed voice IDs. Respect the user's requested voice characteristics using each voice tag. Set speed within that voice's listed range; when the user gives no preference, omit voice/speed so the tool uses Jwell's advertised defaults.
 - For complex media requests, you may call write_plan first, but you must continue to the generation tool after the plan result.
 - Edu media tools return native chat/canvas artifacts directly. The canvas_generate_* names are legacy aliases for the generation tools in this app; they do not require Canvas node creation, node IDs, or graph operations.
 - Do not ask for approval before media generation unless the backend returns a confirmation request.

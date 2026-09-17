@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import requests
 
 from tools.alphart_tools import (
+    _apply_audio_voice_options,
     _clean_audio_topic,
     _generate_chunked_audio,
     _ensure_canvas_audio_generation_graph,
@@ -19,6 +20,67 @@ from tools.alphart_tools import (
     _video_duration_seconds_from_text,
     alphart_context,
 )
+
+
+def test_audio_voice_options_apply_jwell_defaults_and_bounds():
+    tool = {
+        "voices": [
+            {
+                "voice_id": "voice-man",
+                "tag": "man's voice",
+                "speed": 1.1,
+                "min_speed": 0.5,
+                "max_speed": 2.0,
+            },
+        ],
+    }
+    args = {}
+
+    assert _apply_audio_voice_options(args, tool) == ""
+    assert args == {"voice": "voice-man", "speed": 1.1}
+    assert "maximum" in _apply_audio_voice_options(
+        {"voice": "voice-man", "speed": 2.5}, tool
+    )
+    assert "Available voices" in _apply_audio_voice_options(
+        {"voice": "not-configured"}, tool
+    )
+
+
+def test_audio_request_uses_selected_jwell_voice_and_speed_defaults():
+    response = MagicMock(status_code=200, text="")
+    response.json.return_value = {"data": {"url": "https://storage.example/audio.wav"}}
+    with (
+        alphart_context({
+            "app_scope": "edu",
+            "user_message": "generate an audio",
+            "tool_list": [{
+                "id": "tts-tool",
+                "type": "audio",
+                "provider": "openai",
+                "model": "gpt-4o-mini-tts",
+                "voices": [{
+                    "voice_id": "cedar",
+                    "tag": "warm",
+                    "speed": 1.15,
+                    "min_speed": 0.75,
+                    "max_speed": 1.5,
+                }],
+            }],
+        }),
+        patch("tools.alphart_tools._relay_url", return_value="http://relay/audio/speech"),
+        patch("tools.alphart_tools._jwell_relay_enabled", return_value=False),
+        patch("tools.alphart_tools._backend_tool_timeout", return_value=10),
+        patch("tools.alphart_tools._relay_headers", return_value={}),
+        patch("tools.alphart_tools.requests.post", return_value=response) as post,
+    ):
+        result = json.loads(_handle_alphart_generate_audio({
+            "tool_id": "tts-tool",
+            "input": "Explain this event in a clear and concise way.",
+        }))
+
+    assert result["status"] == "success"
+    assert post.call_args.kwargs["json"]["voice"] == "cedar"
+    assert post.call_args.kwargs["json"]["speed"] == 1.15
 
 
 def test_canvas_audio_recovery_connects_references_to_existing_output():

@@ -329,6 +329,24 @@ def _normalize_base_url(base_url: str) -> str:
     return (base_url or "").strip().rstrip("/")
 
 
+def _is_jwell_internal_relay_endpoint(base_url: str) -> bool:
+    """Return whether ``base_url`` targets the configured Jwell relay."""
+    normalized = _normalize_base_url(base_url)
+    if not normalized:
+        return False
+    raw_addresses = os.getenv("JWELL_SERVICE_GRPC_ADDRS") or os.getenv("JWELL_SERVICE_GRPC_ADDR") or ""
+    for raw_address in raw_addresses.split(","):
+        relay_url = _normalize_base_url(raw_address)
+        if not relay_url:
+            continue
+        if "://" not in relay_url:
+            relay_url = "http://" + relay_url
+        internal_url = relay_url + "/internal"
+        if normalized == internal_url or normalized.startswith(internal_url + "/"):
+            return True
+    return False
+
+
 def _auth_headers(api_key: str = "") -> Dict[str, str]:
     token = str(api_key or "").strip()
     if not token:
@@ -476,6 +494,9 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
 
     Returns one of: "ollama", "lm-studio", "vllm", "llamacpp", or None.
     """
+    if _is_jwell_internal_relay_endpoint(base_url):
+        return None
+
     import httpx
 
     normalized = _normalize_base_url(base_url)
@@ -663,7 +684,7 @@ def fetch_endpoint_model_metadata(
     defaults are unreliable. Results are cached in memory per base URL.
     """
     normalized = _normalize_base_url(base_url)
-    if not normalized or _is_openrouter_base_url(normalized):
+    if not normalized or _is_openrouter_base_url(normalized) or _is_jwell_internal_relay_endpoint(normalized):
         return {}
 
     if not force_refresh:
@@ -1076,6 +1097,9 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
     The order is flipped vs ``query_ollama_num_ctx()`` because local users
     control ``num_ctx`` themselves; hosted users can't.
     """
+    if _is_jwell_internal_relay_endpoint(base_url):
+        return None
+
     import httpx
 
     server_url = base_url.rstrip("/")
@@ -1132,6 +1156,9 @@ def _model_name_suggests_kimi(model: str) -> bool:
 
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
+    if _is_jwell_internal_relay_endpoint(base_url):
+        return None
+
     import httpx
 
     # Strip recognised provider prefix (e.g., "local:model-name" → "model-name").
@@ -1240,6 +1267,8 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
     Only works with regular ANTHROPIC_API_KEY (sk-ant-api*).
     OAuth tokens (sk-ant-oat*) from Claude Code return 401.
     """
+    if _is_jwell_internal_relay_endpoint(base_url):
+        return None
     if not api_key or api_key.startswith("sk-ant-oat"):
         return None  # OAuth tokens can't access /v1/models
     try:
@@ -1590,7 +1619,11 @@ def get_model_context_length(
     # /models endpoint may report a provider-imposed limit (e.g. Copilot
     # returns 128k) instead of the model's full context (400k).  models.dev
     # has the correct per-provider values and is checked at step 5+.
-    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
+    if (
+        _is_custom_endpoint(base_url)
+        and not _is_known_provider_base_url(base_url)
+        and not _is_jwell_internal_relay_endpoint(base_url)
+    ):
         context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if context_length is not None:
             return context_length
@@ -1690,7 +1723,7 @@ def get_model_context_length(
     # For non-Ollama servers (OpenAI, Anthropic, etc.), the POST returns
     # 404/405 quickly.  Results are cached, so the hit is per-model+URL,
     # once per hour.
-    if base_url:
+    if base_url and not _is_jwell_internal_relay_endpoint(base_url):
         ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
         if ctx is not None:
             save_context_length(model, base_url, ctx)

@@ -702,6 +702,57 @@ def _set_tool_defaults(args: Dict[str, Any], tool: Dict[str, Any]) -> None:
         args["model"] = model
 
 
+def _audio_voice_options(tool: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw = tool.get("voices") or tool.get("extra_data") or []
+    if not isinstance(raw, list):
+        return []
+    return [
+        item for item in raw
+        if isinstance(item, dict) and str(item.get("voice_id") or "").strip()
+    ]
+
+
+def _apply_audio_voice_options(args: Dict[str, Any], tool: Dict[str, Any]) -> str:
+    options = _audio_voice_options(tool)
+    requested_voice = str(args.get("voice") or "").strip()
+    selected: Dict[str, Any] = {}
+    if options:
+        if requested_voice:
+            selected = next(
+                (
+                    option for option in options
+                    if str(option.get("voice_id") or "").strip() == requested_voice
+                ),
+                {},
+            )
+            if not selected:
+                allowed = ", ".join(str(option["voice_id"]) for option in options)
+                return f"Voice {requested_voice!r} is not available for the selected audio model. Available voices: {allowed}."
+        else:
+            selected = options[0]
+            args["voice"] = str(selected["voice_id"]).strip()
+
+    raw_speed = args.get("speed")
+    if (raw_speed is None or raw_speed == "") and selected.get("speed") is not None:
+        raw_speed = selected["speed"]
+    if raw_speed is None or raw_speed == "":
+        return ""
+    try:
+        speed = float(raw_speed)
+    except (TypeError, ValueError):
+        return "Audio speed must be a number."
+    if speed <= 0:
+        return "Audio speed must be greater than zero."
+    min_speed = selected.get("min_speed")
+    max_speed = selected.get("max_speed")
+    if min_speed is not None and speed < float(min_speed):
+        return f"Audio speed {speed:g} is below the selected voice minimum of {float(min_speed):g}."
+    if max_speed is not None and speed > float(max_speed):
+        return f"Audio speed {speed:g} exceeds the selected voice maximum of {float(max_speed):g}."
+    args["speed"] = speed
+    return ""
+
+
 def _default_audio_voice(provider: Any, model: Any) -> str:
     """Return a provider-valid voice when the selected audio model needs one."""
     normalized_provider = str(provider or "").strip().lower()
@@ -3103,6 +3154,9 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
         requested_duration = max(5, min(15, requested_duration or 5))
     tool = _pick_tool("audio", args)
     _set_tool_defaults(args, tool)
+    voice_option_error = _apply_audio_voice_options(args, tool)
+    if voice_option_error:
+        return _tool_error(voice_option_error, "AUDIO_VOICE_OPTION_INVALID")
     selected_provider = str(args.get("provider") or "").strip()
     selected_model = str(args.get("model") or "").strip()
     if not selected_provider or not selected_model:
@@ -3200,6 +3254,8 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
         "org_no": _ctx().get("org_no"),
         "idempotency_key": kwargs.get("tool_call_id") or args.get("tool_call_id"),
     }
+    if args.get("speed") is not None:
+        payload["speed"] = args["speed"]
     if _ctx().get("app_scope") == "canvas":
         payload["reference_item_ids"] = _ctx().get("reference_item_ids") or []
     native_route = (
@@ -4323,6 +4379,7 @@ CANVAS_GENERATE_AUDIO_SCHEMA = {
             "model": {"type": "string", "description": "Selected audio/TTS model, when known."},
             "canvas_item_id": {"type": "string", "description": "Existing Canvas audio node id to update for an explicit edit."},
             "voice": {"type": "string", "description": "Optional voice id/name."},
+            "speed": {"type": "number", "exclusiveMinimum": 0, "description": "Optional speech speed rate. Use the selected voice's advertised default and min/max range."},
             "language_type": {
                 "type": "string",
                 "enum": ["mandarin", "cantonese", "english"],

@@ -595,3 +595,61 @@ class TestGetModelContextLengthLocalFallback:
             result = get_model_context_length("unknown-xyz-model", "")
 
         mock_query.assert_not_called()
+
+
+class TestJwellInternalRelayMetadata:
+    """Jwell relay URLs must not receive native local-model probes."""
+
+    def test_recognizes_configured_internal_relay_paths(self, monkeypatch):
+        from agent.model_metadata import _is_jwell_internal_relay_endpoint
+
+        monkeypatch.setenv(
+            "JWELL_SERVICE_GRPC_ADDRS",
+            "jwell-primary:9001,https://jwell-secondary:9443/",
+        )
+
+        assert _is_jwell_internal_relay_endpoint("http://jwell-primary:9001/internal")
+        assert _is_jwell_internal_relay_endpoint(
+            "https://jwell-secondary:9443/internal/gemini/v1beta"
+        )
+        assert not _is_jwell_internal_relay_endpoint("http://jwell-primary:9001/v1")
+
+    def test_skips_all_native_server_probes(self, monkeypatch):
+        from agent.model_metadata import (
+            _query_anthropic_context_length,
+            _query_local_context_length,
+            _query_ollama_api_show,
+            detect_local_server_type,
+            fetch_endpoint_model_metadata,
+        )
+
+        monkeypatch.setenv("JWELL_SERVICE_GRPC_ADDR", "jwell-service:9001")
+        relay_url = "http://jwell-service:9001/internal"
+
+        with patch("httpx.Client") as httpx_client, patch(
+            "agent.model_metadata.requests.get"
+        ) as requests_get:
+            assert detect_local_server_type(relay_url, api_key="internal-relay") is None
+            assert fetch_endpoint_model_metadata(relay_url, api_key="internal-relay") == {}
+            assert _query_ollama_api_show("model", relay_url, api_key="internal-relay") is None
+            assert _query_local_context_length("model", relay_url, api_key="internal-relay") is None
+            assert _query_anthropic_context_length("model", relay_url, "internal-relay") is None
+
+        httpx_client.assert_not_called()
+        requests_get.assert_not_called()
+
+    def test_provider_metadata_still_resolves_context(self, monkeypatch):
+        from agent.model_metadata import get_model_context_length
+
+        monkeypatch.setenv("JWELL_SERVICE_GRPC_ADDR", "jwell-service:9001")
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), patch(
+            "agent.models_dev.lookup_models_dev_context", return_value=1_000_000
+        ):
+            result = get_model_context_length(
+                "claude-sonnet-4-6",
+                base_url="http://jwell-service:9001/internal",
+                api_key="internal-relay",
+                provider="anthropic",
+            )
+
+        assert result == 1_000_000

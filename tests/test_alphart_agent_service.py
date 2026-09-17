@@ -77,7 +77,9 @@ from alphart_agent_service import (
     _prepare_chat_content_for_model,
     _provider_config_for_domain,
     _request_messages,
+    _selected_tool_lines,
     _title_relay_idempotency_key,
+    _text_model_candidates,
     _uses_jwell_internal_relay,
     title,
 )
@@ -151,6 +153,39 @@ def test_canvas_previs_requests_open_mutation_tools_without_backend_intent_metad
         )
 
         assert _canvas_explicit_mutation_request(request), instruction
+
+
+def test_text_model_candidates_accept_backend_catalog_without_primary_model():
+    request = AlphartEduChatRequest(
+        text_models=[
+            {"provider": "anthropic", "model": "claude-sonnet"},
+            {"provider": "openai", "model": "gpt"},
+        ],
+    )
+
+    assert _text_model_candidates(request) == request.text_models
+    assert request.text_model == {}
+
+
+def test_selected_audio_tool_lines_expose_jwell_voice_and_speed_options():
+    lines = _selected_tool_lines([{
+        "id": "tts-tool",
+        "type": "audio",
+        "provider": "openai",
+        "model": "gpt-4o-mini-tts",
+        "voices": [{
+            "voice_id": "cedar",
+            "tag": "warm",
+            "speed": 1.1,
+            "min_speed": 0.5,
+            "max_speed": 2,
+        }],
+    }])
+
+    assert lines == [
+        "- audio: tool_id=tts-tool, provider=openai, model=gpt-4o-mini-tts, "
+        "voices=[cedar (warm, default_speed=1.1, speed_range=0.5..2)]"
+    ]
 
 
 def test_canvas_flat_multimodal_config_is_used():
