@@ -103,6 +103,7 @@ class AlphartEduTitleRequest(BaseModel):
     messages: List[Any] = Field(default_factory=list)
     session_id: str = ""
     user_id: str = ""
+    user_uuid: str = ""
     auth_token: str = ""
     org_no: str = ""
     backend_url: str = ""
@@ -670,6 +671,190 @@ def _text_model_candidates(req: Any) -> List[Dict[str, Any]]:
         if _string(req.text_model.get("provider")) and _string(req.text_model.get("model")):
             candidates.append(req.text_model)
     return candidates
+
+
+def _jwell_catalog_model_name(model: Dict[str, Any]) -> str:
+    return _string(model.get("model") or model.get("id") or model.get("key"))
+
+
+def _jwell_catalog_model_key(model: Dict[str, Any]) -> str:
+    provider = _string(model.get("provider"))
+    key = _string(
+        model.get("model_key")
+        or model.get("key")
+        or model.get("model")
+        or model.get("id")
+    )
+    if not key:
+        return ""
+    if ":" in key or not provider:
+        return key
+    return f"{provider}:{key}"
+
+
+def _jwell_catalog_text_models(models: List[Any]) -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+    seen = set()
+    for raw in models:
+        if not isinstance(raw, dict) or _string(raw.get("type")).lower() != "text":
+            continue
+        provider = _string(raw.get("provider"))
+        model = _jwell_catalog_model_name(raw)
+        model_key = _jwell_catalog_model_key(raw)
+        identity = (provider, model)
+        if not provider or not model or not model_key or identity in seen:
+            continue
+        seen.add(identity)
+        candidates.append({
+            "provider": provider,
+            "model": model,
+            "key": model_key,
+            "model_key": model_key,
+            "display_name": _string(raw.get("display_name")) or model_key,
+            "type": "text",
+        })
+    return candidates
+
+
+def _jwell_catalog_media_tools(models: List[Any]) -> List[Dict[str, Any]]:
+    tools: List[Dict[str, Any]] = []
+    seen = set()
+    for raw in models:
+        if not isinstance(raw, dict):
+            continue
+        media_type = _string(raw.get("type")).lower()
+        if media_type == "tts":
+            media_type = "audio"
+        if media_type not in {"image", "video", "audio"}:
+            continue
+        provider = _string(raw.get("provider"))
+        model = _jwell_catalog_model_name(raw)
+        model_key = _jwell_catalog_model_key(raw)
+        identity = (media_type, provider, model)
+        if not provider or not model or not model_key or identity in seen:
+            continue
+        seen.add(identity)
+        tool_id = f"generate_{media_type}_by_{model_key.replace(':', '_')}"
+        tool: Dict[str, Any] = {
+            "id": tool_id,
+            "provider": provider,
+            "model": model,
+            "key": "tts" if media_type == "audio" else media_type,
+            "config_key": "tts" if media_type == "audio" else media_type,
+            "model_key": model_key,
+            "display_name": _string(raw.get("display_name")) or model_key,
+            "type": media_type,
+        }
+        relay_tool_id = raw.get("tool_id")
+        if relay_tool_id not in (None, "", 0):
+            tool["relay_tool_id"] = relay_tool_id
+        voices = raw.get("extra_data")
+        if isinstance(voices, list) and voices:
+            tool["voices"] = voices
+        tools.append(tool)
+    return tools
+
+
+def _is_media_catalog_tool(raw: Any) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    media_type = _string(raw.get("type") or raw.get("model_type")).lower()
+    if media_type in {"image", "video", "audio", "tts"}:
+        return True
+    tool_id = _string(raw.get("id")).lower()
+    return any(marker in tool_id for marker in ("generate_image", "generate_video", "generate_audio"))
+
+
+def _replace_media_catalog_tools(existing: List[Any], configured: List[Dict[str, Any]]) -> List[Any]:
+    return [raw for raw in existing if not _is_media_catalog_tool(raw)] + configured
+
+
+def _fetch_jwell_model_catalog(req: Any) -> List[Dict[str, Any]]:
+    try:
+        timeout = max(1, int(os.getenv("JWELL_MODEL_CATALOG_TIMEOUT_SECONDS", "30") or "30"))
+    except ValueError:
+        timeout = 30
+    for base_url in _jwell_relay_base_urls():
+        url = f"{base_url.rstrip('/')}/internal/v1/models"
+        try:
+            response = requests.get(url, headers=_internal_relay_headers(req), timeout=timeout)
+            response.raise_for_status()
+            payload = response.json()
+            models = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(models, list):
+                raise ValueError("response data is not a list")
+            logger.info("Jwell model catalog loaded endpoint=%s count=%d", url, len(models))
+            return [model for model in models if isinstance(model, dict)]
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("Jwell model catalog failed endpoint=%s error=%s", url, exc)
+    raise HTTPException(
+        status_code=502,
+        detail="Unable to load the active Jwell model catalog",
+    )
+
+
+def _apply_jwell_model_catalog(req: Any) -> None:
+    if not _uses_jwell_internal_relay(req):
+        return
+    models = _fetch_jwell_model_catalog(req)
+    text_models = _jwell_catalog_text_models(models)
+    if not text_models:
+        raise HTTPException(status_code=400, detail="No active text relay model is configured")
+
+    requested = getattr(req, "text_model", {})
+    requested = requested if isinstance(requested, dict) else {}
+    requested_key = _string(requested.get("model_key") or requested.get("key"))
+    requested_provider = _string(requested.get("provider"))
+    requested_model = _string(requested.get("model"))
+    reasoning_preferences = {
+        key: requested[key]
+        for key in ("thinking_level", "thinkingLevel", "reasoning_effort")
+        if requested.get(key) not in (None, "")
+    }
+    selected_index: Optional[int] = None
+    if requested_key or requested_model:
+        for index, candidate in enumerate(text_models):
+            candidate_provider = _string(candidate.get("provider"))
+            candidate_model = _string(candidate.get("model"))
+            candidate_keys = {
+                _string(candidate.get("key")).casefold(),
+                _string(candidate.get("model_key")).casefold(),
+                candidate_model.casefold(),
+                f"{candidate_provider}:{candidate_model}".casefold(),
+            }
+            if requested_key and requested_key.casefold() not in candidate_keys:
+                continue
+            if requested_provider and requested_provider.casefold() != candidate_provider.casefold():
+                continue
+            if requested_model and requested_model.casefold() != candidate_model.casefold():
+                continue
+            selected_index = index
+            break
+        if selected_index is None:
+            requested_name = requested_key or (
+                f"{requested_provider}:{requested_model}" if requested_provider else requested_model
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"Selected text model {requested_name!r} is not available in the active Jwell catalog",
+            )
+
+    if selected_index is not None or reasoning_preferences:
+        selected_index = selected_index or 0
+        selected = {**text_models[selected_index], **reasoning_preferences}
+        text_models = [
+            selected,
+            *(candidate for index, candidate in enumerate(text_models) if index != selected_index),
+        ]
+        req.text_model = selected
+    else:
+        req.text_model = {}
+    req.text_models = text_models
+    if hasattr(req, "tool_list"):
+        req.tool_list = _replace_media_catalog_tools(
+            list(getattr(req, "tool_list", []) or []),
+            _jwell_catalog_media_tools(models),
+        )
 
 
 def _openai_text_model_candidates(req: Any, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -5451,6 +5636,8 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
     jwell_relay_request = _use_internal_relay(req) and _uses_jwell_internal_relay(req)
     relay_session_id = req.session_id or f"alphart-chat-{uuid.uuid4().hex}"
 
+    _apply_jwell_model_catalog(req)
+
     candidates = _text_model_candidates(req)
     if not candidates:
         raise HTTPException(status_code=400, detail="text model provider/model is required")
@@ -5600,6 +5787,7 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "user_message": user_message,
         "system_prompt": req.system_prompt,
         "tool_list": req.tool_list,
+        "model_catalog_authoritative": bool(_uses_jwell_internal_relay(req)),
         "input_images": input_images,
         "input_audio": canvas_input_audio,
         "input_videos": canvas_input_videos,
@@ -6220,6 +6408,8 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
 @app.post("/api/v1/agent/titles")
 def title(req: AlphartEduTitleRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
     _check_auth(authorization)
+
+    _apply_jwell_model_catalog(req)
 
     candidates = _text_model_candidates(req)
     if candidates:

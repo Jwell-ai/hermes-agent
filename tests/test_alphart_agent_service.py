@@ -3,7 +3,10 @@
 import json
 from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
+from fastapi import HTTPException
 
 from agent.chat_completion_helpers import (
     _internal_relay_idempotency_key,
@@ -62,6 +65,7 @@ from alphart_agent_service import (
     _audio_urls_from_content,
     _backend_url_from_req,
     _internal_relay_base_urls,
+    _apply_jwell_model_catalog,
     _is_account_terminal_relay_failure,
     _is_retryable_relay_failure,
     _jwell_relay_base_urls,
@@ -165,6 +169,99 @@ def test_text_model_candidates_accept_backend_catalog_without_primary_model():
 
     assert _text_model_candidates(request) == request.text_models
     assert request.text_model == {}
+
+
+def test_agent_loads_authoritative_jwell_catalog_and_voice_options(monkeypatch):
+    monkeypatch.setenv("JWELL_SERVICE_GRPC_ADDR", "jwell.test:9001")
+    monkeypatch.setenv("JWELL_APP_SECRET", "secret")
+    request = AlphartEduChatRequest(
+        user_id="42",
+        user_uuid="user-uuid",
+        org_no="org-1",
+        text_models=[{"provider": "stale", "model": "stale-text"}],
+        tool_list=[
+            {"id": "storybook", "type": "storybook"},
+            {"id": "stale-audio", "type": "audio", "provider": "stale", "model": "stale-audio"},
+        ],
+    )
+    response = MagicMock()
+    response.json.return_value = {
+        "data": [
+            {"type": "text", "provider": "anthropic", "model": "claude-sonnet-4-6"},
+            {
+                "type": "tts",
+                "provider": "tencent-tokenhub",
+                "model": "minimax-speech-2.8-hd",
+                "tool_id": 9,
+                "extra_data": [{"voice_id": "configured-voice", "tag": "man's voice", "speed": 1.0}],
+            },
+        ]
+    }
+
+    with patch("alphart_agent_service.requests.get", return_value=response) as get:
+        _apply_jwell_model_catalog(request)
+
+    assert request.text_model == {}
+    assert request.text_models == [{
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6",
+        "key": "anthropic:claude-sonnet-4-6",
+        "model_key": "anthropic:claude-sonnet-4-6",
+        "display_name": "anthropic:claude-sonnet-4-6",
+        "type": "text",
+    }]
+    assert request.tool_list[0] == {"id": "storybook", "type": "storybook"}
+    assert request.tool_list[1]["provider"] == "tencent-tokenhub"
+    assert request.tool_list[1]["voices"] == [
+        {"voice_id": "configured-voice", "tag": "man's voice", "speed": 1.0}
+    ]
+    call = get.call_args
+    assert call.args[0] == "http://jwell.test:9001/internal/v1/models"
+    assert call.kwargs["headers"]["X-App-Secret"] == "secret"
+    assert call.kwargs["headers"]["X-Internal-User-ID"] == "42"
+    assert call.kwargs["headers"]["X-Internal-User-UUID"] == "user-uuid"
+
+
+def test_agent_preserves_valid_canvas_text_model_and_reasoning_preference():
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        text_model={
+            "provider": "openai",
+            "model": "chosen-model",
+            "key": "openai:chosen-model",
+            "thinking_level": "high",
+        },
+    )
+    catalog = [
+        {"type": "text", "provider": "anthropic", "model": "first-model"},
+        {"type": "text", "provider": "openai", "model": "chosen-model"},
+    ]
+
+    with patch("alphart_agent_service._uses_jwell_internal_relay", return_value=True), \
+            patch("alphart_agent_service._fetch_jwell_model_catalog", return_value=catalog):
+        _apply_jwell_model_catalog(request)
+
+    assert request.text_model["provider"] == "openai"
+    assert request.text_model["model"] == "chosen-model"
+    assert request.text_model["thinking_level"] == "high"
+    assert request.text_models[0] == request.text_model
+    assert request.text_models[1]["model"] == "first-model"
+
+
+def test_agent_rejects_canvas_text_model_absent_from_jwell_catalog():
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        text_model={"key": "openai:removed-model", "thinking_level": "high"},
+    )
+    catalog = [{"type": "text", "provider": "anthropic", "model": "active-model"}]
+
+    with patch("alphart_agent_service._uses_jwell_internal_relay", return_value=True), \
+            patch("alphart_agent_service._fetch_jwell_model_catalog", return_value=catalog), \
+            pytest.raises(HTTPException) as exc:
+        _apply_jwell_model_catalog(request)
+
+    assert exc.value.status_code == 400
+    assert "openai:removed-model" in str(exc.value.detail)
 
 
 def test_selected_audio_tool_lines_expose_jwell_voice_and_speed_options():
@@ -633,7 +730,12 @@ def test_title_relay_falls_back_after_candidate_specific_error(monkeypatch):
     )
     monkeypatch.setenv("JWELL_SERVICE_GRPC_ADDR", "jwell.test:9001")
     monkeypatch.setenv("JWELL_APP_SECRET", "secret")
-    with patch("alphart_agent_service._generate_title_relay", side_effect=fake_title_relay):
+    catalog = [
+        {"type": "text", "provider": "openai", "model": "primary-model"},
+        {"type": "text", "provider": "openai", "model": "secondary-model"},
+    ]
+    with patch("alphart_agent_service._fetch_jwell_model_catalog", return_value=catalog), \
+            patch("alphart_agent_service._generate_title_relay", side_effect=fake_title_relay):
         response = title(request)
 
     assert response["title"] == "Secondary title"

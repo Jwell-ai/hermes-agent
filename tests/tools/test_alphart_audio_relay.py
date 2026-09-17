@@ -37,7 +37,7 @@ def test_audio_voice_options_apply_jwell_defaults_and_bounds():
     args = {}
 
     assert _apply_audio_voice_options(args, tool) == ""
-    assert args == {"voice": "voice-man", "speed": 1.1}
+    assert args == {"speed": 1.1}
     assert "maximum" in _apply_audio_voice_options(
         {"voice": "voice-man", "speed": 2.5}, tool
     )
@@ -48,6 +48,10 @@ def test_audio_voice_options_apply_jwell_defaults_and_bounds():
     tag_args = {"voice": "man's voice"}
     assert _apply_audio_voice_options(tag_args, tool) == ""
     assert tag_args == {"voice": "voice-man", "speed": 1.1}
+
+    no_voice_options_args = {"voice": "", "speed": ""}
+    assert _apply_audio_voice_options(no_voice_options_args, {}) == ""
+    assert no_voice_options_args == {"voice": "", "speed": 1.0}
 
 
 def test_audio_voice_options_preserve_case_sensitive_voice_ids():
@@ -67,7 +71,54 @@ def test_audio_voice_options_preserve_case_sensitive_voice_ids():
     assert ambiguous_args == {"voice": "VOICE_a"}
 
 
-def test_audio_request_uses_selected_jwell_voice_and_speed_defaults():
+def test_authoritative_audio_catalog_rejects_unconfigured_voice():
+    with alphart_context({
+        "app_scope": "edu",
+        "model_catalog_authoritative": True,
+        "tool_list": [{
+            "id": "tts-tool",
+            "type": "audio",
+            "provider": "tencent-tokenhub",
+            "model": "minimax-speech-2.8-hd",
+            "voices": [{"voice_id": "configured-voice", "tag": "man's voice"}],
+        }],
+    }):
+        result = json.loads(_handle_alphart_generate_audio({
+            "tool_id": "tts-tool",
+            "input": "Read this sentence.",
+            "voice": "invented-voice",
+        }))
+
+    assert result["success"] is False
+    assert result["code"] == "AUDIO_VOICE_OPTION_INVALID"
+    assert "configured-voice" in result["error"]
+
+
+def test_authoritative_audio_catalog_rejects_unknown_tool_instead_of_synthesizing_it():
+    with alphart_context({
+        "app_scope": "edu",
+        "model_catalog_authoritative": True,
+        "tool_list": [{
+            "id": "tts-tool",
+            "type": "audio",
+            "provider": "tencent-tokenhub",
+            "model": "minimax-speech-2.8-hd",
+            "voices": [{"voice_id": "configured-voice"}],
+        }],
+    }):
+        result = json.loads(_handle_alphart_generate_audio({
+            "tool_id": "made-up-tool",
+            "provider": "tencent-tokenhub",
+            "model": "minimax-speech-2.8-hd",
+            "input": "Read this sentence.",
+            "voice": "configured-voice",
+        }))
+
+    assert result["success"] is False
+    assert result["code"] == "AUDIO_MODEL_NOT_CONFIGURED"
+
+
+def test_audio_request_leaves_voice_to_jwell_and_uses_configured_speed_default():
     response = MagicMock(status_code=200, text="")
     response.json.return_value = {"data": {"url": "https://storage.example/audio.wav"}}
     with (
@@ -100,7 +151,7 @@ def test_audio_request_uses_selected_jwell_voice_and_speed_defaults():
         }))
 
     assert result["status"] == "success"
-    assert post.call_args.kwargs["json"]["voice"] == "cedar"
+    assert post.call_args.kwargs["json"]["voice"] is None
     assert post.call_args.kwargs["json"]["speed"] == 1.15
 
 
@@ -200,7 +251,8 @@ def test_canvas_audio_relay_uses_explicit_audio_node_for_edit():
 
     assert result["status"] == "success"
     assert captured["json"]["canvas_item_id"] == "audio-node"
-    assert captured["json"]["voice"] == "alloy"
+    assert captured["json"]["voice"] is None
+    assert captured["json"]["speed"] == 1.0
 
 
 def test_canvas_audio_relay_uses_model_edit_operation_when_id_is_omitted():
@@ -581,11 +633,12 @@ def test_edu_two_minute_audio_preserves_narration_through_short_final_chunk():
     assert len(payloads) == 3
     assert " ".join(payload["input"] for payload in payloads) == script
     assert all(payload["duration_seconds"] == 120 for payload in payloads)
-    assert all(payload["voice"] == "alloy" for payload in payloads)
+    assert all(payload["voice"] is None for payload in payloads)
+    assert all(payload["speed"] == 1.0 for payload in payloads)
     import_media.assert_called_once()
 
 
-def test_openai_audio_request_uses_a_valid_default_voice():
+def test_audio_request_delegates_empty_voice_to_relay_and_defaults_speed():
     response = MagicMock(status_code=200, text="")
     response.json.return_value = {"data": {"url": "https://storage.example/audio.wav"}}
 
@@ -604,7 +657,8 @@ def test_openai_audio_request_uses_a_valid_default_voice():
         }))
 
     assert result["status"] == "success"
-    assert post.call_args.kwargs["json"]["voice"] == "alloy"
+    assert post.call_args.kwargs["json"]["voice"] is None
+    assert post.call_args.kwargs["json"]["speed"] == 1.0
 
 
 def test_chunked_audio_retries_each_chunk_and_concatenates_wav():

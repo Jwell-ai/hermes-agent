@@ -681,6 +681,8 @@ def _pick_tool(media_type: str, args: Dict[str, Any]) -> Dict[str, Any]:
         candidates.append(tool)
     if candidates:
         return candidates[0]
+    if _ctx().get("model_catalog_authoritative"):
+        return {}
     return {
         "id": f"generate_{media_type}_by_{_slug(provider)}_{_slug(model)}",
         "type": media_type,
@@ -716,6 +718,8 @@ def _apply_audio_voice_options(args: Dict[str, Any], tool: Dict[str, Any]) -> st
     options = _audio_voice_options(tool)
     requested_voice = str(args.get("voice") or "").strip()
     selected: Dict[str, Any] = {}
+    if _ctx().get("model_catalog_authoritative") and requested_voice and not options:
+        return "The selected audio model does not advertise any configured voices."
     if options:
         if requested_voice:
             requested_label = requested_voice.casefold()
@@ -745,13 +749,16 @@ def _apply_audio_voice_options(args: Dict[str, Any], tool: Dict[str, Any]) -> st
                 return f"Voice {requested_voice!r} is not available for the selected audio model. Available voices: {allowed}."
         else:
             selected = options[0]
-        args["voice"] = str(selected["voice_id"]).strip()
+        if requested_voice:
+            args["voice"] = str(selected["voice_id"]).strip()
+        else:
+            args.pop("voice", None)
 
     raw_speed = args.get("speed")
     if (raw_speed is None or raw_speed == "") and selected.get("speed") is not None:
         raw_speed = selected["speed"]
     if raw_speed is None or raw_speed == "":
-        return ""
+        raw_speed = 1.0
     try:
         speed = float(raw_speed)
     except (TypeError, ValueError):
@@ -765,15 +772,6 @@ def _apply_audio_voice_options(args: Dict[str, Any], tool: Dict[str, Any]) -> st
     if max_speed is not None and speed > float(max_speed):
         return f"Audio speed {speed:g} exceeds the selected voice maximum of {float(max_speed):g}."
     args["speed"] = speed
-    return ""
-
-
-def _default_audio_voice(provider: Any, model: Any) -> str:
-    """Return a provider-valid voice when the selected audio model needs one."""
-    normalized_provider = str(provider or "").strip().lower()
-    normalized_model = str(model or "").strip().lower()
-    if normalized_provider == "openai" or normalized_model == "gpt-4o-mini-tts":
-        return "alloy"
     return ""
 
 
@@ -2664,6 +2662,11 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
     if not args.get("input_images") and _ctx().get("input_images"):
         args["input_images"] = _ctx().get("input_images")
     tool = _pick_tool("image", args)
+    if not tool:
+        return _tool_error(
+            "The selected image model is not available in the active Jwell catalog.",
+            "IMAGE_MODEL_NOT_CONFIGURED",
+        )
     args.setdefault("provider", tool.get("provider"))
     args.setdefault("model", tool.get("model") or tool.get("name") or tool.get("key"))
     # Canvas owns a generation-only relay. Reference nodes remain structured
@@ -2939,6 +2942,11 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         else:
             args["generate_audio"] = bool(_ctx().get("generate_audio")) if is_canvas else True
     tool = _pick_tool("video", args)
+    if not tool:
+        return _tool_error(
+            "The selected video model is not available in the active Jwell catalog.",
+            "VIDEO_MODEL_NOT_CONFIGURED",
+        )
     _set_tool_defaults(args, tool)
     args.setdefault("wait", False)
     if is_canvas:
@@ -3168,6 +3176,11 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
     if _ctx().get("app_scope") == "canvas":
         requested_duration = max(5, min(15, requested_duration or 5))
     tool = _pick_tool("audio", args)
+    if not tool:
+        return _tool_error(
+            "The selected audio model is not available in the active Jwell catalog.",
+            "AUDIO_MODEL_NOT_CONFIGURED",
+        )
     _set_tool_defaults(args, tool)
     voice_option_error = _apply_audio_voice_options(args, tool)
     if voice_option_error:
@@ -3176,8 +3189,6 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
     selected_model = str(args.get("model") or "").strip()
     if not selected_provider or not selected_model:
         return _tool_error("No configured audio generation model is available.", "AUDIO_MODEL_NOT_CONFIGURED")
-    if selected_provider.lower() == "openai" and not str(args.get("voice") or "").strip():
-        args["voice"] = "alloy"
     args["language_type"] = _normalize_audio_language_type(args.get("language_type")) or _normalize_audio_language_type(_ctx().get("audio_language_type"))
     relay_url = _relay_url("audio/speech")
     if not relay_url:
@@ -3252,7 +3263,7 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
                 generation_tool_call_id,
                 requested_duration=requested_duration,
             )
-    voice = str(args.get("voice") or "").strip() or _default_audio_voice(selected_provider, selected_model)
+    voice = str(args.get("voice") or "").strip()
     payload = {
         "provider": selected_provider,
         "model": args.get("model"),
