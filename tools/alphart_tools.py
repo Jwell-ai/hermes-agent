@@ -752,16 +752,14 @@ def _apply_audio_voice_options(args: Dict[str, Any], tool: Dict[str, Any]) -> st
                 return f"Voice {requested_voice!r} is not available for the selected audio model. Available voices: {allowed}."
         else:
             selected = options[0]
-        if requested_voice:
-            args["voice"] = str(selected["voice_id"]).strip()
-        else:
-            args.pop("voice", None)
+        args["voice"] = str(selected["voice_id"]).strip()
 
     raw_speed = args.get("speed")
     if (raw_speed is None or raw_speed == "") and selected.get("speed") is not None:
         raw_speed = selected["speed"]
     if raw_speed is None or raw_speed == "":
-        raw_speed = 1.0
+        args.pop("speed", None)
+        return ""
     try:
         speed = float(raw_speed)
     except (TypeError, ValueError):

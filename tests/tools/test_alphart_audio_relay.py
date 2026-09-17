@@ -37,7 +37,7 @@ def test_audio_voice_options_apply_jwell_defaults_and_bounds():
     args = {}
 
     assert _apply_audio_voice_options(args, tool) == ""
-    assert args == {"speed": 1.1}
+    assert args == {"voice": "voice-man", "speed": 1.1}
     assert "maximum" in _apply_audio_voice_options(
         {"voice": "voice-man", "speed": 2.5}, tool
     )
@@ -51,7 +51,7 @@ def test_audio_voice_options_apply_jwell_defaults_and_bounds():
 
     no_voice_options_args = {"voice": "", "speed": ""}
     assert _apply_audio_voice_options(no_voice_options_args, {}) == ""
-    assert no_voice_options_args == {"voice": "", "speed": 1.0}
+    assert no_voice_options_args == {"voice": ""}
 
 
 def test_audio_voice_options_preserve_case_sensitive_voice_ids():
@@ -123,7 +123,7 @@ def test_authoritative_audio_catalog_omits_voice_when_none_are_advertised():
 
     assert result["status"] == "success"
     assert post.call_args.kwargs["json"]["voice"] is None
-    assert post.call_args.kwargs["json"]["speed"] == 1.0
+    assert "speed" not in post.call_args.kwargs["json"]
 
 
 def test_authoritative_audio_catalog_rejects_unknown_tool_instead_of_synthesizing_it():
@@ -150,9 +150,10 @@ def test_authoritative_audio_catalog_rejects_unknown_tool_instead_of_synthesizin
     assert result["code"] == "AUDIO_MODEL_NOT_CONFIGURED"
 
 
-def test_audio_request_leaves_voice_to_jwell_and_uses_configured_speed_default():
+def test_audio_request_sends_selected_voice_id_and_configured_speed_default():
     response = MagicMock(status_code=200, text="")
     response.json.return_value = {"data": {"url": "https://storage.example/audio.wav"}}
+    script = "Explain this event in a clear and concise way, including its causes, effects, and historical context."
     with (
         alphart_context({
             "app_scope": "edu",
@@ -179,12 +180,19 @@ def test_audio_request_leaves_voice_to_jwell_and_uses_configured_speed_default()
     ):
         result = json.loads(_handle_alphart_generate_audio({
             "tool_id": "tts-tool",
-            "input": "Explain this event in a clear and concise way.",
+            "input": script,
+            "response_format": "mp3",
         }))
 
     assert result["status"] == "success"
-    assert post.call_args.kwargs["json"]["voice"] is None
-    assert post.call_args.kwargs["json"]["speed"] == 1.15
+    payload = post.call_args.kwargs["json"]
+    assert payload["provider"] == "openai"
+    assert payload["model"] == "gpt-4o-mini-tts"
+    assert payload["input"] == script
+    assert payload["voice"] == "cedar"
+    assert payload["speed"] == 1.15
+    assert payload["response_format"] == "mp3"
+    assert "voices" not in payload
 
 
 def test_canvas_audio_recovery_connects_references_to_existing_output():
@@ -284,7 +292,7 @@ def test_canvas_audio_relay_uses_explicit_audio_node_for_edit():
     assert result["status"] == "success"
     assert captured["json"]["canvas_item_id"] == "audio-node"
     assert captured["json"]["voice"] is None
-    assert captured["json"]["speed"] == 1.0
+    assert "speed" not in captured["json"]
 
 
 def test_canvas_audio_relay_uses_model_edit_operation_when_id_is_omitted():
@@ -666,11 +674,11 @@ def test_edu_two_minute_audio_preserves_narration_through_short_final_chunk():
     assert " ".join(payload["input"] for payload in payloads) == script
     assert all(payload["duration_seconds"] == 120 for payload in payloads)
     assert all(payload["voice"] is None for payload in payloads)
-    assert all(payload["speed"] == 1.0 for payload in payloads)
+    assert all("speed" not in payload for payload in payloads)
     import_media.assert_called_once()
 
 
-def test_audio_request_delegates_empty_voice_to_relay_and_defaults_speed():
+def test_audio_request_omits_unselected_voice_and_speed():
     response = MagicMock(status_code=200, text="")
     response.json.return_value = {"data": {"url": "https://storage.example/audio.wav"}}
 
@@ -690,7 +698,7 @@ def test_audio_request_delegates_empty_voice_to_relay_and_defaults_speed():
 
     assert result["status"] == "success"
     assert post.call_args.kwargs["json"]["voice"] is None
-    assert post.call_args.kwargs["json"]["speed"] == 1.0
+    assert "speed" not in post.call_args.kwargs["json"]
 
 
 def test_chunked_audio_retries_each_chunk_and_concatenates_wav():

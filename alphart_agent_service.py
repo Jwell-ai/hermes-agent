@@ -788,7 +788,7 @@ def _replace_media_catalog_tools(existing: List[Any], configured: List[Dict[str,
     return [raw for raw in existing if not _is_media_catalog_tool(raw)] + configured
 
 
-def _fetch_jwell_model_catalog(req: Any) -> List[Dict[str, Any]]:
+def _fetch_jwell_model_catalog(req: Any, model_type: str = "") -> List[Dict[str, Any]]:
     try:
         timeout = max(1, int(os.getenv("JWELL_MODEL_CATALOG_TIMEOUT_SECONDS", "30") or "30"))
     except ValueError:
@@ -796,13 +796,23 @@ def _fetch_jwell_model_catalog(req: Any) -> List[Dict[str, Any]]:
     for base_url in _jwell_relay_base_urls():
         url = f"{base_url.rstrip('/')}/internal/v1/models"
         try:
-            response = requests.get(url, headers=_internal_relay_headers(req), timeout=timeout)
+            response = requests.get(
+                url,
+                params={"type": model_type} if model_type else None,
+                headers=_internal_relay_headers(req),
+                timeout=timeout,
+            )
             response.raise_for_status()
             payload = response.json()
             models = payload.get("data") if isinstance(payload, dict) else None
             if not isinstance(models, list):
                 raise ValueError("response data is not a list")
-            logger.info("Jwell model catalog loaded endpoint=%s count=%d", url, len(models))
+            logger.info(
+                "Jwell model catalog loaded endpoint=%s type=%s count=%d",
+                url,
+                model_type or "all",
+                len(models),
+            )
             return [model for model in models if isinstance(model, dict)]
         except (requests.RequestException, ValueError) as exc:
             logger.warning("Jwell model catalog failed endpoint=%s error=%s", url, exc)
@@ -870,9 +880,14 @@ def _apply_jwell_model_catalog(req: Any) -> None:
         req.text_model = {}
     req.text_models = text_models
     if hasattr(req, "tool_list"):
+        tts_models = _fetch_jwell_model_catalog(req, "tts")
+        media_models = [
+            model for model in models
+            if _string(model.get("type")).lower() in {"image", "video"}
+        ] + tts_models
         req.tool_list = _replace_media_catalog_tools(
             list(getattr(req, "tool_list", []) or []),
-            _jwell_catalog_media_tools(models),
+            _jwell_catalog_media_tools(media_models),
         )
 
 

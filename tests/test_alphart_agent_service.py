@@ -216,11 +216,15 @@ def test_agent_loads_authoritative_jwell_catalog_and_voice_options(monkeypatch):
     assert request.tool_list[1]["voices"] == [
         {"voice_id": "configured-voice", "tag": "man's voice", "speed": 1.0}
     ]
-    call = get.call_args
-    assert call.args[0] == "http://jwell.test:9001/internal/v1/models"
-    assert call.kwargs["headers"]["X-App-Secret"] == "secret"
-    assert call.kwargs["headers"]["X-Internal-User-ID"] == "42"
-    assert call.kwargs["headers"]["X-Internal-User-UUID"] == "user-uuid"
+    assert get.call_count == 2
+    catalog_call, tts_call = get.call_args_list
+    assert catalog_call.args[0] == "http://jwell.test:9001/internal/v1/models"
+    assert catalog_call.kwargs["params"] is None
+    assert tts_call.args[0] == "http://jwell.test:9001/internal/v1/models"
+    assert tts_call.kwargs["params"] == {"type": "tts"}
+    assert tts_call.kwargs["headers"]["X-App-Secret"] == "secret"
+    assert tts_call.kwargs["headers"]["X-Internal-User-ID"] == "42"
+    assert tts_call.kwargs["headers"]["X-Internal-User-UUID"] == "user-uuid"
 
 
 @pytest.mark.parametrize(
