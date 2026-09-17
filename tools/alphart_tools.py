@@ -718,6 +718,7 @@ def _apply_audio_voice_options(args: Dict[str, Any], tool: Dict[str, Any]) -> st
     selected: Dict[str, Any] = {}
     if options:
         if requested_voice:
+            requested_label = requested_voice.casefold()
             selected = next(
                 (
                     option for option in options
@@ -726,11 +727,25 @@ def _apply_audio_voice_options(args: Dict[str, Any], tool: Dict[str, Any]) -> st
                 {},
             )
             if not selected:
+                casefold_matches = [
+                    option for option in options
+                    if str(option.get("voice_id") or "").strip().casefold() == requested_label
+                ]
+                if len(casefold_matches) == 1:
+                    selected = casefold_matches[0]
+            if not selected:
+                tag_matches = [
+                    option for option in options
+                    if str(option.get("tag") or "").strip().casefold() == requested_label
+                ]
+                if len(tag_matches) == 1:
+                    selected = tag_matches[0]
+            if not selected:
                 allowed = ", ".join(str(option["voice_id"]) for option in options)
                 return f"Voice {requested_voice!r} is not available for the selected audio model. Available voices: {allowed}."
         else:
             selected = options[0]
-            args["voice"] = str(selected["voice_id"]).strip()
+        args["voice"] = str(selected["voice_id"]).strip()
 
     raw_speed = args.get("speed")
     if (raw_speed is None or raw_speed == "") and selected.get("speed") is not None:
@@ -3266,7 +3281,7 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
     print(
         f"[alphart-agent] calling internal relay audio session_id={_ctx().get('session_id')} "
         f"provider={_log_model_value(selected_provider)} model={_log_model_value(selected_model)} "
-        f"route={native_route} url={relay_url}",
+        f"voice={_log_model_value(payload.get('voice'))} route={native_route} url={relay_url}",
         flush=True,
     )
     attempts = max(1, int(os.getenv("ALPHART_AUDIO_RELAY_RETRY_ATTEMPTS", "3") or "3"))
@@ -4378,7 +4393,7 @@ CANVAS_GENERATE_AUDIO_SCHEMA = {
             "provider": {"type": "string", "description": "Selected audio/TTS provider, when known."},
             "model": {"type": "string", "description": "Selected audio/TTS model, when known."},
             "canvas_item_id": {"type": "string", "description": "Existing Canvas audio node id to update for an explicit edit."},
-            "voice": {"type": "string", "description": "Optional voice id/name."},
+            "voice": {"type": "string", "description": "Optional exact voice_id advertised for the selected TTS model. Use tags only to choose the matching voice_id; do not send the tag itself."},
             "speed": {"type": "number", "exclusiveMinimum": 0, "description": "Optional speech speed rate. Use the selected voice's advertised default and min/max range."},
             "language_type": {
                 "type": "string",

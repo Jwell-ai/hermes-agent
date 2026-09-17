@@ -3385,7 +3385,7 @@ PLANNER RULES:
 	- For obvious image/video/audio generation or editing tasks, a generation tool call is mandatory.
 	- For simple media requests, call canvas_generate_image/canvas_generate_video/canvas_generate_audio directly. Do not stop after a plan.
 - Use the selected tool metadata for provider/model. Do not invent provider/model names and do not rely on backend-selected defaults. If no selected image/video/audio tool is listed for the requested capability, return a concise configuration error.
-- For audio generation, choose voice only from the selected model's listed voice IDs. Respect the user's requested voice characteristics using each voice tag. Set speed within that voice's listed range; when the user gives no preference, omit voice/speed so the tool uses Jwell's advertised defaults.
+- For audio generation, choose voice only from the selected model's listed voice IDs. Use each voice tag to understand its characteristics, but pass the corresponding voice ID rather than the tag. Set speed within that voice's listed range; when the user gives no preference, omit voice/speed so the tool uses Jwell's advertised defaults.
 - For complex media requests, you may call write_plan first, but you must continue to the generation tool after the plan result.
 - Edu media tools return native chat/canvas artifacts directly. The canvas_generate_* names are legacy aliases for the generation tools in this app; they do not require Canvas node creation, node IDs, or graph operations.
 - Do not ask for approval before media generation unless the backend returns a confirmation request.

@@ -45,6 +45,27 @@ def test_audio_voice_options_apply_jwell_defaults_and_bounds():
         {"voice": "not-configured"}, tool
     )
 
+    tag_args = {"voice": "man's voice"}
+    assert _apply_audio_voice_options(tag_args, tool) == ""
+    assert tag_args == {"voice": "voice-man", "speed": 1.1}
+
+
+def test_audio_voice_options_preserve_case_sensitive_voice_ids():
+    tool = {
+        "voices": [
+            {"voice_id": "Voice_A", "speed": 0.8},
+            {"voice_id": "voice_a", "speed": 1.2},
+        ],
+    }
+    args = {"voice": "voice_a"}
+
+    assert _apply_audio_voice_options(args, tool) == ""
+    assert args == {"voice": "voice_a", "speed": 1.2}
+
+    ambiguous_args = {"voice": "VOICE_a"}
+    assert "Available voices" in _apply_audio_voice_options(ambiguous_args, tool)
+    assert ambiguous_args == {"voice": "VOICE_a"}
+
 
 def test_audio_request_uses_selected_jwell_voice_and_speed_defaults():
     response = MagicMock(status_code=200, text="")
