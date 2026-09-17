@@ -3682,23 +3682,28 @@ SHOT PREVIS RULES:
   optional shot_description, a camera with position [x,y,z], target [x,y,z], and
   focal_length from 18 to 120. It may include active_camera_id and up to eight
   saved_cameras with id, name, camera, and its own ordered keyframes for alternate
-  shot setups, plus zero or more box/sphere/cylinder/cone/character whitebox objects. Each object includes id,
+  shot setups, plus zero or more whitebox objects. Supported object types are
+  box, sphere, cylinder, cone, character, hill, tree, rock, water, river,
+  flowers, desk, chair, sofa, tv, glass, car, bus, airplane, dog, cat, horse,
+  deer, bird, and custom_model. Each object includes id,
   type, name, position, rotation, scale, and color. Character objects may also
-  include pose (standing, chair_sitting, floor_sitting, crouching, kneeling,
+  include pose (standing, walking, running, chair_sitting, floor_sitting, crouching, kneeling,
   side_lying, relaxed_supine, prone, or straight_supine) and height from 1.2 to
   2.2 meters. Each camera keyframe includes id,
   time_seconds, and camera; keyframes must be ordered within the shot duration.
+  A custom_model represents a user-imported GLB and must preserve its existing
+  asset_id, asset_name, asset_path, asset_scope, and asset_object_key exactly. Never invent or
+  replace those asset fields; users upload and import custom models in the studio.
 - Treat prompts submitted from an explicitly referenced previs node as requests to
   build or revise a playable 3D whitebox scene. Translate spatial relationships,
   subjects, staging, lens choice, and camera movement into the previs_scene. Use
   character objects for people and choose an explicit pose and height when the
-  prompt describes them. Use saved cameras when the user asks for alternate
+  prompt describes them. Prefer a supported semantic object type over a generic
+  primitive when the requested subject exists in the library. Use saved cameras when the user asks for alternate
   angles or coverage. Set environment background_color, ground_color,
   ambient_intensity, key_intensity, and key_position when atmosphere or lighting
-  is specified. Preserve valid existing scene details the user did not ask to change.
-- When requested_action=build_previs, target_operation=refine_existing, and
-  requested_node_type=previs, update the selected node's content.previs_scene with
-  canvas_update_node. This dedicated studio action never requests media generation.
+  is specified. Otherwise use #000000 for both background_color and ground_color.
+  Preserve valid existing scene details the user did not ask to change.
 - Treat an explicitly referenced previs node, or a previs node connected upstream
   to a video node, as authoritative shot direction when composing that video prompt.
   Merely selecting a previs node does not request video generation. Captured previs
@@ -4197,21 +4202,10 @@ def _canvas_negated_action_request(
     return found_negated_action and found_desired_negated_action
 
 
-def _canvas_previs_edit_requested(req: AlphartEduChatRequest) -> bool:
-    return (
-        _request_app_scope(req) == "canvas"
-        and _string(req.requested_action).strip().lower() == "build_previs"
-        and _string(req.target_operation).strip().lower() == "refine_existing"
-        and _string(req.requested_node_type).strip().lower() == "previs"
-    )
-
-
 def _canvas_explicit_mutation_request(req: AlphartEduChatRequest) -> bool:
     """Allow clear Canvas work requests to override stale UI reference hints."""
     if _request_app_scope(req) != "canvas":
         return False
-    if _canvas_previs_edit_requested(req):
-        return True
     text = _canvas_request_text(req)
     if (
         not text
@@ -4287,8 +4281,6 @@ def _canvas_read_only_turn(req: AlphartEduChatRequest) -> bool:
     text = _canvas_request_text(req)
     if req.script_only:
         return True
-    if _canvas_previs_edit_requested(req):
-        return False
     if _canvas_non_execution_question(text) or _canvas_negated_generation_request(text):
         return True
     if _canvas_negated_graph_mutation_request(text) or _canvas_unsupported_graph_mutation_request(text):
@@ -6051,11 +6043,9 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
             requested_media_intent = _string(req.force_media_intent).strip().lower()
             requested_node_type = _string(req.requested_node_type).strip().lower()
             target_operation = _string(req.target_operation).strip().lower()
-            previs_edit_requested = _canvas_previs_edit_requested(req)
             canvas_forced_intent = ""
             if (
                 _request_app_scope(req) == "canvas"
-                and not previs_edit_requested
                 and not _canvas_shot_breakdown_intent(req)
                 and not _canvas_non_execution_question(user_message)
                 and not _canvas_negated_generation_request(user_message)

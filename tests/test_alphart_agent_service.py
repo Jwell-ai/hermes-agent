@@ -105,33 +105,19 @@ def test_canvas_prompt_keeps_previs_intent_in_hermes():
     assert "saved_cameras" in prompt
     assert "its own ordered keyframes" in prompt
     assert "chair_sitting" in prompt
+    assert "walking, running" in prompt
     assert "straight_supine" in prompt
-    assert "box/sphere/cylinder/cone/character" in prompt
-    assert "requested_action=build_previs" in prompt
-    assert "never requests media generation" in prompt
+    assert "hill, tree, rock, water, river" in prompt
+    assert "flowers, desk, chair, sofa, tv, glass" in prompt
+    assert "dog, cat, horse" in prompt
+    assert "bird, and custom_model" in prompt
+    assert "asset_object_key exactly" in prompt
+    assert "Never invent or" in prompt
+    assert "#000000 for both background_color and ground_color" in prompt
+    assert "supported semantic object type" in prompt
+    assert "build_previs" not in prompt
     assert "do not generate a video unless the user" in prompt
     assert "never infer its role from list order" in prompt
-
-
-def test_canvas_build_previs_control_overrides_selected_video_workflow():
-    for prompt in (
-        "A person crosses a warehouse",
-        "Two people look at each other",
-        "两个人参考桌上的地图",
-    ):
-        request = AlphartEduChatRequest(
-            app_scope="canvas",
-            canvas_item_type="video",
-            requested_action="build_previs",
-            target_operation="refine_existing",
-            requested_node_type="previs",
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        assert _canvas_workflow_item_type(request) == "previs"
-        assert _canvas_explicit_mutation_request(request) is True
-        assert _canvas_read_only_turn(request) is False
-
 
 def test_canvas_video_reference_merge_honors_hermes_frame_role():
     video_image_properties = CANVAS_GENERATE_VIDEO_SCHEMA["parameters"]["properties"]["input_images"]["items"]["properties"]

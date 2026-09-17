@@ -4182,7 +4182,9 @@ CANVAS_UPDATE_NODE_SCHEMA = {
                     "duration_seconds=5-15, a supported aspect_ratio, camera position/target/focal_length, "
                     "an optional shot_description, environment background/ground colors and ambient/key light settings, "
                     "up to eight saved_cameras with id/name/camera/keyframes plus active_camera_id, "
-                    "box/sphere/cylinder/cone/character whitebox objects with id/name/position/rotation/scale/color (and character pose/height), and ordered camera "
+                    "box/sphere/cylinder/cone/character/hill/tree/rock/water/river/flowers/desk/chair/sofa/tv/glass/car/bus/airplane/dog/cat/horse/deer/bird/custom_model "
+                    "whitebox objects with id/name/position/rotation/scale/color (and character pose/height, including walking or running). Preserve custom_model "
+                    "asset_id/asset_name/asset_path/asset_scope/asset_object_key exactly and never invent asset fields. Include ordered camera "
                     "keyframes with id/time_seconds/camera. Preserve all unchanged fields from the complete "
                     "backend-provided previs_scene JSON when editing."
                 ),
