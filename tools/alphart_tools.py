@@ -791,6 +791,18 @@ def _set_canvas_model_default(args: Dict[str, Any], media_type: str) -> None:
         args.setdefault("model", selected)
 
 
+def _canvas_audio_context_matches_model(provider: Any, model: Any) -> bool:
+    """Return whether Canvas voice defaults belong to the effective audio model."""
+    if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
+        return False
+    selected = str(_ctx().get("audio_model") or "").strip().lower()
+    effective_provider = str(provider or "").strip().lower()
+    effective_model = str(model or "").strip().lower()
+    if not selected or not effective_model:
+        return False
+    return selected == effective_model or selected == f"{effective_provider}:{effective_model}"
+
+
 def _explicit_audio_preference(text: Any) -> Optional[bool]:
     """Read an explicit audio on/off instruction without changing Edu defaults."""
     value = str(text or "")
@@ -1296,6 +1308,8 @@ def _persist_canvas_chunked_audio(
     provider: str,
     model: str,
     usage: Dict[str, Any],
+    voice: str = "",
+    speed: Any = None,
     tool_call_id: str = "",
     status: str = "completed",
     error: str = "",
@@ -1315,6 +1329,11 @@ def _persist_canvas_chunked_audio(
         "tool_call_id": str(tool_call_id or "").strip(),
         "idempotency_key": str(tool_call_id or "").strip(),
     }
+    voice = str(voice or "").strip()
+    if voice:
+        request_payload["voice"] = voice
+    if speed is not None:
+        request_payload["speed"] = speed
     output: Dict[str, Any] = {
         "type": "generate_audio_result",
         "status": status,
@@ -1344,6 +1363,12 @@ def _persist_canvas_chunked_audio(
             "provider": provider,
             "model": model,
         }
+        if model:
+            content["tts_model"] = f"{provider}:{model}" if provider else model
+        # Canvas patches merge into existing content, so explicit nulls are
+        # required to clear selections that the current request did not use.
+        content["tts_voice"] = voice or None
+        content["tts_speed"] = speed
         output.update({
             "type": "audio",
             "s3_object_name": stored_object_key,
@@ -1367,6 +1392,11 @@ def _persist_canvas_chunked_audio(
             output["usage"] = usage
         update.update({
             "content_patch": content,
+            "generation_config_patch": {
+                "tts_model": content.get("tts_model"),
+                "tts_voice": content.get("tts_voice"),
+                "tts_speed": content.get("tts_speed"),
+            },
             "last_output": output,
             "mirror_media": True,
             "generation_result": output,
@@ -1434,6 +1464,8 @@ def _mark_canvas_chunked_audio_failed(
         provider,
         model,
         usage,
+        voice=str(args.get("voice") or "").strip(),
+        speed=args.get("speed"),
         tool_call_id=tool_call_id,
         status="failed",
         error=error,
@@ -1471,6 +1503,8 @@ def _generate_chunked_audio(
             provider,
             model,
             total_usage,
+            voice=str(args.get("voice") or "").strip(),
+            speed=args.get("speed"),
             tool_call_id=base_call_id,
             status="running",
         )
@@ -1601,6 +1635,8 @@ def _generate_chunked_audio(
             provider,
             model,
             total_usage,
+            voice=str(args.get("voice") or "").strip(),
+            speed=args.get("speed"),
             tool_call_id=base_call_id,
         )
         if not persist_error or attempt == 3:
@@ -3183,13 +3219,18 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
             "AUDIO_MODEL_NOT_CONFIGURED",
         )
     _set_tool_defaults(args, tool)
-    voice_option_error = _apply_audio_voice_options(args, tool)
-    if voice_option_error:
-        return _tool_error(voice_option_error, "AUDIO_VOICE_OPTION_INVALID")
     selected_provider = str(args.get("provider") or "").strip()
     selected_model = str(args.get("model") or "").strip()
     if not selected_provider or not selected_model:
         return _tool_error("No configured audio generation model is available.", "AUDIO_MODEL_NOT_CONFIGURED")
+    use_context_audio_settings = _canvas_audio_context_matches_model(selected_provider, selected_model)
+    if use_context_audio_settings and not str(args.get("voice") or "").strip() and str(_ctx().get("audio_voice") or "").strip():
+        args["voice"] = str(_ctx().get("audio_voice") or "").strip()
+    if use_context_audio_settings and args.get("speed") is None and _ctx().get("audio_speed") is not None:
+        args["speed"] = _ctx().get("audio_speed")
+    voice_option_error = _apply_audio_voice_options(args, tool)
+    if voice_option_error:
+        return _tool_error(voice_option_error, "AUDIO_VOICE_OPTION_INVALID")
     args["language_type"] = _normalize_audio_language_type(args.get("language_type")) or _normalize_audio_language_type(_ctx().get("audio_language_type"))
     relay_url = _relay_url("audio/speech")
     if not relay_url:
@@ -4454,7 +4495,7 @@ GENERATE_VIDEO_SCHEMA = _generic_generation_schema(
     "generate_video",
     {"input_audio"},
 )
-GENERATE_AUDIO_SCHEMA = _generic_generation_schema(CANVAS_GENERATE_AUDIO_SCHEMA, "generate_audio")
+GENERATE_AUDIO_SCHEMA = _generic_generation_schema(CANVAS_GENERATE_AUDIO_SCHEMA, "generate_audio", {"speed"})
 GENERATE_VIDEO_SCHEMA["description"] = (
     "Submit a video generation task through the selected Alphart video model. "
     "Use this for text-to-video and image-to-video tasks. Video result polling stays in the Go backend."

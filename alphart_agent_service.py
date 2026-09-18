@@ -66,6 +66,8 @@ class AlphartEduChatRequest(BaseModel):
     ai_generation_watermark: bool = False
     video_model: str = ""
     audio_model: str = ""
+    audio_voice: str = ""
+    audio_speed: Optional[float] = None
     input_images: List[Any] = Field(default_factory=list)
     input_audio: List[Any] = Field(default_factory=list)
     input_videos: List[Any] = Field(default_factory=list)
@@ -5809,6 +5811,8 @@ def chat(req: AlphartEduChatRequest, authorization: Optional[str] = Header(defau
         "image_model": req.image_model,
         "video_model": req.video_model,
         "audio_model": req.audio_model,
+        "audio_voice": req.audio_voice,
+        "audio_speed": req.audio_speed,
         "user_id": req.user_id,
         "user_uuid": req.user_uuid,
         "storage_prefix": req.storage_prefix,

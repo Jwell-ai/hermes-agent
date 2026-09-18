@@ -295,6 +295,136 @@ def test_canvas_audio_relay_uses_explicit_audio_node_for_edit():
     assert "speed" not in captured["json"]
 
 
+def test_canvas_audio_relay_uses_selected_voice_and_speed_from_context():
+    captured = {}
+
+    def fake_post(_url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return type("Response", (), {
+            "status_code": 200,
+            "text": '{"data":[{"url":"https://canvas.test/audio.wav"}]}',
+            "json": lambda self: {"data": [{"url": "https://canvas.test/audio.wav"}]},
+        })()
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "selected_canvas_item_id": "audio-node",
+            "selected_canvas_item_type": "audio",
+            "audio_model": "tencent:tts-test",
+            "audio_voice": "female-shaonv",
+            "audio_speed": 1.25,
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post), patch(
+        "tools.alphart_tools._jwell_relay_enabled", return_value=False
+    ):
+        result = json.loads(
+            _handle_alphart_generate_audio(
+                {
+                    "input": "A short narration.",
+                    "provider": "tencent",
+                    "model": "tts-test",
+                    "canvas_item_id": "audio-node",
+                }
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["voice"] == "female-shaonv"
+    assert captured["json"]["speed"] == 1.25
+
+
+def test_canvas_audio_relay_preserves_explicit_voice_and_speed():
+    captured = {}
+
+    def fake_post(_url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return type("Response", (), {
+            "status_code": 200,
+            "text": '{"data":[{"url":"https://canvas.test/audio.wav"}]}',
+            "json": lambda self: {"data": [{"url": "https://canvas.test/audio.wav"}]},
+        })()
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "selected_canvas_item_id": "audio-node",
+            "selected_canvas_item_type": "audio",
+            "audio_voice": "default-voice",
+            "audio_speed": 1.0,
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post), patch(
+        "tools.alphart_tools._jwell_relay_enabled", return_value=False
+    ):
+        result = json.loads(
+            _handle_alphart_generate_audio(
+                {
+                    "input": "A short narration.",
+                    "provider": "tencent",
+                    "model": "tts-test",
+                    "canvas_item_id": "audio-node",
+                    "voice": "explicit-voice",
+                    "speed": 1.5,
+                }
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["voice"] == "explicit-voice"
+    assert captured["json"]["speed"] == 1.5
+
+
+def test_canvas_audio_relay_does_not_apply_context_settings_to_another_model():
+    captured = {}
+
+    def fake_post(_url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return type("Response", (), {
+            "status_code": 200,
+            "text": '{"data":[{"url":"https://canvas.test/audio.wav"}]}',
+            "json": lambda self: {"data": [{"url": "https://canvas.test/audio.wav"}]},
+        })()
+
+    with alphart_context(
+        {
+            "app_scope": "canvas",
+            "backend_url": "http://canvas-backend",
+            "canvas_id": "canvas-1",
+            "selected_canvas_item_id": "audio-node",
+            "selected_canvas_item_type": "audio",
+            "audio_model": "tencent:tts-test",
+            "audio_voice": "tencent-only-voice",
+            "audio_speed": 1.25,
+        }
+    ), patch("tools.alphart_tools.requests.post", side_effect=fake_post), patch(
+        "tools.alphart_tools._jwell_relay_enabled", return_value=False
+    ):
+        result = json.loads(
+            _handle_alphart_generate_audio(
+                {
+                    "input": "A short narration.",
+                    "provider": "openai",
+                    "model": "gpt-4o-mini-tts",
+                    "canvas_item_id": "audio-node",
+                }
+            )
+        )
+
+    assert result["status"] == "success"
+    assert captured["json"]["voice"] == "alloy"
+    assert "speed" not in captured["json"]
+
+
+def test_edu_audio_schema_does_not_expose_canvas_speed_setting():
+    from tools.alphart_tools import GENERATE_AUDIO_SCHEMA
+
+    assert "speed" not in GENERATE_AUDIO_SCHEMA["parameters"]["properties"]
+
+
 def test_canvas_audio_relay_uses_model_edit_operation_when_id_is_omitted():
     captured = {}
 
@@ -778,6 +908,8 @@ def test_canvas_chunked_audio_persists_combined_result_after_last_chunk():
                 "input": "the complete script",
                 "provider": "openai",
                 "model": "gpt-4o-mini-tts",
+                "voice": "nova",
+                "speed": 1.25,
                 "canvas_item_id": "audio-node",
             },
             "the complete script",
@@ -795,6 +927,11 @@ def test_canvas_chunked_audio_persists_combined_result_after_last_chunk():
     assert update_calls[1]["generation_type"] == "audio"
     assert update_calls[1]["generation_status"] == "completed"
     assert update_calls[1]["generation_request"]["tool_call_id"] == "audio-call"
+    assert update_calls[1]["generation_request"]["voice"] == "nova"
+    assert update_calls[1]["generation_request"]["speed"] == 1.25
+    assert update_calls[1]["content_patch"]["tts_model"] == "openai:gpt-4o-mini-tts"
+    assert update_calls[1]["content_patch"]["tts_voice"] == "nova"
+    assert update_calls[1]["content_patch"]["tts_speed"] == 1.25
     assert result["result"]["s3_object_name"] == "org/canvas/combined-audio.wav"
     assert result["result"]["url"] == "https://canvas.test/combined-audio.wav"
     assert not result["result"]["audio_url"].startswith("data:")
@@ -842,6 +979,14 @@ def test_canvas_chunked_audio_caps_total_duration():
     with wave.open(io.BytesIO(combined), "rb") as audio:
         assert audio.getnframes() == 24000 * 5
     assert update_calls[-1]["content_patch"]["duration_seconds"] == 5
+    assert update_calls[-1]["content_patch"]["tts_model"] == "openai:gpt-4o-mini-tts"
+    assert update_calls[-1]["content_patch"]["tts_voice"] is None
+    assert update_calls[-1]["content_patch"]["tts_speed"] is None
+    assert update_calls[-1]["generation_config_patch"] == {
+        "tts_model": "openai:gpt-4o-mini-tts",
+        "tts_voice": None,
+        "tts_speed": None,
+    }
 
 
 def test_canvas_chunked_audio_persists_imported_asset_by_object_key_only():
