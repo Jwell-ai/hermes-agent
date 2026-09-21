@@ -776,19 +776,56 @@ def _apply_audio_voice_options(args: Dict[str, Any], tool: Dict[str, Any]) -> st
     return ""
 
 
-def _set_canvas_model_default(args: Dict[str, Any], media_type: str) -> None:
-    """Use the frontend-selected provider:model when the model omits tool args."""
+def _apply_canvas_selected_media_model(args: Dict[str, Any], media_type: str) -> None:
+    """Make the explicit Canvas media-model selection authoritative."""
     if str(_ctx().get("app_scope") or "").strip().lower() != "canvas":
         return
     selected = str(_ctx().get(f"{media_type}_model") or "").strip()
     if not selected:
         return
+    explicit_tool_id = str(args.get("tool_id") or args.get("id") or "").strip()
+    previous_tool = _pick_tool(media_type, args) if explicit_tool_id else {}
+    previous_provider = str(
+        args.get("provider")
+        or args.get(f"{media_type}_provider")
+        or previous_tool.get("provider")
+        or ""
+    ).strip()
+    previous_model = str(
+        args.get("model")
+        or args.get(f"{media_type}_model")
+        or _tool_model_value(previous_tool)
+        or ""
+    ).strip()
+    # Hermes still decides whether and how to use the media tool, but an
+    # explicit Canvas picker choice must not be replaced by model-authored
+    # provider, model, or tool identifiers. Edu never enters this branch.
+    for key in ("id", "tool_id", f"{media_type}_provider", f"{media_type}_model"):
+        args.pop(key, None)
     provider, separator, model = selected.partition(":")
-    if separator and provider and model:
-        args.setdefault("provider", provider)
-        args.setdefault("model", model)
+    selected_provider = provider if separator and provider and model else ""
+    selected_model = model if selected_provider else selected
+    replaced_model = bool(
+        (previous_model and previous_model.casefold() != selected_model.casefold())
+        or (
+            selected_provider
+            and previous_provider
+            and previous_provider.casefold() != selected_provider.casefold()
+        )
+    )
+    if media_type == "audio" and replaced_model:
+        # Voice IDs and speed ranges belong to a specific TTS model. Let the
+        # audio handler apply the frontend settings for the selected model.
+        for key in ("voice", "speed", "audio_voice", "audio_speed"):
+            args.pop(key, None)
+    if selected_provider:
+        args["provider"] = selected_provider
+        args["model"] = selected_model
     else:
-        args.setdefault("model", selected)
+        # A bare model key can be resolved against the authoritative catalog;
+        # discard a provider invented for the previous tool choice.
+        args.pop("provider", None)
+        args["model"] = selected
 
 
 def _canvas_audio_context_matches_model(provider: Any, model: Any) -> bool:
@@ -2684,7 +2721,7 @@ def _handle_alphart_generate_image(args: Dict[str, Any], **kwargs: Any) -> str:
         return _tool_error(
             "Canvas video request already has a video workflow; use the supplied image references as keyframes instead of generating an image"
         )
-    _set_canvas_model_default(args, "image")
+    _apply_canvas_selected_media_model(args, "image")
     if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
         if _ctx().get("image_aspect_ratio") and not args.get("aspect_ratio"):
             args["aspect_ratio"] = _ctx().get("image_aspect_ratio")
@@ -2903,7 +2940,7 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     mutation_error = _require_canvas_mutation_allowed()
     if mutation_error:
         return mutation_error
-    _set_canvas_model_default(args, "video")
+    _apply_canvas_selected_media_model(args, "video")
     is_canvas = str(_ctx().get("app_scope") or "").strip().lower() == "canvas"
     if not str(args.get("prompt") or "").strip() and is_canvas:
         args["prompt"] = str(_ctx().get("canvas_prompt_context") or _ctx().get("user_message") or "").strip()
@@ -3198,7 +3235,7 @@ def _handle_alphart_generate_audio(args: Dict[str, Any], **kwargs: Any) -> str:
         return mutation_error
     audio_chunk_request = bool(args.pop("_audio_chunk", False))
     skip_media_import = bool(args.pop("_skip_media_import", False))
-    _set_canvas_model_default(args, "audio")
+    _apply_canvas_selected_media_model(args, "audio")
     app_scope = str(_ctx().get("app_scope") or "").strip().lower()
     requested_duration = _positive_video_duration(args.get("duration_seconds"))
     if requested_duration is None:

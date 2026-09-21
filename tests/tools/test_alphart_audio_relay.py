@@ -378,7 +378,7 @@ def test_canvas_audio_relay_preserves_explicit_voice_and_speed():
     assert captured["json"]["speed"] == 1.5
 
 
-def test_canvas_audio_relay_does_not_apply_context_settings_to_another_model():
+def test_canvas_audio_relay_uses_frontend_model_and_its_context_settings():
     captured = {}
 
     def fake_post(_url, **kwargs):
@@ -409,14 +409,18 @@ def test_canvas_audio_relay_does_not_apply_context_settings_to_another_model():
                     "input": "A short narration.",
                     "provider": "openai",
                     "model": "gpt-4o-mini-tts",
+                    "voice": "alloy",
+                    "speed": 0.9,
                     "canvas_item_id": "audio-node",
                 }
             )
         )
 
     assert result["status"] == "success"
-    assert captured["json"]["voice"] == "alloy"
-    assert "speed" not in captured["json"]
+    assert captured["json"]["provider"] == "tencent"
+    assert captured["json"]["model"] == "tts-test"
+    assert captured["json"]["voice"] == "tencent-only-voice"
+    assert captured["json"]["speed"] == 1.25
 
 
 def test_edu_audio_schema_does_not_expose_canvas_speed_setting():
