@@ -1756,7 +1756,6 @@ def _handle_canvas_create_node(args: Dict[str, Any], **_: Any) -> str:
     if not args.get("item_type") and args.get("type"):
         args["item_type"] = args.get("type")
     if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
-        item_type = str(args.get("item_type") or "text").strip().lower()
         source_ids = []
         for source_field in ("source_item_ids", "connect_from_item_ids", "reference_item_ids"):
             raw_sources = args.get(source_field) or []
@@ -4294,7 +4293,8 @@ CANVAS_CREATE_NODE_SCHEMA = {
     "description": (
         "Create a Canvas node in the current document when the requested workflow needs a new node. "
         "Choose the smallest useful graph: do not create a separate Prompt node merely because a media provider "
-        "needs prompt text, and never create one for a reference-based output unless the user asks for it."
+        "needs prompt text, and never create one for a reference-based output unless the user asks for it. "
+        "For a video skill, create a previs node only when the user separately requests a 3D scene."
     ),
     "parameters": {
         "type": "object",

@@ -53,6 +53,7 @@ from alphart_agent_service import (
     _canvas_request_text,
     _canvas_response_item_id,
     _canvas_read_only_turn,
+    _canvas_shot_breakdown_intent,
     _canvas_non_execution_question,
     _canvas_turn_context_content,
     _canvas_visual_reference_turn,
@@ -1340,6 +1341,31 @@ def test_canvas_explicit_video_request_overrides_selected_image():
     )
 
     assert _canvas_workflow_item_type(request) == "video"
+
+
+def test_canvas_latest_skill_marker_controls_media_workflow():
+    for prompt, expected_type in (
+        ("[skill:video-cinematic-shot] Draft [skill:image-keyframe] Generate an image", "image"),
+        ("[skill:image-keyframe] Draft [skill:video-cinematic-shot] Generate a video", "video"),
+        ("[skill:video-shot-breakdown] Analyze this video [skill:video-cinematic-shot] Generate a video", "video"),
+    ):
+        request = AlphartEduChatRequest(
+            app_scope="canvas",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        assert _canvas_workflow_item_type(request) == expected_type
+
+
+def test_canvas_latest_video_skill_selects_generation_over_old_breakdown():
+    request = AlphartEduChatRequest(
+        app_scope="canvas",
+        messages=[{
+            "role": "user",
+            "content": "[skill:video-shot-breakdown] Analyze this video "
+                       "[skill:video-cinematic-shot] Generate a video",
+        }],
+    )
+    assert _canvas_shot_breakdown_intent(request) is False
 
 
 def test_canvas_specialist_skill_markers_are_writable_and_route_media():

@@ -3896,6 +3896,9 @@ MEDIA RULES:
 - For [skill:image-keyframe] and [skill:video-cinematic-shot], follow the
   marker-specific graph contract in the Canvas Graph Skill. A no-reference run
   requires a persisted Prompt node before its media output.
+- A selected video-generation skill requests a video result. Treat its camera
+  direction as part of the video prompt; do not create a previs node unless the
+  user explicitly requests a separate 3D previs scene.
 - Canvas-only workflows are available through skills_list and skill_view in the
   Canvas app scope. Do not load Edu-only skills for a Canvas request.
 - For an image, video, or audio generation request, call the matching Canvas tool
@@ -3939,8 +3942,11 @@ SHOT PREVIS RULES:
   A custom_model represents a user-imported GLB and must preserve its existing
   asset_id, asset_name, asset_path, asset_scope, and asset_object_key exactly. Never invent or
   replace those asset fields; users upload and import custom models in the studio.
-- Treat prompts submitted from an explicitly referenced previs node as requests to
-  build or revise a playable 3D whitebox scene. Translate spatial relationships,
+- When the user asks to build or revise a 3D scene, treat an explicitly
+  referenced previs node as the scene to update. When a video-generation skill
+  references that previs and its captured frames, keep the previs unchanged:
+  create a downstream video using its shot direction and the captured images
+  as keyframe references. Translate spatial relationships,
   subjects, staging, lens choice, and camera movement into the previs_scene. Use
   character objects for people and choose an explicit pose and height when the
   prompt describes them. Prefer a supported semantic object type over a generic
@@ -3985,10 +3991,18 @@ Apply it only for the current operation.
 _canvas_workflow_cache: Dict[str, str] = {}
 
 
+def _canvas_selected_skill_marker(text: str) -> str:
+    markers = re.findall(r"\[skill:([^\]]+)\]", text, flags=re.IGNORECASE)
+    return markers[-1].strip().lower() if markers else ""
+
+
 def _canvas_shot_breakdown_intent(req: AlphartEduChatRequest) -> bool:
     if _canvas_workflow_item_type(req) != "video":
         return False
     text = _canvas_request_text(req).lower()
+    selected_skill = _canvas_selected_skill_marker(text)
+    if selected_skill:
+        return selected_skill == "video-shot-breakdown"
     return any(phrase in text for phrase in (
         "video-shot-breakdown", "shot breakdown", "shot-by-shot", "shot by shot",
         "拉片", "分镜分析", "镜头分析", "镜头拆解",
@@ -4013,6 +4027,9 @@ def _canvas_video_shotcraft_intent(req: AlphartEduChatRequest) -> bool:
     if _request_app_scope(req) != "canvas" or _canvas_workflow_item_type(req) != "video":
         return False
     text = _canvas_request_text(req).lower()
+    selected_skill = _canvas_selected_skill_marker(text)
+    if selected_skill:
+        return selected_skill == "video-shotcraft"
     return any(phrase in text for phrase in (
         "video-shotcraft", "shotcraft", "shot recipe", "shot card", "镜头配方", "镜头卡",
     ))
@@ -4650,9 +4667,10 @@ def _canvas_workflow_item_type(req: AlphartEduChatRequest) -> str:
         "create_new", "generate_into_existing", "refine_existing", "use_as_reference",
     }:
         return requested_node_type
-    if re.search(r"\[skill:image-keyframe\]", text, flags=re.IGNORECASE):
+    selected_skill = _canvas_selected_skill_marker(text)
+    if selected_skill == "image-keyframe":
         return "image"
-    if re.search(r"\[skill:video-cinematic-shot\]", text, flags=re.IGNORECASE):
+    if selected_skill.startswith("video-"):
         return "video"
     # An explicit native-language media request or Canvas skill is stronger
     # than the current UI selection. A selected image is often the keyframe
@@ -4660,8 +4678,6 @@ def _canvas_workflow_item_type(req: AlphartEduChatRequest) -> str:
     requested = _media_intent(text, has_image_context=bool(req.input_images), canvas_edit_actions=True)
     if requested:
         return requested
-    if re.search(r"\[skill:video-[^\]]+\]", text, flags=re.IGNORECASE):
-        return "video"
     selected_type = _string(
         getattr(req, "canvas_item_type", "") or getattr(req, "selected_canvas_item_type", "")
     ).strip().lower()

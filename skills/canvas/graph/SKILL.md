@@ -48,6 +48,10 @@ Choose the narrowest applicable workflow:
 The visible `[skill:...]` marker is an explicit workflow selection. Apply the
 following graph contract based on the actual referenced node types; do not infer
 a different workflow from fixed natural-language keywords.
+The `video-cinematic-shot`, `video-shotcraft`, `video-frame-transition`, and
+`video-sound-led` markers request generated video. Camera movement and staging
+in those prompts describe the video; they are not a request for a 3D previs node.
+Create previs only when the user separately asks to previsualize the scene.
 
 For `[skill:image-keyframe]`:
 
@@ -73,6 +77,11 @@ For `[skill:video-cinematic-shot]`:
    one video node sourced from every referenced image, preserve their supplied
    keyframe order/roles, pass all of them to `canvas_generate_video`, and generate
    into the video node.
+4. With a referenced previs node, treat its scene and captured images as input
+   shot direction and keyframes, not as an edit target. Create a downstream video
+   node sourced from that previs and every explicitly referenced captured frame,
+   preserve capture timing when assigning frame roles, and call
+   `canvas_generate_video`. Do not create or update a previs node for this request.
 
 Capacity rules are explicit: video duration is supported from 5 to 15 seconds and must be clamped to that range; do not silently change a requested ratio, resolution, quality, language, or model to an invented value. Ask the selected video model to generate synchronized audio and visible captions natively in the requested language. Set `generate_audio=true` unless a connected audio track (including background music, narration, or dialogue) or an explicit user instruction disables provider-generated audio; a voice-print-only reference does not disable native audio. Do not create separate TTS, voiceover, caption-script, SRT, or subtitle-burning work for a video generation.
 
