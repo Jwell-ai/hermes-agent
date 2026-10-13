@@ -2962,9 +2962,8 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
     if args.get("image_url") and not args.get("input_images"):
         args["input_images"] = [args.get("image_url")]
     if str(_ctx().get("app_scope") or "").strip().lower() == "canvas":
-        # Connected Canvas nodes are the user-selected keyframes. Keep them
-        # ahead of any model-suggested images so an audio reference can never
-        # reach the video relay without its visual counterpart.
+        # Use connected references by default. A Seedance-specific explicit
+        # selection is applied below once the selected model is resolved.
         canvas_images = [
             entry for entry in (_ctx().get("input_images") or [])
             if _canvas_image_reference_key(entry)
@@ -3022,6 +3021,18 @@ def _handle_alphart_generate_video(args: Dict[str, Any], **kwargs: Any) -> str:
         )
     _set_tool_defaults(args, tool)
     args.setdefault("wait", False)
+    if is_canvas and _is_seedance_video_model(args.get("provider"), args.get("model")) and requested_images:
+        # Hermes's explicit list selects the inputs for this request. Adding
+        # other connected images back can mix incompatible Seedance modes.
+        context_images = {
+            _canvas_image_reference_key(entry): entry
+            for entry in canvas_images if isinstance(entry, dict)
+        }
+        selected_images = [
+            context_images.get(_canvas_image_reference_key(entry), entry)
+            for entry in requested_images
+        ]
+        args["input_images"] = _merge_canvas_image_references(selected_images, requested_images)
     if is_canvas:
         # Explicit model targets are required for edits. For new generation,
         # prefer a node created in this turn and recover a fresh node below;
@@ -4422,7 +4433,9 @@ CANVAS_GENERATE_VIDEO_SCHEMA = {
     "name": "canvas_generate_video",
     "description": (
         "Submit a video generation task through the selected Canvas video model. "
-        "Use this for text-to-video and image-to-video tasks. Seedance result polling stays in the Go backend."
+        "Use this for text-to-video and image-to-video tasks. Seedance result polling stays in the Go backend. "
+        "Seedance modes are mutually exclusive: one first_frame with an optional last_frame and no reference media, "
+        "or reference_image inputs with optional reference audio. Never mix these modes."
     ),
     "parameters": {
         "type": "object",
@@ -4443,12 +4456,12 @@ CANVAS_GENERATE_VIDEO_SCHEMA = {
                         "file_id": {"type": "string"},
                         "filename": {"type": "string"},
                         "mime_type": {"type": "string"},
-                        "role": {"type": "string", "description": "Hermes-selected video role such as first_frame, last_frame, or reference_image. Choose from the shot intent and previs timing, not list order."},
+                        "role": {"type": "string", "description": "Hermes-selected first_frame, last_frame, or reference_image. For Seedance, choose one mode for the whole request: first_frame and optional last_frame ONLY, or all reference_image. Connected audio requires reference mode. Choose from the shot intent and previs timing, not list order."},
                         "reference_note": {"type": "string", "description": "Short reference note from the user's @file instruction."},
                         "previs_time_seconds": {"type": "number", "description": "Backend-provided capture time within a referenced previs shot."},
                     },
                 },
-                "description": "Reference images extracted from <input_images> XML. Prefer s3_object_name objects; file_id strings are fallback only.",
+                "description": "Reference images extracted from <input_images> XML. Prefer s3_object_name objects; file_id strings are fallback only. For Seedance, a nonempty list of valid Canvas asset keys is the complete image selection in provider order; omitted or empty uses connected images. Select only the requested boundaries for exact frame mode. To use three or more captures together, set every role to reference_image and explain their timing in the prompt; this does not guarantee exact frame matching. Do not silently omit user-required references.",
             },
             "input_audio": {
                 "type": "array",

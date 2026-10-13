@@ -5,6 +5,8 @@ import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from tools.alphart_tools import _backend_tool_timeout, _ensure_canvas_image_generation_graph, _ensure_canvas_video_generation_graph, _explicit_audio_preference, _handle_alphart_generate_image, _handle_alphart_generate_video, _relay_url, alphart_context
 
 
@@ -990,6 +992,54 @@ def test_canvas_video_relay_drops_model_supplied_url_references():
 
     assert result["status"] == "success"
     assert captured["json"]["image"] == [connected]
+
+
+@pytest.mark.parametrize("mode", ["frames", "references", "default", "other_model"])
+def test_canvas_seedance_respects_explicit_image_selection(mode):
+    connected = [
+        {"s3_object_name": "org/doc/a.png", "previs_time_seconds": 0, "role": "first_frame"},
+        {"s3_object_name": "org/doc/b.png", "previs_time_seconds": 2, "role": "reference_image"},
+        {"s3_object_name": "org/doc/c.png", "previs_time_seconds": 5, "role": "last_frame"},
+    ]
+    before = json.dumps(connected)
+    model = "other-video" if mode == "other_model" else "dreamina-seedance-2-0"
+    args = {"prompt": "A tracking shot"}
+    if mode == "references":
+        args["input_images"] = [
+            {"s3_object_name": entry["s3_object_name"], "role": "reference_image"}
+            for entry in reversed(connected)
+        ]
+        expected = [dict(entry, role="reference_image") for entry in reversed(connected)]
+    elif mode == "default":
+        expected = connected
+    else:
+        args["input_images"] = [
+            {"s3_object_name": "org/doc/c.png", "role": "first_frame"},
+            {"s3_object_name": "org/doc/a.png", "role": "last_frame"},
+        ]
+        expected = [dict(connected[2], role="first_frame"), dict(connected[0], role="last_frame")]
+        if mode == "other_model":
+            expected = [expected[1], connected[1], expected[0]]
+    response = SimpleNamespace(
+        status_code=202,
+        text='{"id":"task-1","status":"queued"}',
+        json=lambda: {"id": "task-1", "status": "queued"},
+    )
+    with alphart_context({
+        "app_scope": "canvas",
+        "backend_url": "http://canvas-backend",
+        "canvas_item_id": "video-node",
+        "input_images": connected,
+        "tool_list": [{"type": "video", "provider": "byteplus", "model": model}],
+        "model_catalog_authoritative": True,
+    }), patch("tools.alphart_tools.requests.post", return_value=response) as post:
+        result = json.loads(_handle_alphart_generate_video(args))
+
+    assert result["status"] == "success"
+    assert post.call_count == 1
+    assert post.call_args.args[0] == "http://canvas-backend/internal/v1/videos"
+    assert post.call_args.kwargs["json"]["image"] == expected
+    assert json.dumps(connected) == before
 
 
 def test_canvas_video_relay_targets_new_graph_video_node():

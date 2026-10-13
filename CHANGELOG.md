@@ -1,5 +1,8 @@
 # Changelog
 
+- Documented Seedance's exclusive frame/reference modes for Canvas and honored
+  Hermes's explicit image selection without reinserting other connected images.
+
 ## Unreleased - 2026-08-15
 
 - Use the official Volcengine Ark Python SDK for Seedance task creation while

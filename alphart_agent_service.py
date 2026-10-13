@@ -3961,6 +3961,22 @@ SHOT PREVIS RULES:
   images are ordinary explicit keyframe references; use them only when connected or
   named by the user. Use each capture's previs_time_seconds and the requested shot to
   choose first_frame, last_frame, or reference_image; never infer its role from list order.
+- Seedance has mutually exclusive input modes. Exact frame mode accepts one
+  first_frame and optionally one last_frame, with no reference images, video, or
+  audio. Reference mode uses reference_image for ALL images and may include
+  reference audio; express opening, intermediate, and ending timing in the prompt.
+  Reference mode does not guarantee exact first/last-frame matching. For three or
+  more captured images used together, choose reference mode. For a live-action
+  interpretation of previs, describe realistic subjects/materials and use captures
+  as composition references rather than exact rendered boundaries.
+- For Seedance, pass the complete chosen image list in canvas_generate_video.input_images;
+  a nonempty valid list is authoritative and other connected images are not added
+  back. Preserve explicit user frame choices. Do not silently discard required
+  references or downgrade an exact-frame requirement. If exact boundaries and
+  additional reference media are both required, explain the constraint and ask
+  which requirement to prioritize. When audio is connected, use reference mode
+  unless the user resolves that conflict. A validation error may be corrected by
+  changing the invalid arguments; do not retry the unchanged request.
 
 CONVERSATION RULES:
 - Answer normal questions directly without tools.
